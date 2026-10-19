@@ -1,4 +1,4 @@
-import { BridgeError, isBridgeError, type PageAgentInfo } from '@wasmcheat/protocol';
+import { BridgeError, type ErrorCode, isBridgeError, type PageAgentInfo } from '@wasmcheat/protocol';
 
 /**
  * Relay that sits between the extension and the page agent.
@@ -81,10 +81,24 @@ if (!(window as unknown as PageAgentGlobal)[RELAY_FLAG]) {
       if (!entry) return;
       pending.delete(data.id);
       clearTimeout(entry.timer);
-      if (data.error) entry.reject(data.error);
+      if (data.error) entry.reject(asBridgeError(data.error));
       else entry.resolve(data.result);
     }
   });
+
+  /**
+   * The page answers with the plain shape a `postMessage` can carry, so the error has to be rebuilt
+   * before it is passed on: a bare object would lose its code and be reported as INTERNAL.
+   */
+  function asBridgeError(error: unknown): BridgeError {
+    if (isBridgeError(error)) return error;
+    const shape = error as { code?: string; message?: string; detail?: unknown } | null;
+    return new BridgeError(
+      (shape?.code as ErrorCode | undefined) ?? 'INTERNAL',
+      shape?.message ?? 'the page agent reported an error without a message',
+      shape?.detail,
+    );
+  }
 
   function announceAttachment(channel: string): void {
     try {

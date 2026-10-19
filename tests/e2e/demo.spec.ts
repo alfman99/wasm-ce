@@ -476,9 +476,7 @@ test('a pointer chain found by scanning is resolved back to the score address', 
   expect(resolved.data.value).toBe(score.data.values[0]);
 });
 
-// Quarantined: the blob bootstrap is unit-tested (tests/unit/worker.test.ts) but this browser-level
-// path hangs the run, so the routed-worker claim is not yet proven end to end.
-test.skip('a worker the page creates is visible, drivable, and reported when it dies', async () => {
+test('a worker the page creates is visible, drivable, and reported when it dies', async () => {
   // The page agent replaces `Worker` on its first ping (document_start), so a worker created now
   // boots through the blob bootstrap: worker agent first, this script second.
   const storeModule = Array.from(buildStoreModule());
@@ -493,6 +491,8 @@ test.skip('a worker the page creates is visible, drivable, and reported when it 
     const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
     const worker = new Worker(url);
     (window as unknown as { __wasmcheatE2eWorker?: Worker }).__wasmcheatE2eWorker = worker;
+    // Returning the Worker here would make evaluate try to serialise it and never resolve.
+    return true;
   }, storeModule);
 
   await expect

@@ -89,11 +89,13 @@ function releaseBlob(record: InstrumentedWorkerRecord): void {
 
 function instrumentWorker(
   runtime: PageRuntime,
+  // Captured once, when the wrapper is installed. Reading `window.Worker` here would read the
+  // wrapper itself and recurse until the stack dies.
+  RealWorker: typeof Worker,
   agentUrl: string,
   scriptURL: string | URL,
   options?: WorkerOptions,
 ): Worker {
-  const RealWorker = window.Worker;
   const id = `k${nextWorkerId++}`;
   const originalUrl = absoluteUrl(typeof scriptURL === 'string' ? scriptURL : scriptURL.href);
   const type = workerTypeOf(options);
@@ -149,7 +151,7 @@ function installWorkerWrapper(runtime: PageRuntime, agentUrl: string): void {
   // constructor cannot call `super` twice. Returning a real Worker instance keeps `postMessage`,
   // `terminate`, `onmessage` and `instanceof Worker` exactly as the page expects.
   function InstrumentedWorker(this: unknown, scriptURL: string | URL, options?: WorkerOptions): Worker {
-    return instrumentWorker(runtime, agentUrl, scriptURL, options);
+    return instrumentWorker(runtime, RealWorker, agentUrl, scriptURL, options);
   }
 
   InstrumentedWorker.prototype = RealWorker.prototype;
@@ -168,8 +170,10 @@ async function answer(
   try {
     result = jsonSafe(await runtime.handle(method, params));
   } catch (thrown) {
+    // Send the plain shape, never the Error instance: `postMessage` clones an Error's name and
+    // message but drops custom properties, so a BridgeError would arrive without its `code`.
     error = isBridgeError(thrown)
-      ? thrown
+      ? { code: thrown.code, message: thrown.message, detail: (thrown as { detail?: unknown }).detail }
       : new BridgeError('INTERNAL', thrown instanceof Error ? thrown.message : String(thrown)).toJSON();
   }
   post({ type: 'result', channelId, id, result, error });
