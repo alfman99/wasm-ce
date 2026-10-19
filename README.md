@@ -196,6 +196,11 @@ URL on its own, so the isolated-world relay publishes it on `document.documentEl
 (`data-wasmcheat-agent`) synchronously, and the wrapper resolves it per construction; if the
 attribute is ever missing the page gets a plain, uninstrumented worker rather than a broken one.
 
+A worker that starts a worker is captured the same way: each worker agent installs that wrapper too,
+so the grandchild's ids chain the names (`k1n1-1` belongs to the worker `k1` started), and a call for
+one is routed down the chain rather than refused. The e2e suite covers a page → worker → worker
+chain in `nested.html`.
+
 ### Two WebAssembly facts that shape the tool
 
 - **Imports are bound at instantiation.** A running instance can never gain a replaced import.
@@ -269,6 +274,7 @@ Addresses are `"<instanceId>:<offset>"`, e.g. `w1:0x408` or `w1:1032`. `instance
 | `wasmcheat_find_reads` | Which function reads an address? Same mechanism, load probes instead of store hooks. |
 | `wasmcheat_trace` | `arm` / `status` / `poll` / `clear` / `stop` for a watchpoint (`kind`: `read` or `write`). |
 | `wasmcheat_patch` | `add` / `list` / `remove` / `clear` function-body patches: stub a function with a constant return. |
+| `wasmcheat_speed` | Speed hack: scale the page clock (0–20x, `0` freezes it), or `reset`. |
 | `wasmcheat_diagnose` | Why is the instance list empty? Counts, frames, wasm URLs, one-line hint. |
 | `wasmcheat_audit` | The most recent audit entries. |
 
@@ -574,8 +580,10 @@ tests/e2e/                          playwright: harness.ts + demo.spec.ts
 - The page-agent runs in the MAIN world, so a hostile page can talk to (or lie to) the relay. The
   approval gate protects you from the agent, not from the site you loaded.
 - Strict-CSP pages block hook bodies; declarative fallbacks still work.
-- Not implemented yet: a scrolling hex memory viewer and a Cetus-style speed hack. `docs/STATUS.md`
-  keeps the current list.
+- The speed hack overrides `performance.now`, `Date.now` and `requestAnimationFrame` in the page
+  realm only; clock reads inside a worker keep real time.
+- The panel's memory viewer dumps bytes and pans by row, but it cannot follow a pointer yet.
+  `docs/STATUS.md` keeps the current list.
 
 ## Policy
 

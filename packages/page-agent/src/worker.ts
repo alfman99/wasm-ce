@@ -29,7 +29,8 @@ import { PageRuntime } from './runtime.js';
  * realm, which is why page ids (`w1`, `s1`) still mean what they always meant.
  *
  * LIMITS. A worker created before the page agent learned the URL of this bundle is never
- * bootstrapped; a worker created inside a worker (nested) never goes through the page's wrapper;
+ * bootstrapped; a nested worker is bootstrapped by this realm's own wrapper (see
+ * `installNestedWorkerWrapper`), so its instances are named `k1n1-1`;
  * a cross-origin worker URL cannot be constructed at all; and a page whose CSP forbids blob
  * workers keeps working but stays invisible. Agent traffic shares the worker's message port, so
  * the app's own `onmessage` sees the tagged messages above and vice versa.
@@ -56,6 +57,13 @@ const ID_KEYS = new Set([
 /** The subset of `DedicatedWorkerGlobalScope` this agent needs. */
 interface WorkerScope {
   __wasmcheatWorkerId?: unknown;
+  /** Set by the blob bootstrap; the URL of this bundle, needed to bootstrap a nested worker. */
+  __wasmcheatAgentUrl?: unknown;
+  /** Set by the blob bootstrap; the page directory, because a blob worker's own URL is not hierarchical. */
+  __wasmcheatBaseUrl?: unknown;
+  __wasmcheatNestedWrapper?: unknown;
+  Worker?: typeof Worker;
+  location?: { href: string };
   postMessage(message: unknown): void;
   addEventListener(type: 'message', listener: (event: MessageEvent) => void): void;
 }
@@ -68,10 +76,13 @@ export interface WorkerAgentOptions {
 
 export class WorkerAgent {
   readonly runtime: PageRuntime;
+  /** Id the page agent gave this worker (`k1`); nested children prefix it (`k1n1`). */
+  readonly id: string;
   private readonly workerId: string;
   private readonly post: (message: WorkerMessage) => void;
 
   constructor(options: WorkerAgentOptions) {
+    this.id = options.workerId;
     this.workerId = options.workerId;
     this.post = options.post;
     this.runtime = new PageRuntime({ realm: 'worker', workerId: this.workerId });
@@ -159,6 +170,69 @@ function workerScope(): WorkerScope | null {
   return candidate as WorkerScope;
 }
 
+let nestedCounter = 0;
+
+/**
+ * Nested workers: a worker that starts another worker was invisible, because the page's `Worker`
+ * wrapper cannot see a constructor called inside a worker global. The wrapper is installed in this
+ * realm instead, and the child is registered with *this* agent's runtime, so its instances show up
+ * as `k1n1-1` and the page-side routing (everything before the first dash) already handles it.
+ *
+ * The child bootstraps the same bundle, so the chain nests as deep as the page does.
+ */
+function installNestedWorkerWrapper(agent: WorkerAgent, scope: WorkerScope): void {
+  const agentUrl = typeof scope.__wasmcheatAgentUrl === 'string' ? scope.__wasmcheatAgentUrl : '';
+  const RealWorker = scope.Worker;
+  if (agentUrl === '' || typeof RealWorker !== 'function' || scope.__wasmcheatNestedWrapper === true) return;
+  const BaseWorker = RealWorker;
+  scope.__wasmcheatNestedWrapper = true;
+  const base =
+    typeof scope.__wasmcheatBaseUrl === 'string' && scope.__wasmcheatBaseUrl !== ''
+      ? scope.__wasmcheatBaseUrl
+      : (scope.location?.href ?? 'about:blank');
+
+  function NestedWorker(this: unknown, scriptURL: string | URL, options?: WorkerOptions): Worker {
+    const type = options?.type === 'module' ? 'module' : 'classic';
+    const original = new URL(typeof scriptURL === 'string' ? scriptURL : scriptURL.href, base).href;
+    const childId = `${agent.id}n${(nestedCounter += 1)}`;
+    const prologue =
+      `self.__wasmcheatWorkerId = ${JSON.stringify(childId)};\n` +
+      `self.__wasmcheatAgentUrl = ${JSON.stringify(agentUrl)};\n` +
+      `self.__wasmcheatBaseUrl = ${JSON.stringify(base)};\n`;
+    const agentImport = JSON.stringify(agentUrl);
+    const originalImport = JSON.stringify(original);
+    const source =
+      type === 'module'
+        ? `${prologue}import(${agentImport}).catch(() => {}).then(() => import(${originalImport}));\n`
+        : `${prologue}try { importScripts(${agentImport}); } catch (error) {}\nimportScripts(${originalImport});\n`;
+
+    let started: Worker;
+    let blobUrl: string;
+    try {
+      blobUrl = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+      started = new BaseWorker(blobUrl, options);
+    } catch {
+      // A CSP without `worker-src blob:` — run the child as the app asked, uninstrumented.
+      return new BaseWorker(typeof scriptURL === 'string' ? scriptURL : scriptURL.href, options);
+    }
+    agent.runtime.addWorker({ id: childId, url: original, type, post: (message) => started.postMessage(message) });
+    started.addEventListener('message', (event: MessageEvent) => {
+      URL.revokeObjectURL(blobUrl);
+      if (isWorkerMessage(event.data)) agent.runtime.handleWorkerMessage(childId, event.data);
+    });
+    const terminate = started.terminate.bind(started);
+    started.terminate = () => {
+      agent.runtime.removeWorker(childId);
+      URL.revokeObjectURL(blobUrl);
+      terminate();
+    };
+    return started;
+  }
+
+  NestedWorker.prototype = BaseWorker.prototype;
+  scope.Worker = NestedWorker as unknown as typeof Worker;
+}
+
 function main(): void {
   const scope = workerScope();
   if (!scope) return;
@@ -167,6 +241,7 @@ function main(): void {
       ? scope.__wasmcheatWorkerId
       : FALLBACK_WORKER_ID;
   const agent = new WorkerAgent({ workerId, post: (message) => scope.postMessage(message) });
+  installNestedWorkerWrapper(agent, scope);
   scope.addEventListener('message', (event) => {
     void agent.handleMessage(event.data);
   });

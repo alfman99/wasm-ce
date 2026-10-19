@@ -198,7 +198,8 @@ describe('page routing to workers', () => {
 
   it('merges worker instances into the page listing', async () => {
     const page = makePage();
-    page.respondWith(() => [
+    // The nested `page.listWorkers` probe is part of the listing now, so it answers on its own.
+    page.respondWith((message) => message.method === 'page.listWorkers' ? [] : [
       {
         id: 'k1-1',
         moduleHash: 'abc',
@@ -218,6 +219,26 @@ describe('page routing to workers', () => {
     expect(await page.runtime.handle('page.listWorkers', {})).toEqual([
       { id: 'k1', url: 'http://localhost:4174/engine.worker.js', type: 'classic', instances: 1 },
     ]);
+  });
+
+  it('lists a worker started by a worker, and routes its ids down the chain', async () => {
+    const page = makePage();
+    page.respondWith((message) => {
+      if (message.method === 'page.listWorkers') {
+        return [{ id: 'k1n1', url: 'http://localhost:4174/game.worker.js', type: 'classic', instances: 1 }];
+      }
+      if (message.method === 'page.read') {
+        // The chain forwarded the call verbatim: `k1n1-1` belongs to the grandchild.
+        return { values: [1] };
+      }
+      return [];
+    });
+
+    const workers = (await page.runtime.handle('page.listWorkers', {})) as { id: string }[];
+    expect(workers.map((worker) => worker.id)).toEqual(['k1', 'k1n1']);
+
+    // The page does not own `k1n1`; `k1` is a prefix of it, so the call goes down and comes back.
+    expect(await page.runtime.handle('page.read', { address: 'k1n1-1:0x10', type: 'i32' })).toEqual({ values: [1] });
   });
 
   it('times out instead of hanging when a worker never answers', async () => {

@@ -93,7 +93,13 @@ if (compiled) {
 }
 
 await build({
-  entryPoints: [join(SRC, 'demo.js'), join(SRC, 'worker-demo.js'), join(SRC, 'worker-game.js')],
+  entryPoints: [
+    join(SRC, 'demo.js'),
+    join(SRC, 'worker-demo.js'),
+    join(SRC, 'worker-game.js'),
+    join(SRC, 'nested-demo.js'),
+    join(SRC, 'nested-relay.js'),
+  ],
   outdir: OUT,
   bundle: true,
   format: 'iife',
@@ -101,7 +107,7 @@ await build({
   legalComments: 'none',
 });
 
-for (const file of ['index.html', 'framed.html', 'worker.html', 'styles.css']) {
+for (const file of ['index.html', 'framed.html', 'worker.html', 'nested.html', 'styles.css']) {
   await copyFile(join(HERE, file), join(OUT, file));
 }
 

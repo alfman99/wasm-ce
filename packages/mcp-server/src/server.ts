@@ -14,6 +14,7 @@ import {
   type Address,
   type ApprovalState,
   type FreezeEntry,
+  type SpeedStatus,
   type PatchEntry,
   type PointerPath,
   type PointerResolution,
@@ -393,13 +394,24 @@ export function createServer(bridge: Bridge): McpServer {
           .describe('Step between candidate offsets. Defaults to the type width; use 1 to catch unaligned data.'),
         maxResults: z.number().int().min(1).max(250_000).optional(),
         scanId: z.string().optional().describe('Narrow this existing scan instead of starting a new one.'),
+        from: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe('Start of the byte range to scan (default 0). Use it to skip a huge zero-initialised heap.'),
+        to: z.number().int().min(1).optional().describe('End of the byte range to scan, exclusive (default: memory size).'),
       },
     },
-    async ({ tabId, instanceId, type, mode, value, value2, tolerance, alignment, maxResults, scanId }) => {
+    async ({ tabId, instanceId, type, mode, value, value2, tolerance, alignment, maxResults, scanId, from, to }) => {
       try {
         const parsedValue = numeric(value);
         const parsedValue2 = numeric(value2);
         const effectiveMode = mode ?? (parsedValue === undefined ? 'changed' : 'exact');
+        if (to !== undefined && from !== undefined && to <= from) {
+          return fail(new BridgeError('BAD_PARAMS', 'to must be greater than from'));
+        }
+        const range = from === undefined && to === undefined ? undefined : { start: from ?? 0, end: to };
         const summary = scanId
           ? await page<ScanSummary>(tabId, 'page.scan.next', {
               scanId,
@@ -417,6 +429,7 @@ export function createServer(bridge: Bridge): McpServer {
               tolerance,
               alignment,
               maxResults,
+              range,
             });
 
         const formatted = {
@@ -599,20 +612,17 @@ export function createServer(bridge: Bridge): McpServer {
         }
         if (action === 'clear') {
           const cleared = await page<{ removed: number }>(tabId, 'page.bookmark.clear');
-          record({ kind: 'bookmark', tabId, ok: true, summary: `cleared ${cleared.removed} bookmark(s)` });
           return ok(cleared);
         }
         if (action === 'remove') {
           const target = id ?? label;
           if (!target) return fail(new BridgeError('BAD_PARAMS', 'remove needs id (or label)'));
           const removed = await page<boolean>(tabId, 'page.bookmark.remove', { id: target });
-          record({ kind: 'bookmark', tabId, ok: true, summary: `removed bookmark ${target}` });
           return ok({ removed, target });
         }
         if (!label) return fail(new BridgeError('BAD_PARAMS', 'label is required for add'));
         if (!address) return fail(new BridgeError('BAD_PARAMS', 'address is required for add'));
         const bookmark = await page<Bookmark>(tabId, 'page.bookmark.add', { label, address, ...(type ? { type } : {}), ...(note ? { note } : {}) });
-        record({ kind: 'bookmark', tabId, ok: true, summary: `bookmarked "${bookmark.label}" -> ${bookmark.address}` });
         return ok(bookmark, `remembered as "${bookmark.label}"; use it any time with wasmcheat_read {address: "${bookmark.address}"}`);
       } catch (error) {
         return fail(error);
@@ -706,6 +716,35 @@ export function createServer(bridge: Bridge): McpServer {
         const parsed = numeric(value) ?? 0;
         const entry = await page<FreezeEntry>(tabId, 'page.freeze.set', { address: target, type, value: parsed });
         return ok(entry);
+      } catch (error) {
+        return fail(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'wasmcheat_speed',
+    {
+      title: 'Speed hack: scale the page clock',
+      description:
+        'Multiplies the time the page perceives, without editing the game: `performance.now()`, `Date.now()` and the timestamp ' +
+        'given to `requestAnimationFrame` all run at `scale`x. 1 is real time, 0 stops the simulation (a paused game you can ' +
+        'still scan), 3 is three times faster. Only the page realm is scaled; workers keep real time. Omit `scale` to read the ' +
+        'current setting, use `reset: true` (or scale 1) to go back.',
+      inputSchema: {
+        tabId: z.number().int(),
+        scale: z.number().min(0).max(20).optional().describe('Multiplier, 0..20. Omit to just report the current scale.'),
+        reset: z.boolean().optional().describe('Return to real time (same as scale 1).'),
+      },
+    },
+    async ({ tabId, scale, reset }) => {
+      try {
+        if (reset === true || scale !== undefined) {
+          const requested = reset === true ? 1 : (scale as number);
+          const status = await page<SpeedStatus>(tabId, 'page.speed.set', { scale: requested });
+          return ok(status, `${status.scale}x ${status.scale === 1 ? '(real time)' : 'simulation speed'}`);
+        }
+        return ok(await page<SpeedStatus>(tabId, 'page.speed.status', {}));
       } catch (error) {
         return fail(error);
       }

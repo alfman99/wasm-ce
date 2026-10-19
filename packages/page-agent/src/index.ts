@@ -61,6 +61,15 @@ function post(payload: Record<string, unknown>): void {
   window.postMessage({ source: 'wasmcheat-page', ...payload }, '*');
 }
 
+/** Directory of the page: what a relative worker URL in the page would have resolved against. */
+function pageBaseUrl(): string {
+  try {
+    return new URL('.', location.href).href;
+  } catch {
+    return '';
+  }
+}
+
 /** A relative worker URL would resolve against the blob, which is not hierarchical. */
 function absoluteUrl(url: string): string {
   return new URL(url, location.href).href;
@@ -78,8 +87,15 @@ function workerTypeOf(options?: WorkerOptions): WorkerType {
  * id-less global, so the module case chains dynamic imports instead: id first, agent second, app
  * third. A rejected agent import must not take the app down with it.
  */
-function bootstrapSource(id: string, agentUrl: string, originalUrl: string, type: WorkerType): string {
-  const prologue = `self.__wasmcheatWorkerId = ${JSON.stringify(id)};\n`;
+function bootstrapSource(id: string, agentUrl: string, originalUrl: string, type: WorkerType, baseUrl: string): string {
+  // The agent URL travels with the id: a worker that spawns another worker installs the wrapper in
+  // its own global, and it needs the URL to bootstrap the child the same way. The base URL travels
+  // too, because a blob worker's own `location.href` is `blob:…`, against which a relative script
+  // path cannot be resolved.
+  const prologue =
+    `self.__wasmcheatWorkerId = ${JSON.stringify(id)};\n` +
+    `self.__wasmcheatAgentUrl = ${JSON.stringify(agentUrl)};\n` +
+    `self.__wasmcheatBaseUrl = ${JSON.stringify(baseUrl)};\n`;
   const agent = JSON.stringify(agentUrl);
   const original = JSON.stringify(originalUrl);
   if (type === 'module') {
@@ -114,7 +130,7 @@ function instrumentWorker(
   let worker: Worker | null = null;
   try {
     record.blobUrl = URL.createObjectURL(
-      new Blob([bootstrapSource(id, agentUrl, originalUrl, type)], { type: 'text/javascript' }),
+      new Blob([bootstrapSource(id, agentUrl, originalUrl, type, pageBaseUrl())], { type: 'text/javascript' }),
     );
     worker = new RealWorker(record.blobUrl, options);
   } catch {
@@ -211,6 +227,8 @@ function main(): void {
 
   const runtime = new PageRuntime();
   runtime.install();
+  // Before the page's first line: a game that grabs `performance.now` at load must already be wrapped.
+  runtime.speed.install();
   // A watchpoint armed before the reload is re-armed here, before the app's scripts run.
   restoreTrace(runtime.trace);
 

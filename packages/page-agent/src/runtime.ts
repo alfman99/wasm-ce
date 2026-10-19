@@ -41,6 +41,7 @@ import {
   type TrackedInstance,
 } from './registry.js';
 import { ScanStore, scanText } from './scanner.js';
+import { TimeMachine } from './speed.js';
 import { deleteSaved, listSaved, loadSaved, saveScan } from './saved-scans.js';
 import { addBookmark, clearBookmarks, listBookmarks, removeBookmark } from './bookmarks.js';
 import { HookStore, detectEvalAllowed } from './hooks.js';
@@ -109,6 +110,8 @@ export class PageRuntime {
   readonly scans = new ScanStore();
   readonly hooks: HookStore;
   readonly trace: TraceStore;
+  /** Page clock scaling; inert until `install()` runs in a document realm. */
+  readonly speed = new TimeMachine();
   readonly channelId = randomId();
 
   private readonly freezes = new Map<string, FreezeRecord>();
@@ -318,6 +321,13 @@ export class PageRuntime {
         // A worker that never ran the agent keeps its last known count and stays listed.
       }
       infos.push({ id: channel.id, url: channel.url, type: channel.type, instances: channel.instances });
+      // A worker's own workers: their ids already carry the chain (`k1n1`), so they need no prefixing.
+      try {
+        const nested = await this.workerCall(channel.id, 'page.listWorkers', {}, WORKER_PROBE_TIMEOUT_MS);
+        if (Array.isArray(nested)) infos.push(...(nested as WorkerInfo[]));
+      } catch {
+        // Unreachable child: the parent stays listed, which is enough to explain the gap.
+      }
     }
     return infos;
   }
@@ -703,6 +713,15 @@ export class PageRuntime {
       if (typeof candidate !== 'string') continue;
       const owner = workerIdOf(candidate);
       if (owner && this.workers.has(owner)) return owner;
+      // A nested realm's id (`k1n1-1`) names a channel this realm does not own, but a channel it does
+      // own (`k1`) is a prefix of it. Hand the call down and let that realm route the rest; each level
+      // only ever strips its own prefix, so the id survives unchanged until it reaches its owner.
+      for (const id of this.workers.keys()) {
+        if (this.workers.get(id)?.terminated) continue;
+        // A nested realm's id continues with `n<number>` (`k1n1-1` under channel `k1`), while this
+        // realm's own ids continue with `-`. Requiring that shape keeps `k1` from swallowing `k12`.
+        if (candidate.startsWith(id) && /^n\d/.test(candidate.slice(id.length))) return id;
+      }
     }
     return null;
   }
@@ -712,9 +731,14 @@ export class PageRuntime {
     if (owner) return this.workerCall(owner, method, params);
     switch (method) {
       case 'page.listInstances':
-        return this.listInstances();
+        // Nested realms contribute here too, so `list_instances` shows a worker's worker's wasm.
+        return this.mergeWorkers('page.listInstances', params);
       case 'page.listWorkers':
         return this.listWorkers();
+      case 'page.speed.set':
+        return this.speed.set(Number((params as { scale?: unknown } | null)?.scale));
+      case 'page.speed.status':
+        return this.speed.status();
       case 'page.freeze.list':
         return this.mergeWorkers('page.freeze.list', params);
       case 'page.watch.list':

@@ -78,7 +78,7 @@ cross-origin flag, canvases, `.wasm` URLs found in the HTML, and a hint. The thr
 |---|---|---|
 | `calls.* == 0`, no iframes | the extension was not in the page before the game booted | `attach` with `"reload": true` |
 | cross-origin iframe listed | the game lives in a subframe | the extension already routes into frames; if not, pass `frameId` from `list_tabs` |
-| `instances: 0`, `wasmReferences` has URLs | the game is a worker or WebGL build | check `wasmcheat_list_workers` |
+| `instances: 0`, `wasmReferences` has URLs | the game is a worker or WebGL build | check `wasmcheat_list_workers` (nested workers appear as `k1n1`) |
 
 ### 3.3 List instances
 
@@ -95,11 +95,15 @@ First pass, exact value:
 ```
 
 Unknown value: omit `value` with `mode` defaulting to `changed`, do something in the game, then narrow.
-Narrowing passes (`value` = the scan id from the previous pass):
+A narrowing pass repeats the same tool with the `scanId` the previous pass returned (plus `tabId`, the
+`instanceId` and the `type` — the server validates all four):
 
 ```json
-{ "address": "s1", "mode": "changed" }
+{ "tabId": 1310636703, "instanceId": "w1", "type": "i32", "scanId": "s1", "mode": "changed" }
 ```
+
+Optional `from` / `to` limit the byte range, which is how you avoid scanning a multi-megabyte
+zero-initialised heap.
 
 Available modes: `exact`, `not-equal`, `less`, `greater`, `less-or-equal`, `greater-or-equal`, `between`
 (with `value` + `value2`), `changed`, `unchanged`, `increased`, `decreased`, `increased-by`,
@@ -182,6 +186,7 @@ an export.
 | This address moves every level | `wasmcheat_pointer_scan` + `wasmcheat_pointer_resolve` |
 | I want the game to lie about a value | `wasmcheat_hook` |
 | The function is not exported | `wasmcheat_patch` |
+| The game runs too slowly to line up a scan | `wasmcheat_speed` (`scale: 0` freezes the clock) |
 | What did I just do? | `wasmcheat_audit` |
 
 ## 5. Traps

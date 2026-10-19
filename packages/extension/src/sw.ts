@@ -631,7 +631,16 @@ async function injectAgent(tabId: number): Promise<void> {
 }
 
 /** Audit kinds the host understands; the extension only ever picks from this list. */
-type ActionKind = 'write' | 'freeze' | 'watch' | 'scan' | 'hook' | 'patch' | 'reload' | 'bookmark';
+type ActionKind =
+  | 'write'
+  | 'freeze'
+  | 'watch'
+  | 'scan'
+  | 'hook'
+  | 'patch'
+  | 'reload'
+  | 'bookmark'
+  | 'speed';
 
 interface ActionLine {
   kind: ActionKind;
@@ -686,6 +695,14 @@ function describeAction(
           ? `write ${address ?? '?'} ${String(p?.type ?? '')} ${String(r?.before)} -> ${String(r?.after)}`
           : `write ${address ?? '?'} failed: ${failure}`,
         detail: { requested: p?.value },
+      };
+    case 'page.speed.set':
+      return {
+        kind: 'speed',
+        tabId,
+        ok,
+        summary: ok ? `speed ${String(r?.scale ?? p?.scale)}x` : `speed change failed: ${failure}`,
+        detail: { scale: p?.scale },
       };
     case 'page.bookmark.add':
       return {

@@ -768,6 +768,36 @@ test('the DevTools panel drives the tab without an agent', async () => {
   await panel.locator('#mem-read').click();
   await expect(panel.locator('#memory-out')).toContainText('987654');
 
+  // The memory viewer is a hex dump of the same memory, and panning is a read, not a re-query.
+  await panel.locator('#viewer-address').fill('w1:0x400');
+  await panel.locator('#viewer-rows').fill('2');
+  await panel.locator('#viewer-view').click();
+  const viewer = panel.locator('#viewer-out');
+  await expect(viewer).toContainText('w1:0x400');
+  await expect(viewer).toContainText('w1:0x410');
+  await expect(viewer).toContainText('|');
+  await panel.locator('#viewer-next').click();
+  await expect(viewer).toContainText('w1:0x420');
+  await panel.locator('#viewer-prev').click();
+  await expect(viewer).toContainText('w1:0x400');
+
+  // Workers and pointer chains have forms of their own; the raw console is the fallback, not the only way in.
+  await panel.locator('#workers-list').click();
+  await expect(panel.locator('#workers-out')).toContainText('worker');
+  await panel.locator('#ptr-address').fill('w1:0x408');
+  await panel.locator('#ptr-depth').fill('2');
+  await panel.locator('#ptr-max-offset').fill('256');
+  await panel.locator('#ptr-scan').click();
+  const chains = panel.locator('#ptr-out');
+  await expect(chains).toContainText(/chain\(s\), shortest first/);
+  await expect(chains).toContainText('-> w1:0x408');
+  // The same form resolves a chain, which is how a chain found after a reload gets verified.
+  const paste = /paste "([^"]+)"/.exec((await chains.textContent()) ?? '');
+  expect(paste, 'the scan prints a pasteable path').not.toBeNull();
+  await panel.locator('#ptr-path').fill(paste?.[1] ?? '');
+  await panel.locator('#ptr-resolve').click();
+  await expect(chains).toContainText('final w1:0x408');
+
   // The live log comes from the worker's port, which just carried this approval.
   await expect(panel.locator('#event-log')).toContainText('approval');
 
@@ -978,4 +1008,111 @@ test('a bookmark keeps a named address across a reload, and forgets it on reques
   const after = await call<Bookmark[]>(mcp, 'wasmcheat_bookmark', { tabId, action: 'list' });
   expect(after.isError, after.text).toBe(false);
   expect(after.data).toEqual([]);
+});
+
+test('the speed hack scales the clock a game reads, and stops it at zero', async () => {
+  // The demo ticks the wasm from the timestamp `requestAnimationFrame` hands it, which is the clock
+  // a speed hack has to intercept to work on a game whose code we never touch.
+  await game.evaluate(() => (window as unknown as { __foundry: { resume: () => void } }).__foundry.resume());
+
+  const growthOver = async (milliseconds: number): Promise<number> => {
+    const start = (await snapshot(game)).score;
+    await new Promise((resolve) => setTimeout(resolve, milliseconds));
+    return (await snapshot(game)).score - start;
+  };
+
+  const real = await call<{ scale: number; installed: boolean }>(mcp, 'wasmcheat_speed', { tabId });
+  expect(real.isError, real.text).toBe(false);
+  expect(real.data.scale).toBe(1);
+  expect(real.data.installed).toBe(true);
+
+  const baseline = await growthOver(800);
+
+  const faster = await call<{ scale: number }>(mcp, 'wasmcheat_speed', { tabId, scale: 4 });
+  expect(faster.isError, faster.text).toBe(false);
+  expect(faster.data.scale).toBe(4);
+  const spedUp = await growthOver(800);
+
+  // Four times the clock over the same wall time: the score must gain far more than the baseline.
+  expect(baseline).toBeGreaterThan(0);
+  expect(spedUp).toBeGreaterThan(baseline * 2);
+
+  // Scale 0 stops simulated time, which is the "freeze the game but keep scanning" case.
+  const stopped = await call<{ scale: number }>(mcp, 'wasmcheat_speed', { tabId, scale: 0 });
+  expect(stopped.isError, stopped.text).toBe(false);
+  const frozen = await growthOver(600);
+  expect(frozen).toBe(0);
+
+  const back = await call<{ scale: number }>(mcp, 'wasmcheat_speed', { tabId, reset: true });
+  expect(back.isError, back.text).toBe(false);
+  expect(back.data.scale).toBe(1);
+  await expect.poll(async () => growthOver(400), { timeout: 20_000 }).toBeGreaterThan(0);
+
+  // A speed change is a mutation, and it lands in the same audit log as a write.
+  const audit = await call<{ kind: string; summary: string }[]>(mcp, 'wasmcheat_audit', { tabId, limit: 50 });
+  expect(audit.isError, audit.text).toBe(false);
+  expect(audit.data.some((line) => line.kind === 'speed' && /speed 4x/.test(line.summary))).toBe(true);
+});
+
+test('wasm instantiated by a worker inside a worker is discovered and driven', async () => {
+  // Two realms below the page: the page's own `Worker` wrapper never sees this constructor, so
+  // capture depends on the worker-scope wrapper that the worker agent installs.
+  const nestedPage = await browser.context.newPage();
+  await nestedPage.goto(`${DEMO_URL}nested.html`);
+  await expect(nestedPage.locator('#status')).toContainText('wasm ready', { timeout: 30_000 });
+
+  const tabs = await call<{ tabId: number; url: string }[]>(mcp, 'wasmcheat_list_tabs');
+  const host = tabs.data.find((tab) => tab.url.endsWith('/nested.html'));
+  expect(host, tabs.text).toBeDefined();
+  const nestedTabId = host!.tabId;
+
+  const pending = call(mcp, 'wasmcheat_attach', {
+    tabId: nestedTabId,
+    reason: 'e2e: wasm inside a worker inside a worker',
+    waitSeconds: 60,
+  });
+  await approveThroughPopup(browser, nestedTabId);
+  const attached = await pending;
+  expect(attached.isError, attached.text).toBe(false);
+
+  const workers = await call<{ id: string; url: string; instances: number }[]>(mcp, 'wasmcheat_list_workers', {
+    tabId: nestedTabId,
+  });
+  expect(workers.isError, workers.text).toBe(false);
+  // The relay is the worker the page started; the game worker is the one it started, and only the
+  // nested id carries both names.
+  const nested = workers.data.find((worker) => /^k\d+n\d+$/.test(worker.id) && worker.instances > 0);
+  expect(nested, `workers: ${workers.text}`).toBeDefined();
+
+  const instances = await call<InstanceInfo[]>(mcp, 'wasmcheat_list_instances', { tabId: nestedTabId });
+  expect(instances.isError, instances.text).toBe(false);
+  const inWorker = instances.data.find((instance) => instance.host === 'worker' && instance.workerId === nested!.id);
+  expect(inWorker, instances.text).toBeDefined();
+
+  await nestedPage.click('#mine');
+  const coinsAddress = `${inWorker!.id}:0x40c`;
+  await expect.poll(async () => Number(await nestedPage.locator('#coins').textContent()), { timeout: 20_000 }).toBe(1);
+
+  const written = await call(mcp, 'wasmcheat_write', {
+    tabId: nestedTabId,
+    address: coinsAddress,
+    type: 'i32',
+    value: 4321,
+  });
+  expect(written.isError, written.text).toBe(false);
+  await expect.poll(async () => Number(await nestedPage.locator('#coins').textContent()), { timeout: 20_000 }).toBe(4321);
+
+  // The same scan/narrow loop works on a nested realm, because ids carry their realm.
+  const scan = await call<ScanSummary>(mcp, 'wasmcheat_scan', {
+    tabId: nestedTabId,
+    instanceId: inWorker!.id,
+    type: 'i32',
+    mode: 'exact',
+    value: 4321,
+  });
+  expect(scan.isError, scan.text).toBe(false);
+  expect(scan.data.matchCount).toBeGreaterThanOrEqual(1);
+
+  await call(mcp, 'wasmcheat_detach', { tabId: nestedTabId, reason: 'e2e nested worker done' });
+  await nestedPage.close();
 });

@@ -3,8 +3,8 @@
 Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`):
 
 - `npm run build` 0 errors, `npm run typecheck` 0 errors
-- `npx vitest run` **121 passed** (13 files)
-- `npx playwright test` **19 passed, 0 skipped** (17.6 s, real Chromium, real extension, no mocks)
+- `npx vitest run` **122 passed** (13 files)
+- `npx playwright test` **21 passed, 0 skipped** (21 s, real Chromium, real extension, no mocks)
 
 ## Proven end to end (real browser, real tab)
 
@@ -23,6 +23,12 @@ Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`
 - Web Workers: a worker created during page start-up is captured, listed
   (`wasmcheat_list_workers`), scanned, written to, and the write shows up in the worker's own
   published state (e2e).
+- Nested workers: a worker started from inside a worker is captured too (id `k1n1`), its wasm is
+  listed, read, written and scanned through the chain, proven by `nested.html` in the e2e suite.
+- Speed hack (`wasmcheat_speed`): scales `performance.now` / `Date.now` / `requestAnimationFrame` in
+  the page realm (0–20x, and 0 freezes the clock); e2e measures score growth at 4x against 1x, at 0,
+  and after reset.
+- Memory viewer in the DevTools panel: 16 bytes per row, pan earlier/later, ASCII gutter.
 - Cross-origin iframes: `all_frames`, per-frame relay, frame resolution by instance count, e2e
   against `framed.html` (a genuinely cross-origin `localhost` vs `127.0.0.1` embed).
 - DevTools panel (`packages/extension/dist` → DevTools → WasmCheat): every tool as a form, a raw
@@ -53,13 +59,13 @@ Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`
 
 ## Known missing (in the order worth fixing)
 
-1. **Memory viewer** — the panel shows typed reads at an address, not a scrolling hex dump with
-   follow-pointer navigation. Cetus has one; this is the largest remaining UI gap.
-2. **Speed hack** — Cetus scales `performance.now` / `Date.now` in the MAIN world. Not implemented;
-   it is a page-realm trick rather than a memory tool, so it needs its own approval story.
-3. **Worker threads spawned from a worker**, and wasm inside a nested worker: only the first hop is
-   wrapped (each worker agent installs the same wrapper, so nested workers normally work — but no
-   e2e proves it).
+1. **Hex memory viewer navigation** — the panel dumps bytes and pans by row, but it cannot follow a
+   pointer or jump to a hit from a scan list. Cetus has that; it is the largest remaining UI gap.
+2. **SharedArrayBuffer / `pthread` workers** — worker realms are reached through `postMessage`, so a
+   page that needs cross-origin isolation to use threads is not exercised yet.
+3. **Speed hack reach** — `performance.now`, `Date.now` and `requestAnimationFrame` are covered; a
+   game that reads `Date.now` inside a worker, or uses `performance.timeOrigin` arithmetic, keeps
+   the real clock.
 
 ## Operating notes
 

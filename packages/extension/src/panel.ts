@@ -27,10 +27,13 @@ import {
   type PageAgentInfo,
   type PageDiagnostics,
   type PatchEntry,
+  type PointerPath,
+  type PointerResolution,
   type ReadResult,
   type ScanHit,
   type ScanMode,
   type ScanSummary,
+  type SpeedStatus,
   type TabInfo,
   type TextEncoding,
   type TextScanResult,
@@ -38,6 +41,7 @@ import {
   type ValueType,
   type WatchEntry,
   type WatchEvent,
+  type WorkerInfo,
   type WriteResult,
   type WriteTraceStatus,
 } from '@wasmcheat/protocol';
@@ -616,6 +620,116 @@ async function readBytes(): Promise<string> {
     encoding: 'hex',
   });
   return `${formatAddress(result.address)} ${result.values.length} byte(s)\nhex ${result.hex ?? ''}`;
+}
+
+// ---------------------------------------------------------------- memory viewer
+
+const VIEWER_BYTES_PER_ROW = 16;
+let viewer: { instanceId: string; offset: number } | null = null;
+
+function twoDigitHex(byte: number): string {
+  return byte.toString(16).padStart(2, '0');
+}
+
+/**
+ * Dumps memory the way a hex editor does: address, sixteen bytes, then the printable characters.
+ * Every row reuses one `page.read` of the whole block, so panning does not fire a call per row.
+ */
+async function viewMemory(direction: 0 | -1 | 1 = 0): Promise<string> {
+  const rows = Math.min(64, Math.max(1, fieldNum('viewer-rows', 'rows')));
+  if (direction === 0 || viewer === null) {
+    const parsed = parseAddress(el<HTMLInputElement>('viewer-address').value.trim());
+    viewer = { instanceId: parsed.instanceId, offset: parsed.offset };
+  } else {
+    viewer = {
+      instanceId: viewer.instanceId,
+      offset: Math.max(0, viewer.offset + direction * rows * VIEWER_BYTES_PER_ROW),
+    };
+    el<HTMLInputElement>('viewer-address').value = formatAddress(viewer);
+  }
+  const start = viewer;
+  const result = await pageCall<ReadResult>('page.read', {
+    address: start,
+    type: 'u8',
+    length: rows * VIEWER_BYTES_PER_ROW,
+    encoding: 'hex',
+  });
+  const bytes = result.values as number[];
+  const lines: string[] = [];
+  for (let row = 0; row * VIEWER_BYTES_PER_ROW < bytes.length; row += 1) {
+    const offset = row * VIEWER_BYTES_PER_ROW;
+    const slice = bytes.slice(offset, offset + VIEWER_BYTES_PER_ROW);
+    const cells = slice.map(twoDigitHex).join(' ');
+    const ascii = slice
+      .map((byte) => (byte >= 0x20 && byte < 0x7f ? String.fromCharCode(byte) : '.'))
+      .join('');
+    lines.push(
+      `${formatAddress({ instanceId: start.instanceId, offset: start.offset + offset })}  ${cells.padEnd(47, ' ')}  |${ascii}|`,
+    );
+  }
+  return lines.join('\n') || '(nothing to show)';
+}
+
+async function listWorkers(): Promise<string> {
+  const workers = await pageCall<WorkerInfo[]>('page.listWorkers', {});
+  if (workers.length === 0) return 'no workers have instantiated wasm in this page';
+  return workers
+    .map(
+      (worker) =>
+        `${worker.id}  ${worker.type.padEnd(6)}  ${worker.instances} instance(s)  ${worker.url || '(no url)'}`,
+    )
+    .join('\n');
+}
+
+async function scanPointers(): Promise<string> {
+  const target = parseAddress(el<HTMLInputElement>('ptr-address').value.trim());
+  const maxDepth = Math.min(6, Math.max(1, fieldNum('ptr-depth', 'depth')));
+  const maxOffset = Math.max(4, fieldNum('ptr-max-offset', 'max offset'));
+  const paths = await pageCall<PointerPath[]>('page.pointer.scan', {
+    instanceId: target.instanceId,
+    offset: target.offset,
+    maxDepth,
+    maxOffset,
+  });
+  if (paths.length === 0) {
+    return `no chain reaches ${formatAddress(target)} within ${maxDepth} hop(s) and ${maxOffset} bytes per hop - raise either bound`;
+  }
+  const header = `${paths.length} chain(s), shortest first`;
+  return [header, ...paths
+    .map(
+      (path, index) =>
+        `${index + 1}. [${formatAddress(path.base)}] = ${path.baseValue} + ${path.offsets.join(' + ')} -> ${formatAddress(path.target)}   (paste "${formatAddress(path.base)} ${path.offsets.join(',')}")`,
+    ),
+  ].join('\n');
+}
+
+async function resolvePointer(): Promise<string> {
+  const raw = el<HTMLInputElement>('ptr-path').value.trim();
+  const [addressText, offsetText = ''] = raw.split(/\s+/);
+  if (!addressText) throw new BridgeError('BAD_PARAMS', 'paste a path like "w1:0x2af2730 16,8"');
+  const base = parseAddress(addressText);
+  const offsets = offsetText
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .map(Number);
+  if (offsets.length === 0 || offsets.some((value) => !Number.isInteger(value) || value < 0)) {
+    throw new BridgeError('BAD_PARAMS', 'offsets look like "16,8"');
+  }
+  const resolution = await pageCall<PointerResolution>('page.pointer.resolve', {
+    instanceId: base.instanceId,
+    base: base.offset,
+    offsets,
+  });
+  const hops = resolution.hops
+    .map((hop, index) => `${index + 1}. ${hop.address} = ${hop.value}`)
+    .join('\n');
+  return `${hops}\nfinal ${resolution.final} = ${resolution.value === null ? '(left memory)' : resolution.value}`;
+}
+
+async function applySpeed(scale: number): Promise<string> {
+  const status = await pageCall<SpeedStatus>('page.speed.set', { scale });
+  return `${status.scale}x ${status.scale === 1 ? '(real time)' : 'simulated time'}`;
 }
 
 async function writeValue(): Promise<string> {
@@ -1330,6 +1444,16 @@ function wire(): void {
   bind('mem-read-n', el('memory-out'), readMany);
   bind('mem-read-bytes', el('memory-out'), readBytes);
   bind('mem-write', el('memory-out'), writeValue);
+
+  bind('speed-apply', el('speed-out'), () => applySpeed(fieldNum('speed-value', 'scale')));
+  bind('speed-reset', el('speed-out'), () => applySpeed(1));
+
+  bind('viewer-view', el('viewer-out'), () => viewMemory(0));
+  bind('viewer-prev', el('viewer-out'), () => viewMemory(-1));
+  bind('viewer-next', el('viewer-out'), () => viewMemory(1));
+  bind('workers-list', el('workers-out'), listWorkers);
+  bind('ptr-scan', el('ptr-out'), scanPointers);
+  bind('ptr-resolve', el('ptr-out'), resolvePointer);
 
   bind('freeze-set', el('freeze-out'), freezeSet);
   bind('freeze-clear', el('freeze-out'), freezeClear);

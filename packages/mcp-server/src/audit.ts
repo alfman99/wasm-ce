@@ -16,6 +16,7 @@ export type AuditKind =
   | 'scan'
   | 'trace'
   | 'patch'
+  | 'speed'
   | 'approval'
   /** Emitted by the extension for watch add/remove. */
   | 'watch'

@@ -270,6 +270,15 @@ export interface WriteResult {
   after: number;
 }
 
+/**
+ * Answer to `page.speed.set` / `page.speed.status`. `scale` multiplies the page's perceived time:
+ * 1 is real time, 0 stops it, 3 is three times faster.
+ */
+export interface SpeedStatus {
+  scale: number;
+  installed: boolean;
+}
+
 export interface FreezeEntry {
   id: string;
   address: Address;
@@ -666,6 +675,8 @@ export const Methods = {
   pageBookmarkAdd: 'page.bookmark.add',
   pageBookmarkRemove: 'page.bookmark.remove',
   pageBookmarkClear: 'page.bookmark.clear',
+  pageSpeedSet: 'page.speed.set',
+  pageSpeedStatus: 'page.speed.status',
   pageFreezeSet: 'page.freeze.set',
   pageFreezeClear: 'page.freeze.clear',
   pageFreezeList: 'page.freeze.list',

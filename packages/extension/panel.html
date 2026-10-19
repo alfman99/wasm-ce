@@ -97,6 +97,83 @@
         <pre id="memory-out" class="out"></pre>
       </section>
 
+      <section class="card card--wide">
+        <h2>Memory viewer</h2>
+        <p class="hint">Hex and ASCII, sixteen bytes a row. The address comes from a scan, a bookmark or your own reading.</p>
+        <div class="form">
+          <label class="field field--wide">
+            <span>address</span>
+            <input id="viewer-address" type="text" placeholder="w1:0x400" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>rows</span>
+            <input id="viewer-rows" type="number" min="1" max="64" value="8" />
+          </label>
+          <button id="viewer-view" type="button" class="primary">View</button>
+          <button id="viewer-prev" type="button" class="ghost">Earlier</button>
+          <button id="viewer-next" type="button" class="ghost">Later</button>
+        </div>
+        <pre id="viewer-out" class="out out--mono"></pre>
+      </section>
+
+      <section class="card">
+        <h2>Workers</h2>
+        <p class="hint">Workers that instantiated their own wasm. Their instances are listed with the page's, namespaced by owner.</p>
+        <div class="actions">
+          <button id="workers-list" type="button">List workers</button>
+        </div>
+        <pre id="workers-out" class="out"></pre>
+      </section>
+
+      <section class="card card--wide">
+        <h2>Pointers</h2>
+        <p class="hint">
+          In wasm every pointer is an offset into the same linear memory, so a chain is a base plus offsets. Find one, then
+          resolve it again after a reload to prove it still lands.
+        </p>
+        <div class="form">
+          <label class="field field--wide">
+            <span>target address</span>
+            <input id="ptr-address" type="text" placeholder="w1:0x408" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>depth</span>
+            <input id="ptr-depth" type="number" min="1" max="6" value="3" />
+          </label>
+          <label class="field">
+            <span>max offset</span>
+            <input id="ptr-max-offset" type="number" min="4" value="1024" />
+          </label>
+        </div>
+        <div class="form">
+          <label class="field field--wide">
+            <span>path to resolve</span>
+            <input id="ptr-path" type="text" placeholder="w1:0x2af2730 · 16, 8" spellcheck="false" />
+          </label>
+          <button id="ptr-scan" type="button">Scan for chains</button>
+          <button id="ptr-resolve" type="button">Resolve</button>
+        </div>
+        <pre id="ptr-out" class="out"></pre>
+      </section>
+
+      <section class="card">
+        <h2>Speed hack</h2>
+        <p class="hint">
+          Scales the clock the page sees: 0 stops the simulation, 1 is real time, 3 runs it three times faster. The
+          page's <code>performance.now</code>, <code>Date.now</code> and frame timestamps are wrapped, so the game's own
+          code needs no changes.
+        </p>
+        <div class="form">
+          <label class="field">
+            <span>scale</span>
+            <input id="speed-value" type="number" min="0" max="20" step="0.25" value="1" />
+          </label>
+          <button id="speed-apply" type="button" class="primary">Apply</button>
+          <button id="speed-reset" type="button" class="ghost">Real time</button>
+        </div>
+        <pre id="speed-out" class="out"></pre>
+      </section>
+
       <section class="card">
         <h2>Freeze</h2>
         <div class="form">
