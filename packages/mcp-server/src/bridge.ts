@@ -23,6 +23,12 @@ export interface BridgeOptions {
   port: number;
   requestTimeoutMs?: number;
   /**
+   * How long a request waits for the extension to (re)connect before giving up. MV3 suspends the
+   * service worker after ~30s idle and it dials back in on its own, so the first call after a pause
+   * is routinely racing that reconnect; failing instantly turned a healthy setup into a scary error.
+   */
+  reconnectGraceMs?: number;
+  /**
    * Shared secret the extension must present in its `bridge.hello`. Without it any local process —
    * or any page that guesses the port — could connect and answer this server's tool calls with
    * invented data. When omitted the bridge refuses to authenticate anyone, which is only useful in
@@ -124,13 +130,22 @@ export class Bridge {
   }
 
   async request<T>(method: string, params: unknown = {}, timeoutMs?: number): Promise<T> {
+    // A socket that is open but unauthenticated is a configuration problem: waiting cannot fix it.
+    if (this.socket && this.socket.readyState === 1 && !this.authenticated.has(this.socket)) {
+      throw new BridgeError(
+        'NO_AGENT',
+        'the WasmCheat extension connected but has not presented a valid bridge token; paste the token from ~/.wasmcheat/token into the extension panel',
+      );
+    }
+    const grace = this.options.reconnectGraceMs ?? 0;
+    if ((!this.socket || this.socket.readyState !== 1) && grace > 0) {
+      await this.waitForExtension(grace).catch(() => undefined);
+    }
     const socket = this.socket;
     if (!socket || socket.readyState !== 1 || !this.authenticated.has(socket)) {
       throw new BridgeError(
         'NO_AGENT',
-        this.socket
-          ? 'the WasmCheat extension connected but has not presented a valid bridge token; paste the token from ~/.wasmcheat/token into the extension panel'
-          : 'the WasmCheat extension is not connected; load it in Chrome and keep the MCP server running',
+        'the WasmCheat extension is not connected; load it in Chrome and keep the MCP server running',
       );
     }
     const id = `r${this.nextId++}`;

@@ -8,8 +8,8 @@ afterEach(async () => {
   while (openBridges.length) await openBridges.pop()!.stop();
 });
 
-async function startBridge(token: string): Promise<Bridge> {
-  const bridge = new Bridge({ host: '127.0.0.1', port: 0, token, requestTimeoutMs: 500 });
+async function startBridge(token: string, reconnectGraceMs = 0): Promise<Bridge> {
+  const bridge = new Bridge({ host: '127.0.0.1', port: 0, token, requestTimeoutMs: 500, reconnectGraceMs });
   await bridge.start();
   openBridges.push(bridge);
   return bridge;
@@ -54,5 +54,40 @@ describe('bridge token', () => {
     await expect(bridge.waitForExtension(500)).resolves.toBeUndefined();
     expect(bridge.version).toBe('test');
     good.socket.terminate();
+  });
+});
+
+describe('reconnect while a call is in flight', () => {
+  it('waits for the extension to dial back in, then sends the request', async () => {
+    // MV3 suspends the service worker constantly; the call that arrives just before it reconnects
+    // must survive that gap instead of failing and making the setup look broken.
+    const bridge = await startBridge('right-token', 4_000);
+    const pending = bridge.request<{ ok: boolean }>('ext.ping');
+
+    await new Promise((done) => setTimeout(done, 150));
+    expect(bridge.connected).toBe(false);
+
+    const socket = new WebSocket(`ws://127.0.0.1:${bridge.port}/extension`);
+    socket.on('open', () => {
+      socket.send(
+        JSON.stringify({ v: 1, kind: 'evt', event: 'bridge.hello', data: { extension: 'test', token: 'right-token' } }),
+      );
+    });
+    socket.on('message', (raw) => {
+      const message = JSON.parse(String(raw)) as { kind: string; id: string };
+      if (message.kind !== 'req') return;
+      // Answer the way the real service worker does, so this proves the round trip, not just the wait.
+      socket.send(JSON.stringify({ v: 1, kind: 'res', id: message.id, result: { ok: true } }));
+    });
+
+    await expect(pending).resolves.toEqual({ ok: true });
+    socket.terminate();
+  });
+
+  it('still fails quickly when no extension ever arrives', async () => {
+    const bridge = await startBridge('right-token', 300);
+    const started = Date.now();
+    await expect(bridge.request('ext.ping')).rejects.toThrow(/not connected/);
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 });

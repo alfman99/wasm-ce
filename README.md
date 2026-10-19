@@ -116,6 +116,7 @@ Environment knobs:
 | `WASMCHEAT_HOST` | `127.0.0.1` | Bind address. Keep it on loopback. |
 | `WASMCHEAT_HOME` | `~/.wasmcheat` | Where `audit.jsonl` and `token` live. |
 | `WASMCHEAT_TOKEN` | read from `$WASMCHEAT_HOME/token` | Shared secret the extension must present. Minted on first run with mode `0600`. |
+| `WASMCHEAT_RECONNECT_GRACE_MS` | `8000` | How long a tool call waits for the extension to dial back in before reporting `NO_AGENT`. MV3 suspends the service worker after ~30s idle, so the first call after a pause usually arrives mid-reconnect. |
 | `WASMCHEAT_CLANG` | auto-detected | LLVM used to compile `packages/demo-app/src/game.c`. |
 
 ---

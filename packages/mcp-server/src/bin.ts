@@ -37,7 +37,9 @@ function resolveToken(): { token: string; from: 'env' | 'file'; path: string } {
 
 const { token, from, path: tokenPath } = resolveToken();
 
-const bridge = new Bridge({ host, port, requestTimeoutMs: 30_000, token });
+const reconnectGraceMs = Number(process.env.WASMCHEAT_RECONNECT_GRACE_MS ?? 8_000);
+
+const bridge = new Bridge({ host, port, requestTimeoutMs: 30_000, token, reconnectGraceMs });
 
 try {
   await bridge.start();

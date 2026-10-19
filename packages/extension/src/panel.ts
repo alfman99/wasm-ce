@@ -368,7 +368,11 @@ async function refreshStatus(): Promise<void> {
   ]);
 
   renderTabs(tabs);
-  setPill('bridge', ping.bridgeConnected ? 'bridge live' : 'bridge offline', ping.bridgeConnected ? 'live' : 'idle');
+  setPill(
+    'bridge',
+    ping.bridgeConnected ? 'bridge live' : 'bridge offline (retrying)',
+    ping.bridgeConnected ? 'live' : 'idle',
+  );
   el('versions').textContent = `extension ${ping.extension} · protocol ${ping.protocol}`;
   if (ping.bridgeRejected) setPill('bridge', 'token refused', 'bad');
   else if (!ping.tokenConfigured) setPill('bridge', 'no token saved', 'warn');
