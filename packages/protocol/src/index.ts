@@ -646,6 +646,12 @@ export const Events = {
   approvalRequested: 'approval.requested',
   approvalResolved: 'approval.resolved',
   disconnected: 'bridge.disconnected',
+  /**
+   * A page agent event (see `PageRuntime.onEvent`), relayed untouched. It carries
+   * `{ tabId, frameId, event, data }` so a caller can wait for one specific occurrence —
+   * a watchpoint hit, for instance — instead of polling a status until it changes.
+   */
+  pageEvent: 'page.event',
 } as const;
 
 /**

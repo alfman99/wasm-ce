@@ -558,7 +558,7 @@ test('detaching revokes access immediately', async () => {
 // second and leaves afterAll hanging, which looks like the approve step racing the port switch
 // rather than a scanner bug. The subframe routing it covers is also exercised by the live Brave
 // run against a YouTube Playable (see README).
-test.skip('a game inside a cross-origin iframe is found and driven', async () => {
+test('a game inside a cross-origin iframe is found and driven', async () => {
   framed = await browser.context.newPage();
   await framed.goto(`${DEMO_URL}framed.html`);
 

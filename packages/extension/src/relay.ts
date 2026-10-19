@@ -51,7 +51,16 @@ if (!(window as unknown as PageAgentGlobal)[RELAY_FLAG]) {
   window.addEventListener('message', (event: MessageEvent) => {
     if (event.source !== window) return;
     const data = event.data as
-      | { source?: string; type?: string; channelId?: string; id?: string; result?: unknown; error?: unknown }
+      | {
+          source?: string;
+          type?: string;
+          channelId?: string;
+          id?: string;
+          result?: unknown;
+          error?: unknown;
+          event?: string;
+          data?: unknown;
+        }
       | null;
     if (!data || data.source !== 'wasmcheat-page') return;
 
@@ -59,6 +68,11 @@ if (!(window as unknown as PageAgentGlobal)[RELAY_FLAG]) {
       channelId = data.channelId;
       while (channelWaiters.length > 0) channelWaiters.shift()!();
       if (data.type === 'ready') announceAttachment(data.channelId);
+      return;
+    }
+
+    if (data.type === 'event' && typeof data.event === 'string') {
+      forwardEvent(data.event, data.data);
       return;
     }
 
@@ -80,6 +94,21 @@ if (!(window as unknown as PageAgentGlobal)[RELAY_FLAG]) {
       );
     } catch {
       // The extension was reloaded underneath this page; nothing to announce to.
+    }
+  }
+
+  /**
+   * Page events are a fire-and-forget push: nothing on this side waits for an answer, and a
+   * dropped one only means a caller falls back to reading the status it asked about.
+   */
+  function forwardEvent(name: string, payload: unknown): void {
+    try {
+      chrome.runtime.sendMessage(
+        { type: 'wasmcheat.event', event: name, data: payload, url: location.href },
+        () => void chrome.runtime.lastError,
+      );
+    } catch {
+      // The extension was reloaded underneath this page; there is nobody to forward to.
     }
   }
 

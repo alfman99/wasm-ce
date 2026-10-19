@@ -53,6 +53,7 @@ export class TraceStore {
   private functionNames: Record<number, string> = {};
   private maxHits = DEFAULT_MAX_HITS;
   private armedInstanceId = 'w1';
+  private hitListener: ((hit: WriteTraceHit) => void) | null = null;
 
   constructor(
     private readonly registry: WasmRegistry,
@@ -145,6 +146,15 @@ export class TraceStore {
     return this.status();
   }
 
+  /**
+   * A hit that was just recorded, so a caller can be told about the first one instead of reading
+   * the status until `hits` is non-empty. Dropped hits are not announced: the message would only
+   * carry what `dropped` already counts.
+   */
+  onHit(listener: (hit: WriteTraceHit) => void): void {
+    this.hitListener = listener;
+  }
+
   /** The registry tells us when an instrumented instance is ready to be watched. */
   onInstrumented(tracked: TrackedInstance): void {
     if (!this.armed || !this.watch) return;
@@ -207,7 +217,7 @@ export class TraceStore {
       return;
     }
     const name = this.functionNames[funcIndex];
-    this.hitList.push({
+    const hit: WriteTraceHit = {
       at: Date.now(),
       kind: this.kind,
       funcIndex,
@@ -215,7 +225,9 @@ export class TraceStore {
       address: this.describeAddress(),
       previous,
       value,
-    });
+    };
+    this.hitList.push(hit);
+    this.hitListener?.(hit);
   }
 
   private access(): MemoryAccess {

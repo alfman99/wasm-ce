@@ -85,6 +85,27 @@ describe('TraceStore', () => {
     expect(hits[0]?.value).toBe(4242);
   });
 
+  it('announces every recorded hit to the listener, and not the ones dropped at maxHits', async () => {
+    const registry = new WasmRegistry({
+      onInstrumented: (tracked) => trace.onInstrumented(tracked),
+    });
+    registry.install();
+    const trace = makeTrace(registry);
+    const announced: number[] = [];
+    trace.onHit((hit) => announced.push(hit.value as number));
+    trace.arm({ address: 'w1:0x100', type: 'i32', maxHits: 1 });
+
+    const { instance } = await WebAssembly.instantiate(buildStoreModule(), { env: {} });
+    const exports = instance.exports as unknown as { store_at: (addr: number, value: number) => void };
+    exports.store_at(0x100, 11);
+    exports.store_at(0x100, 22);
+
+    // The second store happened and is counted, but the hit list was full, so it is not announced.
+    expect(announced).toEqual([11]);
+    expect(trace.status().dropped).toBe(1);
+    expect(trace.status().functions[0]?.hits).toBe(2);
+  });
+
   it('records a read with the function that loaded the address, and nothing when disarmed', async () => {
     const registry = new WasmRegistry({
       onInstrumented: (tracked) => trace.onInstrumented(tracked),

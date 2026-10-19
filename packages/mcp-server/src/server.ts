@@ -32,6 +32,7 @@ import {
   type WriteResult,
 } from '@wasmcheat/protocol';
 import { Bridge } from './bridge.js';
+import { waitForApproval, waitForPageEvent } from './events.js';
 import { record, tail } from './audit.js';
 
 export type ToolResult = CallToolResult;
@@ -147,28 +148,6 @@ export function createServer(bridge: Bridge): McpServer {
     },
   );
 
-  /** Wait for the human by asking again, rather than by holding a promise open. */
-  async function pollApproval(
-    tabId: number,
-    asked: { requestId: string; state: ApprovalState; tab?: { title: string; url: string } },
-    waitMs: number,
-  ): Promise<{ requestId: string; state: ApprovalState; tab?: { title: string; url: string } }> {
-    if (asked.state !== 'pending' || waitMs === 0) return asked;
-    const deadline = Date.now() + waitMs;
-    let current = asked;
-    while (Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      const status = await bridge.request<{ state: ApprovalState; requestId?: string; tab?: { title: string; url: string } }>(
-        'ext.approvalStatus',
-        { tabId },
-        10_000,
-      );
-      current = { requestId: status.requestId ?? asked.requestId, state: status.state, ...(status.tab ? { tab: status.tab } : asked.tab ? { tab: asked.tab } : {}) };
-      if (current.state !== 'pending') return current;
-    }
-    return current;
-  }
-
   server.registerTool(
     'wasmcheat_attach',
     {
@@ -195,17 +174,36 @@ export function createServer(bridge: Bridge): McpServer {
       },
     },
     async ({ tabId, reason, waitSeconds, reload, frameId }) => {
-      const waitMs = (waitSeconds ?? 60) * 1_000;
+      const timeoutMs = (waitSeconds ?? 60) * 1_000;
       try {
-        // Ask, then poll: holding one bridge request open for a human click would depend on the
-        // service worker staying alive for the whole wait, and MV3 kills idle workers. Each poll is
-        // a fresh request, so a worker restart costs one round trip and nothing else.
+        // Ask, then wait on the event. The request registers the pending prompt and returns at once
+        // (waitMs 0), so nothing on the extension side has to stay awake polling for a human click:
+        // sw.ts emits approval.resolved the moment the answer exists, and this call is already
+        // listening for it. waitSeconds is only the outer bound on how long we are willing to wait.
         const asked = await bridge.request<{ requestId: string; state: ApprovalState; tab?: { title: string; url: string } }>(
           'ext.requestApproval',
           { tabId, reason, waitMs: 0 },
           15_000,
         );
-        const approval = await pollApproval(tabId, asked, waitMs);
+        const approval: { requestId: string; state: ApprovalState; tab?: { title: string; url: string } } = {
+          requestId: asked.requestId,
+          state: asked.state,
+          tab: asked.tab,
+        };
+        if (asked.state === 'pending' && timeoutMs > 0) {
+          try {
+            approval.state = await waitForApproval(bridge, tabId, { timeoutMs });
+          } catch (error) {
+            if (!(error instanceof BridgeError) || error.code !== 'APPROVAL_TIMEOUT') throw error;
+            // No event inside the bound. The human may still have answered while the extension's
+            // service worker was suspended (a suspended worker has no socket, so the event died
+            // with it), and one status read at the deadline answers that without a poll loop.
+            const current = await bridge
+              .request<{ state: ApprovalState } | null>('ext.approvalStatus', { tabId }, 10_000)
+              .catch(() => null);
+            if (current) approval.state = current.state;
+          }
+        }
         if (approval.state !== 'granted') {
           await record({ kind: 'approval', tabId, ok: false, summary: `approval ${approval.state}`, detail: { reason } });
           return fail(
@@ -670,7 +668,7 @@ export function createServer(bridge: Bridge): McpServer {
 
   /**
    * The write breakpoint, for reads and writes alike: arm the watchpoint, reload so the module is
-   * instrumented as it loads, then poll until the page touches the address (or the wait expires).
+   * instrumented as it loads, then wait for the page to report its first access as an event.
    */
   async function findAccess(
     kind: TraceKind,
@@ -681,6 +679,15 @@ export function createServer(bridge: Bridge): McpServer {
       const target = addr(address);
       const formatted = formatAddress(target);
       const wait = (timeoutSeconds ?? 15) * 1000;
+      // The wait ends on the event the page agent emits when the instrumented module touches the
+      // address, so subscribe before arming: an access during the app's own boot would otherwise
+      // happen before the first status read could see it. The bound only stops a stuck call; a
+      // page that never touches the address is a result, so a timeout is swallowed and the status
+      // below reports it exactly as it always has.
+      const hit = waitForPageEvent(bridge, tabId, 'trace.hit', { timeoutMs: wait }).then(
+        () => undefined,
+        () => undefined,
+      );
       await bridge.request('ext.traceArm', {
         tabId,
         address: formatted,
@@ -691,12 +698,8 @@ export function createServer(bridge: Bridge): McpServer {
       if (reload !== false) {
         await bridge.request('ext.reload', { tabId }, 60_000);
       }
-      const deadline = Date.now() + wait;
-      let status = await page<WriteTraceStatus>(tabId, 'page.trace.status');
-      while (status.hits.length === 0 && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 400));
-        status = await page<WriteTraceStatus>(tabId, 'page.trace.status');
-      }
+      await hit;
+      const status = await page<WriteTraceStatus>(tabId, 'page.trace.status');
       const verb = kind === 'read' ? 'reads' : 'writes';
       const past = kind === 'read' ? 'read' : 'wrote';
       record({

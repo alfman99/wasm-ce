@@ -194,6 +194,13 @@ function main(): void {
   };
   window[GLOBAL_KEY] = agent;
 
+  // Watchpoint hits arrive while the page runs, so they are pushed to the bridge as they happen.
+  // A caller that is waiting for the first hit then needs no polling, and a caller that is not
+  // waiting loses nothing: `page.trace.status` still holds the same list.
+  runtime.onEvent((event, data) => {
+    post({ type: 'event', channelId: agent.channelId, event, data: jsonSafe(data) });
+  });
+
   window.addEventListener('message', (event: MessageEvent) => {
     if (event.source !== window) return;
     const data = event.data as

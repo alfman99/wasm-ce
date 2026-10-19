@@ -578,8 +578,20 @@ async function waitFor(check: () => boolean, timeoutMs: number): Promise<boolean
 // ---------------------------------------------------------------- popup + lifecycle
 
 chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse: (value: unknown) => void) => {
-  const msg = message as { type?: string; tabId?: number; channelId?: string; url?: string } | null;
+  const msg = message as
+    | { type?: string; tabId?: number; channelId?: string; url?: string; event?: string; data?: unknown }
+    | null;
   if (!msg?.type) return undefined;
+
+  if (msg.type === 'wasmcheat.event') {
+    // A page agent occurrence (a watchpoint hit), addressed to whoever is waiting for it on the
+    // bridge. The tab comes from the sender, so a page cannot claim to speak for another tab.
+    const tabId = sender.tab?.id;
+    if (tabId !== undefined && typeof msg.event === 'string') {
+      emit(Events.pageEvent, { tabId, frameId: sender.frameId ?? 0, event: msg.event, data: msg.data });
+    }
+    return undefined;
+  }
 
   if (msg.type === 'wasmcheat.relay-ready') {
     const tabId = sender.tab?.id;

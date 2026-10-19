@@ -9,6 +9,11 @@ lands in an audit log.
 It is a research and debugging tool for **programs you own or have explicit permission to
 modify**. See [Policy](#policy) before pointing it at anything.
 
+**If you are an agent (or driving one) and just want to use it:** read
+[docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) — the order of operations, the symptom-to-tool table and the
+traps. This file is the reference; that file is the playbook. `docs/STATUS.md` records what is proven and
+what is not.
+
 ---
 
 ## What is in the box
@@ -185,14 +190,17 @@ choice.
 
 ## The approval and audit model
 
-- Every tab is denied until you approve it. An agent calls `wasmcheat_attach`, which blocks while
-  the request is pending; the request appears in the extension popup with the agent's one-line
-  reason. Approve, and the page agent starts in that tab.
+- Every tab is denied until you approve it. An agent calls `wasmcheat_attach`, which reports the request
+  in the extension popup with the agent's one-line reason and then waits on the **approval event**, not on
+  a timer: the call returns the moment you click Approve. The same event-based rule applies to
+  `wasmcheat_find_writes` / `wasmcheat_find_reads`, which return on the first write/read event the page
+  agent reports instead of re-checking status every few hundred milliseconds.
 - The service worker refuses every `page.*` call for a tab whose stored approval is not
   `granted` (`NEED_APPROVAL`), so a buggy or malicious agent cannot read memory around the gate.
   The gate covers the memory API, not the bridge: the agent still needs a tab id.
-- Navigation clears the approval; the tab has to be re-approved after a reload. Revoking
-  (`wasmcheat_detach`, or the popup) takes effect immediately.
+- The grant is scoped to the tab **and the site**: navigating or reloading inside the same site keeps it
+  (a game that reloads itself is the normal case), leaving the site revokes it, and closing the tab
+  discards it. Revoking (`wasmcheat_detach`, or the popup) takes effect immediately.
 - Every write, freeze, hook add/remove, attach/detach and approval goes to
   `$WASMCHEAT_HOME/audit.jsonl` (append-only JSON lines, timestamped, with the tab, the address
   and the before/after value where relevant). Read it back with `wasmcheat_audit`.

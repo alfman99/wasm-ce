@@ -115,6 +115,7 @@ export class PageRuntime {
   private watchTimer: ReturnType<typeof setInterval> | null = null;
   private nextId = 1;
   private disposed = false;
+  private eventListener: ((event: string, data: unknown) => void) | null = null;
 
   /** Realm this runtime answers for, which is what instance ids get tagged with. */
   readonly realm: InstanceHost;
@@ -133,7 +134,26 @@ export class PageRuntime {
       (bytes, modes) => this.rewriteBinary(bytes, modes),
       () => this.refreshInstrumenter(),
     );
+    this.trace.onHit((hit) => this.emitEvent('trace.hit', hit));
     this.patches = new PatchStore(() => this.refreshInstrumenter());
+  }
+
+  /**
+   * Occurrences worth pushing rather than asking about, currently a watchpoint hit. The page agent
+   * forwards them to the bridge so an MCP caller can wait for the event itself; a caller that
+   * never subscribes simply loses nothing (the same hit is still in `trace.status()`).
+   */
+  onEvent(listener: (event: string, data: unknown) => void): void {
+    this.eventListener = listener;
+  }
+
+  private emitEvent(event: string, data: unknown): void {
+    try {
+      this.eventListener?.(event, data);
+    } catch {
+      // Emitting happens inside the instrumented wasm's own store path: a broken listener must
+      // not turn a traced write into a trap.
+    }
   }
 
   /**
