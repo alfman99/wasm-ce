@@ -3,6 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import {
   BridgeError,
+  type Bookmark,
   type SavedScanSummary,
   Events,
   PATCH_MODES,
@@ -566,6 +567,53 @@ export function createServer(bridge: Bridge): McpServer {
           { ...opened.summary, scanId: opened.scanId, instanceId: opened.instanceId, name },
           `narrow it with wasmcheat_scan {scanId: "${opened.scanId}", mode: "changed"}`,
         );
+      } catch (error) {
+        return fail(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'wasmcheat_bookmark',
+    {
+      title: 'Keep a named address (address list)',
+      description:
+        'Cheat Engine keeps an address list; this is that. Bookmarks are a label, an address and an optional type, ' +
+        'stored in the page\'s local storage so they outlive a reload (they are per site). Actions: list, add ' +
+        '(needs label and address; adding an existing label replaces it), remove (id or label), clear.',
+      inputSchema: {
+        tabId: z.number().int(),
+        action: z.enum(['list', 'add', 'remove', 'clear']),
+        label: z.string().min(1).max(64).optional().describe('Name a human would recognise, for example "score".'),
+        address: ADDRESS.optional().describe('Address from a scan, a read or wasmcheat_scan_results.'),
+        type: VALUE_TYPE.optional().describe('Value width to remember alongside the address.'),
+        note: z.string().max(200).optional().describe('Free-form note, for example "mirrors 0x40c".'),
+        id: z.string().optional().describe('Bookmark id (or label) for remove.'),
+      },
+    },
+    async ({ tabId, action, label, address, type, note, id }) => {
+      try {
+        if (action === 'list') {
+          const bookmarks = await page<Bookmark[]>(tabId, 'page.bookmark.list');
+          return ok(bookmarks, bookmarks.length === 0 ? 'no bookmarks yet: add one with an address you found' : undefined);
+        }
+        if (action === 'clear') {
+          const cleared = await page<{ removed: number }>(tabId, 'page.bookmark.clear');
+          record({ kind: 'bookmark', tabId, ok: true, summary: `cleared ${cleared.removed} bookmark(s)` });
+          return ok(cleared);
+        }
+        if (action === 'remove') {
+          const target = id ?? label;
+          if (!target) return fail(new BridgeError('BAD_PARAMS', 'remove needs id (or label)'));
+          const removed = await page<boolean>(tabId, 'page.bookmark.remove', { id: target });
+          record({ kind: 'bookmark', tabId, ok: true, summary: `removed bookmark ${target}` });
+          return ok({ removed, target });
+        }
+        if (!label) return fail(new BridgeError('BAD_PARAMS', 'label is required for add'));
+        if (!address) return fail(new BridgeError('BAD_PARAMS', 'address is required for add'));
+        const bookmark = await page<Bookmark>(tabId, 'page.bookmark.add', { label, address, ...(type ? { type } : {}), ...(note ? { note } : {}) });
+        record({ kind: 'bookmark', tabId, ok: true, summary: `bookmarked "${bookmark.label}" -> ${bookmark.address}` });
+        return ok(bookmark, `remembered as "${bookmark.label}"; use it any time with wasmcheat_read {address: "${bookmark.address}"}`);
       } catch (error) {
         return fail(error);
       }

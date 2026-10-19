@@ -261,6 +261,29 @@
       </section>
 
       <section class="card card--wide">
+        <h2>Bookmarks</h2>
+        <p class="hint">
+          A named address list, kept in this site's local storage: label the offset you found, use it later without
+          scanning again.
+        </p>
+        <div class="form">
+          <label class="field">
+            <span>label</span>
+            <input id="bookmark-label" type="text" placeholder="score" spellcheck="false" maxlength="64" />
+          </label>
+          <label class="field">
+            <span>address</span>
+            <input id="bookmark-address" type="text" placeholder="w1:0x408" spellcheck="false" />
+          </label>
+          <button id="bookmark-add" type="button">Add</button>
+          <button id="bookmark-list" type="button">List</button>
+          <button id="bookmark-clear" type="button" class="danger">Clear all</button>
+        </div>
+        <pre id="bookmark-out" class="out"></pre>
+        <ul id="bookmark-list-out" class="list list--hits"></ul>
+      </section>
+
+      <section class="card card--wide">
         <h2>Watchpoints</h2>
         <div class="form">
           <label class="field field--wide">

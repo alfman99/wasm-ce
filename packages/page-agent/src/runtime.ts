@@ -42,6 +42,7 @@ import {
 } from './registry.js';
 import { ScanStore, scanText } from './scanner.js';
 import { deleteSaved, listSaved, loadSaved, saveScan } from './saved-scans.js';
+import { addBookmark, clearBookmarks, listBookmarks, removeBookmark } from './bookmarks.js';
 import { HookStore, detectEvalAllowed } from './hooks.js';
 import { TraceStore } from './trace.js';
 import { PatchStore } from './patch.js';
@@ -776,6 +777,14 @@ export class PageRuntime {
         return this.savedOpen(p);
       case 'page.saved.delete':
         return deleteSaved((p as unknown as { name?: unknown })?.name);
+      case 'page.bookmark.list':
+        return listBookmarks();
+      case 'page.bookmark.add':
+        return addBookmark(p as { label: unknown; address: unknown; type?: unknown; note?: unknown });
+      case 'page.bookmark.remove':
+        return removeBookmark((p as unknown as { id?: unknown })?.id);
+      case 'page.bookmark.clear':
+        return { removed: clearBookmarks() };
       case 'page.freeze.set':
         return this.freezeSet(p);
       case 'page.freeze.clear':

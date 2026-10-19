@@ -168,6 +168,19 @@ export interface SavedScanSummary {
   memoryByteLength: number;
 }
 
+/**
+ * A named address, the way Cheat Engine's address list works: the label is the thing a human (or an
+ * agent) remembers, and the offset behind it is what the tool needs.
+ */
+export interface Bookmark {
+  id: string;
+  label: string;
+  address: string;
+  type?: ValueType;
+  note?: string;
+  createdAt: number;
+}
+
 export const SCAN_MODES: ScanMode[] = [
   'exact',
   'not-equal',
@@ -649,6 +662,10 @@ export const Methods = {
   pageSavedSave: 'page.saved.save',
   pageSavedOpen: 'page.saved.open',
   pageSavedDelete: 'page.saved.delete',
+  pageBookmarkList: 'page.bookmark.list',
+  pageBookmarkAdd: 'page.bookmark.add',
+  pageBookmarkRemove: 'page.bookmark.remove',
+  pageBookmarkClear: 'page.bookmark.clear',
   pageFreezeSet: 'page.freeze.set',
   pageFreezeClear: 'page.freeze.clear',
   pageFreezeList: 'page.freeze.list',

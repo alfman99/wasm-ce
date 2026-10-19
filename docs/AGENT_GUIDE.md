@@ -120,6 +120,10 @@ do it before every reload you cause.
 `i32` exact scan returns nothing, try `i64` and `f64` with the same number before concluding the value is
 not in linear memory.
 
+A bookmark is the lightweight version of the same idea: `wasmcheat_bookmark {action: "add", label:
+"score", address, type}` keeps one address under a name in the site's `localStorage`, so you can
+read it later (`{action: "list"}`) without a scan or a saved session.
+
 ### 3.5 Verify, then act
 
 `wasmcheat_read` before and after every write. Never trust the screen as evidence: games repaint the HUD

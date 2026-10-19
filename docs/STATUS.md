@@ -3,8 +3,8 @@
 Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`):
 
 - `npm run build` 0 errors, `npm run typecheck` 0 errors
-- `npx vitest run` **113 passed** (12 files)
-- `npx playwright test` **18 passed, 0 skipped** (17.4 s, real Chromium, real extension, no mocks)
+- `npx vitest run` **121 passed** (13 files)
+- `npx playwright test` **19 passed, 0 skipped** (17.6 s, real Chromium, real extension, no mocks)
 
 ## Proven end to end (real browser, real tab)
 
@@ -17,7 +17,9 @@ Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`
   (ascii / utf8 / hex bytes), read, write, freeze, watch.
 - Watchpoints and instrumentation: `find_writes`, `find_reads`, `wasmcheat_trace`, function-body
   patches (`wasmcheat_patch`), pointer scan/resolve.
-- Saved scan lists that survive a page reload (`wasmcheat_saved`).
+- Saved scan lists that survive a page reload (`wasmcheat_saved`), and a named address list
+  (`wasmcheat_bookmark`, per site, in `localStorage`) that survives a reload and reads back the value
+  it named.
 - Web Workers: a worker created during page start-up is captured, listed
   (`wasmcheat_list_workers`), scanned, written to, and the write shows up in the worker's own
   published state (e2e).
@@ -58,7 +60,6 @@ Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`
 3. **Worker threads spawned from a worker**, and wasm inside a nested worker: only the first hop is
    wrapped (each worker agent installs the same wrapper, so nested workers normally work — but no
    e2e proves it).
-4. **Bookmarks** — saved *scan lists* exist; a named-address bookmark list does not.
 
 ## Operating notes
 

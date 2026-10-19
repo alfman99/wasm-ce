@@ -631,7 +631,7 @@ async function injectAgent(tabId: number): Promise<void> {
 }
 
 /** Audit kinds the host understands; the extension only ever picks from this list. */
-type ActionKind = 'write' | 'freeze' | 'watch' | 'scan' | 'hook' | 'patch' | 'reload';
+type ActionKind = 'write' | 'freeze' | 'watch' | 'scan' | 'hook' | 'patch' | 'reload' | 'bookmark';
 
 interface ActionLine {
   kind: ActionKind;
@@ -687,6 +687,25 @@ function describeAction(
           : `write ${address ?? '?'} failed: ${failure}`,
         detail: { requested: p?.value },
       };
+    case 'page.bookmark.add':
+      return {
+        kind: 'bookmark',
+        tabId,
+        ok,
+        summary: ok
+          ? `bookmark "${String(r?.label ?? p?.label)}" -> ${String(r?.address ?? p?.address)}`
+          : `bookmark "${String(p?.label)}" failed: ${failure}`,
+        detail: { type: p?.type },
+      };
+    case 'page.bookmark.remove':
+      return {
+        kind: 'bookmark',
+        tabId,
+        ok,
+        summary: ok ? `bookmark ${String(p?.id)} removed` : `bookmark removal failed: ${failure}`,
+      };
+    case 'page.bookmark.clear':
+      return { kind: 'bookmark', tabId, ok, summary: ok ? `bookmarks cleared (${String(r?.removed ?? 0)})` : `bookmark clear failed: ${failure}` };
     case 'page.freeze.set':
       return {
         kind: 'freeze',

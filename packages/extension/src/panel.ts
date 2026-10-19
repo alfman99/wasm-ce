@@ -8,6 +8,7 @@
  */
 import {
   BridgeError,
+  type Bookmark,
   type SavedScanSummary,
   PATCH_MODES,
   SCAN_MODES,
@@ -830,6 +831,39 @@ async function scanDrop(): Promise<string> {
   return dropped ? `${id} dropped` : `${id} was already closed`;
 }
 
+async function bookmarkAdd(): Promise<string> {
+  const label = el<HTMLInputElement>('bookmark-label').value.trim();
+  const address = el<HTMLInputElement>('bookmark-address').value.trim();
+  const bookmark = await pageCall<Bookmark>('page.bookmark.add', { label, address });
+  await bookmarkList();
+  return `bookmarked "${bookmark.label}" -> ${bookmark.address}`;
+}
+
+async function bookmarkList(): Promise<string> {
+  const items = await pageCall<Bookmark[]>('page.bookmark.list');
+  renderList(
+    el('bookmark-list-out'),
+    items.map((bookmark) =>
+      listItem([
+        span(bookmark.label),
+        addressLink(bookmark.address),
+        span(bookmark.type ?? '', 'empty'),
+        miniButton('Forget', () => {
+          void pageCall<boolean>('page.bookmark.remove', { id: bookmark.id }).then(bookmarkList);
+        }),
+      ]),
+    ),
+    'no bookmarks yet',
+  );
+  return items.length === 0 ? 'nothing bookmarked yet' : `${items.length} bookmark(s)`;
+}
+
+async function bookmarkClear(): Promise<string> {
+  const { removed } = await pageCall<{ removed: number }>('page.bookmark.clear');
+  await bookmarkList();
+  return `cleared ${removed} bookmark(s)`;
+}
+
 async function savedList(): Promise<string> {
   const items = await pageCall<SavedScanSummary[]>('page.saved.list');
   renderList(
@@ -1315,6 +1349,9 @@ function wire(): void {
   bind('saved-list', el('saved-out'), savedList);
   bind('saved-open', el('saved-out'), savedOpen);
   bind('saved-delete', el('saved-out'), savedDelete);
+  bind('bookmark-add', el('bookmark-out'), bookmarkAdd);
+  bind('bookmark-list', el('bookmark-out'), bookmarkList);
+  bind('bookmark-clear', el('bookmark-out'), bookmarkClear);
 
   bind('trace-run', el('trace-out'), traceRun);
   bind('trace-stop', el('trace-out'), traceStop);

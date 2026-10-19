@@ -39,6 +39,14 @@ interface ScanSummary {
   sample: { address: string; value: number }[];
 }
 
+interface Bookmark {
+  id: string;
+  label: string;
+  address: string;
+  type?: string;
+  note?: string;
+}
+
 interface HookEntry {
   id: string;
   name: string;
@@ -926,4 +934,48 @@ test('wasm instantiated inside a Web Worker is discovered and driven', async () 
   expect(results.data.hits.map((hit) => hit.address)).toContain(coinsAddress);
 
   await call(mcp, 'wasmcheat_detach', { tabId: workerTabId, reason: 'e2e worker teardown' });
+});
+
+test('a bookmark keeps a named address across a reload, and forgets it on request', async () => {
+  const cleared = await call<{ removed: number }>(mcp, 'wasmcheat_bookmark', { tabId, action: 'clear' });
+  expect(cleared.isError, cleared.text).toBe(false);
+
+  const added = await call<Bookmark>(mcp, 'wasmcheat_bookmark', {
+    tabId,
+    action: 'add',
+    label: 'score',
+    address: `w1:0x408`,
+    type: 'i32',
+    note: 'mirrors 0x40c in some builds',
+  });
+  expect(added.isError, added.text).toBe(false);
+  expect(added.data.label).toBe('score');
+  expect(added.data.type).toBe('i32');
+
+  // The point of an address list: the address survives a reload, so the label is all you need.
+  const reloaded = await call(mcp, 'wasmcheat_attach', { tabId, reload: true, waitSeconds: 30 });
+  expect(reloaded.isError, reloaded.text).toBe(false);
+  await expect(game.locator('#status')).toContainText('wasm ready', { timeout: 30_000 });
+
+  const listed = await call<Bookmark[]>(mcp, 'wasmcheat_bookmark', { tabId, action: 'list' });
+  expect(listed.isError, listed.text).toBe(false);
+  const score = listed.data.find((bookmark) => bookmark.label === 'score');
+  expect(score, listed.text).toBeDefined();
+
+  // A remembered address is only useful if it still reads the thing it named.
+  const value = await call<{ values: number[] }>(mcp, 'wasmcheat_read', {
+    tabId,
+    address: score!.address,
+    type: score!.type ?? 'i32',
+  });
+  expect(value.isError, value.text).toBe(false);
+  expect(value.data.values[0]).toBe((await snapshot(game)).score);
+
+  const removed = await call<{ removed: boolean }>(mcp, 'wasmcheat_bookmark', { tabId, action: 'remove', id: score!.id });
+  expect(removed.isError, removed.text).toBe(false);
+  expect(removed.data.removed).toBe(true);
+
+  const after = await call<Bookmark[]>(mcp, 'wasmcheat_bookmark', { tabId, action: 'list' });
+  expect(after.isError, after.text).toBe(false);
+  expect(after.data).toEqual([]);
 });

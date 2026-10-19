@@ -256,6 +256,7 @@ Addresses are `"<instanceId>:<offset>"`, e.g. `w1:0x408` or `w1:1032`. `instance
 | `wasmcheat_scan_results` | Page through hits of a scan. |
 | `wasmcheat_scan_drop` | Free a scan session. |
 | `wasmcheat_saved` | `list` / `save` / `open` / `delete` named scan lists that survive a reload. |
+| `wasmcheat_bookmark` | `list` / `add` / `remove` / `clear` a named address list (label → address), kept per site. |
 | `wasmcheat_list_workers` | Web Workers, including module workers, that own their own wasm. |
 | `wasmcheat_pointer_scan` | Find pointer paths whose last offset lands on an address. |
 | `wasmcheat_pointer_resolve` | Follow a saved path and return the current address. |
@@ -513,7 +514,7 @@ that is not moving — the automated test does exactly that.
 ## Tests
 
 ```bash
-npm test           # build → vitest (113 unit) → playwright (18 end-to-end)
+npm test           # build → vitest (121 unit) → playwright (19 end-to-end)
 npm run test:unit  # page agent: memory, registry, scanner, hooks, trace, rewriter — no browser
 npm run test:e2e   # real Chromium, real extension, real MCP stdio client
 ```
@@ -541,7 +542,8 @@ serves the demo, connects a real MCP client to `dist/bin.js`, and then, in order
 16. drives the tab from the DevTools panel alone, with no agent and no popup;
 17. saves a scan list, reloads the tab and keeps narrowing the restored list;
 18. attaches to a page whose wasm lives in a Web Worker, writes to the worker's memory, scans and
-    narrows there, and sees the worker's own published state change.
+    narrows there, and sees the worker's own published state change;
+19. bookmarks the score address, reloads, reads through the remembered address and forgets it.
 
 Costs and gotchas: one browser and one bridge port, so the suite runs with a single worker and
 fails fast if the port is already taken (it picks `7399` by default so it does not collide with a
@@ -572,8 +574,8 @@ tests/e2e/                          playwright: harness.ts + demo.spec.ts
 - The page-agent runs in the MAIN world, so a hostile page can talk to (or lie to) the relay. The
   approval gate protects you from the agent, not from the site you loaded.
 - Strict-CSP pages block hook bodies; declarative fallbacks still work.
-- Not implemented yet: a scrolling hex memory viewer, a Cetus-style speed hack, and named-address
-  bookmarks (saved *scan lists* do exist). `docs/STATUS.md` keeps the current list.
+- Not implemented yet: a scrolling hex memory viewer and a Cetus-style speed hack. `docs/STATUS.md`
+  keeps the current list.
 
 ## Policy
 

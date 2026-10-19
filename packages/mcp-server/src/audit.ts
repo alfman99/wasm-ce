@@ -20,7 +20,9 @@ export type AuditKind =
   /** Emitted by the extension for watch add/remove. */
   | 'watch'
   /** A tab reloaded on purpose, so the next instantiation picks up hooks or patches. */
-  | 'reload';
+  | 'reload'
+  /** Named addresses added, removed or cleared. */
+  | 'bookmark';
 
 export interface AuditEntry {
   kind: AuditKind;
