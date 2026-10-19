@@ -536,7 +536,7 @@ that is not moving — the automated test does exactly that.
 ## Tests
 
 ```bash
-npm test           # build → vitest (122 unit) → playwright (21 end-to-end)
+npm test           # build → vitest (123 unit) → playwright (21 end-to-end)
 npm run test:unit  # page agent: memory, registry, scanner, hooks, trace, rewriter — no browser
 npm run test:e2e   # real Chromium, real extension, real MCP stdio client
 ```
