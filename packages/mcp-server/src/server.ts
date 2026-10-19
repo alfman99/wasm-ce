@@ -12,6 +12,8 @@ import {
   type ApprovalState,
   type FreezeEntry,
   type PatchEntry,
+  type PointerPath,
+  type PointerResolution,
   type HookEntry,
   type InstanceInfo,
   type PageDiagnostics,
@@ -116,6 +118,28 @@ export function createServer(bridge: Bridge): McpServer {
     },
   );
 
+  /** Wait for the human by asking again, rather than by holding a promise open. */
+  async function pollApproval(
+    tabId: number,
+    asked: { requestId: string; state: ApprovalState; tab?: { title: string; url: string } },
+    waitMs: number,
+  ): Promise<{ requestId: string; state: ApprovalState; tab?: { title: string; url: string } }> {
+    if (asked.state !== 'pending' || waitMs === 0) return asked;
+    const deadline = Date.now() + waitMs;
+    let current = asked;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const status = await bridge.request<{ state: ApprovalState; requestId?: string; tab?: { title: string; url: string } }>(
+        'ext.approvalStatus',
+        { tabId },
+        10_000,
+      );
+      current = { requestId: status.requestId ?? asked.requestId, state: status.state, ...(status.tab ? { tab: status.tab } : asked.tab ? { tab: asked.tab } : {}) };
+      if (current.state !== 'pending') return current;
+    }
+    return current;
+  }
+
   server.registerTool(
     'wasmcheat_attach',
     {
@@ -144,11 +168,15 @@ export function createServer(bridge: Bridge): McpServer {
     async ({ tabId, reason, waitSeconds, reload, frameId }) => {
       const waitMs = (waitSeconds ?? 60) * 1_000;
       try {
-        const approval = await bridge.request<{ requestId: string; state: ApprovalState; tab?: { title: string; url: string } }>(
+        // Ask, then poll: holding one bridge request open for a human click would depend on the
+        // service worker staying alive for the whole wait, and MV3 kills idle workers. Each poll is
+        // a fresh request, so a worker restart costs one round trip and nothing else.
+        const asked = await bridge.request<{ requestId: string; state: ApprovalState; tab?: { title: string; url: string } }>(
           'ext.requestApproval',
-          { tabId, reason, waitMs },
-          waitMs + 15_000,
+          { tabId, reason, waitMs: 0 },
+          15_000,
         );
+        const approval = await pollApproval(tabId, asked, waitMs);
         if (approval.state !== 'granted') {
           await record({ kind: 'approval', tabId, ok: false, summary: `approval ${approval.state}`, detail: { reason } });
           return fail(
@@ -693,6 +721,90 @@ export function createServer(bridge: Bridge): McpServer {
     }
     return list;
   }
+
+  server.registerTool(
+    'wasmcheat_pointer_scan',
+    {
+      title: 'Find pointer paths to an address',
+      description:
+        'Finds chains of pointers that reach an address: read the base, add an offset, follow that value, add another offset, ' +
+        'until you arrive. Use it when an address you found by scanning changes after a reload or after the app reallocates: ' +
+        'the address moves, the chain does not. Returns the shortest chains first; `base` is where the chain starts (a likely ' +
+        'static location), `offsets` are applied in order. In wasm every pointer is a 32-bit index into the same linear memory, ' +
+        'so the scan needs no module bases or rebasing. Verify a chain with wasmcheat_pointer_resolve before trusting it.',
+      inputSchema: {
+        tabId: z.number().int(),
+        address: ADDRESS,
+        maxDepth: z.number().int().min(1).max(6).optional(),
+        maxOffset: z.number().int().min(4).max(0x100000).optional(),
+        maxResults: z.number().int().min(1).max(100).optional(),
+      },
+    },
+    async ({ tabId, address, maxDepth, maxOffset, maxResults }) => {
+      try {
+        const target = addr(address);
+        const paths = await page<PointerPath[]>(tabId, 'page.pointer.scan', {
+          instanceId: target.instanceId,
+          offset: target.offset,
+          ...(maxDepth !== undefined ? { maxDepth } : {}),
+          ...(maxOffset !== undefined ? { maxOffset } : {}),
+          ...(maxResults !== undefined ? { maxResults } : {}),
+        });
+        record({
+          kind: 'scan',
+          tabId,
+          ok: true,
+          summary: `pointer scan for ${formatAddress(target)} -> ${paths.length} path(s)`,
+          detail: paths.slice(0, 5),
+        });
+        const chains = paths.map((path) => ({
+          base: formatAddress(path.base),
+          offsets: path.offsets,
+          depth: path.depth,
+          read: `[${formatAddress(path.base)}] + ${path.offsets.join(' + ')} -> ${formatAddress(path.target)}`,
+        }));
+        const note =
+          paths.length === 0
+            ? `no pointer chain reaches ${formatAddress(target)} within ${maxDepth ?? 3} hop(s) and ${maxOffset ?? 0x400} bytes per hop — raise maxDepth or maxOffset`
+            : `${paths.length} chain(s), shortest first; the first base is the most likely static anchor`;
+        return ok({ address: formatAddress(target), chains }, note);
+      } catch (error) {
+        return fail(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'wasmcheat_pointer_resolve',
+    {
+      title: 'Resolve a pointer path',
+      description:
+        'Walks one chain from wasmcheat_pointer_scan and reports every hop (address + value) and the value at the end. A hop whose ' +
+        'value is no longer a plausible address means the chain broke (the app reallocated, or the base moved).',
+      inputSchema: {
+        tabId: z.number().int(),
+        base: ADDRESS,
+        offsets: z.array(z.number().int().min(0)).min(1).max(6),
+      },
+    },
+    async ({ tabId, base, offsets }) => {
+      try {
+        const start = addr(base);
+        const resolution = await page<PointerResolution>(tabId, 'page.pointer.resolve', {
+          instanceId: start.instanceId,
+          base: start.offset,
+          offsets,
+        });
+        const note =
+          resolution.value === null
+            ? 'the chain left linear memory before the last offset'
+            : `${formatAddress(start)} + ${offsets.join(' + ')} reaches ${resolution.final} = ${resolution.value}`;
+        return ok(resolution, note);
+      } catch (error) {
+        return fail(error);
+      }
+    },
+  );
 
   server.registerTool(
     'wasmcheat_patch',

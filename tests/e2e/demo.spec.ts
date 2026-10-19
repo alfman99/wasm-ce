@@ -86,13 +86,24 @@ test.afterAll(async () => {
 });
 
 test('a tab is visible but unusable before the human approves it', async () => {
+  // The service worker may still be reconnecting when the suite starts, so wait for the tab
+  // instead of racing the first list.
+  await expect
+    .poll(
+      async () => {
+        const listed = await call<{ url: string }[]>(mcp, 'wasmcheat_list_tabs');
+        return listed.data.filter((entry) => entry.url.startsWith(DEMO_URL)).length;
+      },
+      { timeout: 20_000, message: 'the demo tab never appeared in list_tabs' },
+    )
+    .toBeGreaterThan(0);
   const tabs = await call<{ tabId: number; url: string; approval: string; agentAttached: boolean }[]>(
     mcp,
     'wasmcheat_list_tabs',
   );
   expect(tabs.isError, tabs.text).toBe(false);
   const tab = tabs.data.find((entry) => entry.url.startsWith(DEMO_URL));
-  expect(tab, 'the demo tab should be listed').toBeTruthy();
+  expect(tab, `the demo tab should be listed: ${JSON.stringify(tabs.data)} | ${tabs.text}`).toBeTruthy();
   tabId = tab!.tabId;
   expect(tab!.approval).not.toBe('granted');
 
@@ -357,10 +368,10 @@ test('a write watchpoint names the function that changed the score', async () =>
   expect(mine?.value).toBe(25);
   expect(result.data.writers.some((writer) => writer.name === 'mine')).toBe(true);
 
-  // The instrumented module behaves exactly like the original one.
-  // The game keeps scoring while the test runs, so only the floor is fixed.
-  expect((await snapshot(game)).score).toBeGreaterThanOrEqual(25);
-  await expect(game.locator('#score')).toHaveText('25');
+  // The instrumented module behaves exactly like the original one. The game keeps scoring while
+  // the test runs, so the score is a floor rather than an exact number.
+  const painted = Number(await game.locator('#score').textContent());
+  expect(painted).toBeGreaterThanOrEqual(25);
 });
 
 test('a read watchpoint names the function that reads the score', async () => {
@@ -428,6 +439,31 @@ test('a patched function body changes what the wasm itself returns', async () =>
   await expect(game.locator('#status')).toContainText('wasm ready', { timeout: 30_000 });
   // The original function is back: the stub value is gone from the page.
   await expect(game.locator('#score')).not.toHaveText('777');
+});
+
+test('a pointer chain found by scanning is resolved back to the score address', async () => {
+  // Park a pointer to the score in unused memory so the chain is unambiguous.
+  await call(mcp, 'wasmcheat_write', { tabId, address: 'w1:0x600', type: 'u32', value: 0x408 });
+  const scan = await call<{ chains: { base: string; offsets: number[]; read: string }[] }>(mcp, 'wasmcheat_pointer_scan', {
+    tabId,
+    address: 'w1:0x408',
+    maxDepth: 1,
+    maxOffset: 0x10,
+  });
+  expect(scan.isError, scan.text).toBe(false);
+  const chain = scan.data.chains.find((entry) => entry.base === 'w1:0x600');
+  expect(chain, `no chain from w1:0x600: ${scan.text}`).toBeTruthy();
+  expect(chain!.offsets).toEqual([0]);
+
+  const resolved = await call<{ final: string; value: number }>(mcp, 'wasmcheat_pointer_resolve', {
+    tabId,
+    base: 'w1:0x600',
+    offsets: [0],
+  });
+  expect(resolved.isError, resolved.text).toBe(false);
+  expect(resolved.data.final).toBe('w1:0x408');
+  const score = await call<{ values: number[] }>(mcp, 'wasmcheat_read', { tabId, address: 'w1:0x408', type: 'i32' });
+  expect(resolved.data.value).toBe(score.data.values[0]);
 });
 
 test('detaching revokes access immediately', async () => {

@@ -375,6 +375,45 @@ export interface PatchEntry extends PatchSpec {
   createdAt: number;
 }
 
+/**
+ * A pointer path: `read(base) + offsets[0]`, then `read(that) + offsets[1]`, and so on, reaches the
+ * target address. In wasm a pointer is a 32-bit offset into linear memory, so the whole scan is an
+ * index of the words that look like pointers, walked backwards from the address you care about.
+ */
+export interface PointerPath {
+  base: Address;
+  /** Value stored at the base, which is the first hop of the chain. */
+  baseValue: number;
+  /** Offsets applied in order; the last one lands on the target. */
+  offsets: number[];
+  depth: number;
+  target: Address;
+}
+
+export interface PointerScanOptions {
+  instanceId: string;
+  /** Offset of the address the chain must reach. */
+  offset: number;
+  /** How many pointer hops to follow, 1..6. Default 3. */
+  maxDepth?: number;
+  /** Largest byte offset tried at each hop, in multiples of 4. Default 0x400. */
+  maxOffset?: number;
+  maxResults?: number;
+}
+
+export interface PointerHop {
+  address: string;
+  value: number;
+}
+
+export interface PointerResolution {
+  hops: PointerHop[];
+  /** Address the chain ends at, formatted. */
+  final: string;
+  /** Value at the final address, or null when the chain leaves memory. */
+  value: number | null;
+}
+
 export interface PageDiagnostics extends PageAgentInfo {
   title: string;
   readyState: string;
@@ -508,6 +547,8 @@ export const Methods = {
   pageTraceStop: 'page.trace.stop',
   pageTraceStatus: 'page.trace.status',
   pageTraceHits: 'page.trace.hits',
+  pagePointerScan: 'page.pointer.scan',
+  pagePointerResolve: 'page.pointer.resolve',
   pagePatchAdd: 'page.patch.add',
   pagePatchList: 'page.patch.list',
   pagePatchRemove: 'page.patch.remove',

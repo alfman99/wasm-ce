@@ -8,6 +8,9 @@ import {
   type PageDiagnostics,
   type PageAgentInfo,
   type PatchSpec,
+  type PointerPath,
+  type PointerResolution,
+  type PointerScanOptions,
   type ReadResult,
   type ScanMode,
   type ScanOptions,
@@ -33,6 +36,7 @@ import { ScanStore, scanText } from './scanner.js';
 import { HookStore, detectEvalAllowed } from './hooks.js';
 import { TraceStore } from './trace.js';
 import { PatchStore } from './patch.js';
+import { pointerResolve, pointerScan } from './pointer.js';
 import { instrumentModule } from '@wasmcheat/wasm-instrument';
 
 const AGENT_VERSION = '0.1.0';
@@ -97,6 +101,16 @@ export class PageRuntime {
       onStore: (funcIndex) => this.trace.handleStore(funcIndex),
       onRead: (address, funcIndex) => this.trace.handleRead(address, funcIndex),
     });
+  }
+
+  private pointerScan(options: PointerScanOptions): PointerPath[] {
+    const { access } = this.access(options.instanceId);
+    return pointerScan(access, options);
+  }
+
+  private pointerResolve(params: { base: number; offsets: number[]; instanceId: string }): PointerResolution {
+    const { access } = this.access(params.instanceId);
+    return pointerResolve(access, params.instanceId, params.base, params.offsets);
   }
 
   private rewriteBinary(bytes: Uint8Array, modes: InstrumentModes): InstrumentedBinary {
@@ -469,6 +483,10 @@ export class PageRuntime {
         return this.trace.clear();
       case 'page.trace.hits':
         return this.trace.hits((p as { limit?: number }).limit);
+      case 'page.pointer.scan':
+        return this.pointerScan(p as unknown as PointerScanOptions);
+      case 'page.pointer.resolve':
+        return this.pointerResolve(p as unknown as { base: number; offsets: number[]; instanceId: string });
       case 'page.patch.add':
         return this.patches.add(p as unknown as PatchSpec);
       case 'page.patch.list':

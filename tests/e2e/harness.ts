@@ -165,7 +165,11 @@ export async function approveThroughPopup(
   const popup = await browser.context.newPage();
   await popup.goto(`chrome-extension://${browser.extensionId}/popup.html`);
   const row = popup.locator(`li.tab[data-tab-id="${tabId}"]`);
-  await row.waitFor({ state: 'visible', timeout: 20_000 });
+  try {
+    await row.waitFor({ state: 'visible', timeout: 20_000 });
+  } catch (error) {
+    throw new Error(`popup never showed tab ${tabId}: ${JSON.stringify(await popup.locator('body').innerText())}`);
+  }
   await row.getByRole('button', { name: button, exact: true }).click();
   await popup.locator(`li.tab[data-tab-id="${tabId}"][data-state="granted"]`).waitFor({ timeout: 20_000 });
   await popup.close();

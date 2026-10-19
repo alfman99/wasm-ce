@@ -28,6 +28,12 @@ const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 10_000;
 const RPC_TIMEOUT_MS = 30_000;
 const APPROVAL_POLL_MS = 400;
+/**
+ * MV3 terminates an idle service worker after 30s, and a wait on a human click is exactly that:
+ * timers do not count as activity, so a long approval wait would die mid-poll and the bridge would
+ * time out. Pinging a trivial extension API every 15s keeps the worker alive while we wait.
+ */
+const KEEPALIVE_MS = 15_000;
 
 interface ApprovalEntry {
   state: ApprovalState;
@@ -254,14 +260,21 @@ async function requestApproval(params: { tabId: number; reason?: string; waitMs?
   if (waitMs === 0) return { requestId, state: 'pending', tab: tabInfo };
 
   const deadline = Date.now() + waitMs;
-  while (Date.now() < deadline) {
-    await sleep(APPROVAL_POLL_MS);
-    const approvals = await readApprovals();
-    const current = approvals[String(params.tabId)];
-    if (!current || current.requestId !== requestId) {
-      return { requestId, state: current?.state ?? 'revoked', tab: tabInfo };
+  const keepAlive = setInterval(() => {
+    void chrome.runtime.getPlatformInfo().catch(() => undefined);
+  }, KEEPALIVE_MS);
+  try {
+    while (Date.now() < deadline) {
+      await sleep(APPROVAL_POLL_MS);
+      const approvals = await readApprovals();
+      const current = approvals[String(params.tabId)];
+      if (!current || current.requestId !== requestId) {
+        return { requestId, state: current?.state ?? 'revoked', tab: tabInfo };
+      }
+      if (current.state !== 'pending') return { requestId, state: current.state, tab: tabInfo };
     }
-    if (current.state !== 'pending') return { requestId, state: current.state, tab: tabInfo };
+  } finally {
+    clearInterval(keepAlive);
   }
   return { requestId, state: 'pending', tab: tabInfo };
 }
@@ -595,6 +608,13 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     void (async () => {
       const approvals = await readApprovals();
       const entry = approvals[String(tabId)];
+      // A reload of the same URL is our own reload (arming a watchpoint, installing a patch), and
+      // the grant the human gave still applies. Compare the URLs in storage rather than trusting
+      // the in-memory `keepApprovalOnReload` map, which a service-worker restart erases.
+      if (entry && entry.state === 'granted' && entry.tabUrl === changeInfo.url) {
+        attachedTabs.delete(tabId);
+        return;
+      }
       if (entry) {
         delete approvals[String(tabId)];
         await writeApprovals(approvals);
