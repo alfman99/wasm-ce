@@ -16,6 +16,14 @@
         audit log.
       </p>
       <ul id="tabs" class="tabs"></ul>
+      <section class="token">
+        <label class="micro" for="bridge-token">bridge token</label>
+        <div class="token__row">
+          <input id="bridge-token" type="password" placeholder="from ~/.wasmcheat/token" autocomplete="off" />
+          <button id="token-save" class="ghost" type="button">Save</button>
+        </div>
+        <span id="token-hint" class="micro"></span>
+      </section>
       <footer>
         <span id="hint">Waiting for tabs…</span>
         <button id="refresh" class="ghost" type="button">Refresh</button>

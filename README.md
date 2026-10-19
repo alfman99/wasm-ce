@@ -61,6 +61,15 @@ The extension connects to the MCP server on `ws://127.0.0.1:7331/extension` and 
 backoff if the server is not running yet. The port is baked in at build time, so to use another
 one: `WASMCHEAT_PORT=7400 npm run build` and start the server with the same value.
 
+## The bridge token
+
+The bridge is a local WebSocket, so it is authenticated: the MCP server mints a random token into
+`$WASMCHEAT_HOME/token` on first run (or takes `WASMCHEAT_TOKEN`), the extension sends it in its
+`bridge.hello`, and a connection that cannot present it is closed with `1008 bad bridge token` and
+never used for a request. Paste it once — `cat ~/.wasmcheat/token` into **Save token** in the
+DevTools panel (or the token box in the toolbar popup) — and it survives restarts. A wrong token
+shows `token refused` in the panel plus a red `!` badge; saving the right one reconnects at once.
+
 ## Point an MCP client at it
 
 The server speaks MCP over stdio, so any client works. Claude Desktop style config:
@@ -105,7 +114,8 @@ Environment knobs:
 | --- | --- | --- |
 | `WASMCHEAT_PORT` | `7331` | WebSocket port the extension dials. Must match the extension build. |
 | `WASMCHEAT_HOST` | `127.0.0.1` | Bind address. Keep it on loopback. |
-| `WASMCHEAT_HOME` | `~/.wasmcheat` | Where `audit.jsonl` is appended. |
+| `WASMCHEAT_HOME` | `~/.wasmcheat` | Where `audit.jsonl` and `token` live. |
+| `WASMCHEAT_TOKEN` | read from `$WASMCHEAT_HOME/token` | Shared secret the extension must present. Minted on first run with mode `0600`. |
 | `WASMCHEAT_CLANG` | auto-detected | LLVM used to compile `packages/demo-app/src/game.c`. |
 
 ---

@@ -154,6 +154,19 @@ async function refreshBadge(approvals?: Approvals): Promise<void> {
 
 // ---------------------------------------------------------------- bridge socket
 
+/**
+ * The bridge token lives in `chrome.storage.local` so the human pastes it once (panel or popup) and
+ * it survives a service-worker restart. The MCP server mints it into `~/.wasmcheat/token`.
+ */
+const TOKEN_KEY = 'bridgeToken';
+let bridgeRejected = false;
+
+async function bridgeToken(): Promise<string> {
+  const stored = await chrome.storage.local.get(TOKEN_KEY);
+  const value = stored[TOKEN_KEY];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 async function connect(): Promise<void> {
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
   try {
@@ -163,13 +176,17 @@ async function connect(): Promise<void> {
     return;
   }
 
-  socket.addEventListener('open', () => {
+  socket.addEventListener('open', async () => {
     reconnectDelay = RECONNECT_BASE_MS;
     send({
       v: PROTOCOL_VERSION,
       kind: 'evt',
       event: 'bridge.hello',
-      data: { extension: chrome.runtime.getManifest().version, protocol: PROTOCOL_VERSION },
+      data: {
+        extension: chrome.runtime.getManifest().version,
+        protocol: PROTOCOL_VERSION,
+        token: await bridgeToken(),
+      },
     });
   });
 
@@ -177,8 +194,21 @@ async function connect(): Promise<void> {
     void onBridgeMessage(event.data);
   });
 
-  socket.addEventListener('close', () => {
+  socket.addEventListener('close', (event) => {
     socket = null;
+    if (event.code === 1008) {
+      // The server refused the token. Retrying fast would only spam the log, so back right off and
+      // tell the panel what to do; a changed token reconnects immediately below.
+      bridgeRejected = true;
+      reconnectDelay = RECONNECT_MAX_MS;
+      const hint =
+        'the bridge refused this extension: paste the token from ~/.wasmcheat/token into the WasmCheat panel';
+      emit('bridge.unauthorized', { hint });
+      void chrome.action.setBadgeBackgroundColor({ color: '#c92a2a' });
+      void chrome.action.setBadgeText({ text: '!' });
+      scheduleReconnect();
+      return;
+    }
     scheduleReconnect();
   });
 
@@ -206,6 +236,22 @@ function emit(event: string, data: unknown): void {
 }
 
 // ---------------------------------------------------------------- panel ports
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes[TOKEN_KEY]) return;
+  // A fresh token is the human's fix for a refusal, so reconnect at once instead of waiting out the
+  // backed-off timer.
+  bridgeRejected = false;
+  reconnectDelay = RECONNECT_BASE_MS;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  void chrome.action.setBadgeText({ text: '' });
+  socket?.close();
+  socket = null;
+  void connect();
+});
 
 const PANEL_PORT_NAME = 'wasmcheat.panel';
 const AUDIT_RING_MAX = 200;
@@ -300,6 +346,8 @@ async function handleBridgeRequest(method: string, params: unknown): Promise<unk
         extension: chrome.runtime.getManifest().version,
         protocol: PROTOCOL_VERSION,
         bridgeConnected: socket?.readyState === WebSocket.OPEN,
+        bridgeRejected,
+        tokenConfigured: (await bridgeToken()).length > 0,
       };
     case 'ext.listTabs':
       return listTabs();
@@ -721,6 +769,8 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse: (v
         approvals: await readApprovals(),
         tabs: await listTabs(),
         bridgeConnected: socket?.readyState === WebSocket.OPEN,
+        bridgeRejected,
+        tokenConfigured: (await bridgeToken()).length > 0,
       });
     })();
     return true;

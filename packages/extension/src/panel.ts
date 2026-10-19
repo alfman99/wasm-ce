@@ -80,6 +80,9 @@ interface PingReply {
   extension: string;
   protocol: number;
   bridgeConnected?: boolean;
+  /** The server closed us with 1008: the token it expected is not the one stored here. */
+  bridgeRejected?: boolean;
+  tokenConfigured?: boolean;
 }
 
 /** One transport for both families: `page.*` goes through `ext.call`, `ext.*` goes direct. */
@@ -367,6 +370,8 @@ async function refreshStatus(): Promise<void> {
   renderTabs(tabs);
   setPill('bridge', ping.bridgeConnected ? 'bridge live' : 'bridge offline', ping.bridgeConnected ? 'live' : 'idle');
   el('versions').textContent = `extension ${ping.extension} · protocol ${ping.protocol}`;
+  if (ping.bridgeRejected) setPill('bridge', 'token refused', 'bad');
+  else if (!ping.tokenConfigured) setPill('bridge', 'no token saved', 'warn');
 
   const target = targetTabId === undefined ? undefined : tabs.find((tab) => tab.tabId === targetTabId);
   setDecisionButtons(target?.approval);
@@ -1144,6 +1149,11 @@ function openEvents(): void {
     const payload = message as { event?: unknown; data?: unknown } | null;
     if (!payload || typeof payload.event !== 'string') return;
     logEvent(payload.event, payload.data);
+    if (payload.event === 'bridge.unauthorized') {
+      const data = payload.data as { hint?: string } | null;
+      setPill('bridge', 'token refused', 'bad');
+      report(el('status-out'), data?.hint ?? 'the bridge refused this extension: paste the bridge token');
+    }
     if (payload.event === 'approval.resolved') {
       const data = payload.data as { tabId?: unknown; state?: unknown } | null;
       if (typeof data?.tabId === 'number' && typeof data.state === 'string') {
@@ -1224,6 +1234,15 @@ function wire(): void {
     await swCall('ext.revoke', { tabId, reason: 'revoked from the DevTools panel' });
     await refreshStatus();
     return `revoked tab ${tabId}`;
+  });
+
+  bind('token-save', statusOut, async () => {
+    const token = el<HTMLInputElement>('bridge-token').value.trim();
+    if (!token) throw new BridgeError('BAD_PARAMS', 'paste the token printed by the MCP server first');
+    // Saving is what fixes a refused bridge: the service worker watches this key and reconnects.
+    await chrome.storage.local.set({ bridgeToken: token });
+    await refreshStatus();
+    return 'token saved; reconnecting to the bridge';
   });
 
   bind('instances-refresh', el('instances-out'), refreshInstances);

@@ -22,6 +22,13 @@ export interface BridgeOptions {
   host: string;
   port: number;
   requestTimeoutMs?: number;
+  /**
+   * Shared secret the extension must present in its `bridge.hello`. Without it any local process —
+   * or any page that guesses the port — could connect and answer this server's tool calls with
+   * invented data. When omitted the bridge refuses to authenticate anyone, which is only useful in
+   * a unit test.
+   */
+  token?: string;
 }
 
 interface Pending {
@@ -39,6 +46,8 @@ export class Bridge {
   private waiters: Array<() => void> = [];
   private nextId = 1;
   private extensionVersion: string | null = null;
+  /** Sockets that have presented the token. A socket that has not is never used for requests. */
+  private readonly authenticated = new WeakSet<object>();
   readonly requestTimeoutMs: number;
 
   constructor(readonly options: BridgeOptions) {
@@ -72,7 +81,13 @@ export class Bridge {
   }
 
   get connected(): boolean {
-    return this.socket?.readyState === 1;
+    return this.socket?.readyState === 1 && this.authenticated.has(this.socket);
+  }
+
+  /** The port actually bound, so a test can ask for an ephemeral one by passing 0. */
+  get port(): number {
+    const address = this.server?.address();
+    return typeof address === 'object' && address ? address.port : this.options.port;
   }
 
   get version(): string | null {
@@ -110,10 +125,12 @@ export class Bridge {
 
   async request<T>(method: string, params: unknown = {}, timeoutMs?: number): Promise<T> {
     const socket = this.socket;
-    if (!socket || socket.readyState !== 1) {
+    if (!socket || socket.readyState !== 1 || !this.authenticated.has(socket)) {
       throw new BridgeError(
         'NO_AGENT',
-        'the WasmCheat extension is not connected; load it in Chrome and keep the MCP server running',
+        this.socket
+          ? 'the WasmCheat extension connected but has not presented a valid bridge token; paste the token from ~/.wasmcheat/token into the extension panel'
+          : 'the WasmCheat extension is not connected; load it in Chrome and keep the MCP server running',
       );
     }
     const id = `r${this.nextId++}`;
@@ -190,14 +207,41 @@ export class Bridge {
 
     if (isEvent(parsed)) {
       if (parsed.event === 'bridge.hello') {
-        const data = parsed.data as { extension?: string } | null;
+        const data = parsed.data as { extension?: string; token?: unknown } | null;
+        if (!this.checkToken(data?.token)) {
+          // Refuse the socket and say so on stderr: a wrong token is a configuration problem a human
+          // has to see, not something to retry silently.
+          process.stderr.write('[wasmcheat] rejected an extension connection: bad bridge token\n');
+          this.emit('bridge.unauthorized', { at: Date.now() });
+          try {
+            this.socket?.close(1008, 'bad bridge token');
+          } catch {
+            // already gone
+          }
+          return;
+        }
+        this.authenticated.add(this.socket as object);
         this.extensionVersion = data?.extension ?? 'unknown';
+        process.stderr.write('[wasmcheat] extension authenticated\n');
         const waiters = this.waiters;
         this.waiters = [];
         for (const waiter of waiters) waiter();
       }
       this.emit(parsed.event, parsed.data);
     }
+  }
+
+  /** Constant-time-ish comparison: length differs rarely and the values are short. */
+  private checkToken(presented: unknown): boolean {
+    const expected = this.options.token;
+    if (!expected) return false;
+    if (typeof presented !== 'string') return false;
+    if (presented.length !== expected.length) return false;
+    let diff = 0;
+    for (let index = 0; index < expected.length; index += 1) {
+      diff |= expected.charCodeAt(index) ^ presented.charCodeAt(index);
+    }
+    return diff === 0;
   }
 
   private emit(event: string, data: unknown): void {

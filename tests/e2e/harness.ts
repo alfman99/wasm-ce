@@ -19,6 +19,11 @@ export const DEMO_PORT = Number(process.env.DEMO_PORT ?? 4174);
 // suite has to use the same one and refuse to run against a server someone else started.
 // Not 7331: the human's own extension dials that port, and it would answer for its own tabs.
 export const BRIDGE_PORT = Number(process.env.WASMCHEAT_PORT ?? 7399);
+/**
+ * The bridge refuses an extension that cannot present the token, so the suite uses a known one and
+ * installs it into the unpacked extension exactly as a human would (one paste, stored locally).
+ */
+export const BRIDGE_TOKEN = process.env.WASMCHEAT_TOKEN ?? 'e2e-bridge-token-please-change';
 export const DEMO_URL = `http://127.0.0.1:${DEMO_PORT}/`;
 
 export const PATHS = {
@@ -84,6 +89,9 @@ export async function launchBrowser(): Promise<LaunchedBrowser> {
   let worker = context.serviceWorkers()[0];
   if (!worker) worker = await context.waitForEvent('serviceworker', { timeout: 20_000 });
   const extensionId = new URL(worker.url()).host;
+  await worker.evaluate(async (token: string) => {
+    await chrome.storage.local.set({ bridgeToken: token });
+  }, BRIDGE_TOKEN);
   return {
     context,
     extensionId,
@@ -104,6 +112,7 @@ export async function connectMcp(): Promise<Mcp> {
     if (typeof value === 'string') env[key] = value;
   }
   env.WASMCHEAT_PORT = String(BRIDGE_PORT);
+  env.WASMCHEAT_TOKEN = BRIDGE_TOKEN;
   env.WASMCHEAT_HOME = home;
 
   const transport = new StdioClientTransport({

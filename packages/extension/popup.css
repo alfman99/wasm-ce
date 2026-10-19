@@ -189,3 +189,25 @@ footer {
   color: var(--ink-soft);
   font-size: 12px;
 }
+
+.token {
+  margin-top: 12px;
+  border-top: 1px solid var(--line, #e6e6e6);
+  padding-top: 10px;
+}
+
+.token__row {
+  display: flex;
+  gap: 6px;
+  margin: 4px 0 2px;
+}
+
+.token__row input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--line, #e6e6e6);
+  border-radius: 4px;
+}
