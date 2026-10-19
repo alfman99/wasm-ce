@@ -235,11 +235,14 @@ chain in `nested.html`.
   discards it. Revoking (`wasmcheat_detach`, or the popup) takes effect immediately.
 - Every mutation is logged, and the extension reports it rather than each caller doing so: a
   write, freeze set/clear, watch add/remove, scan begin/narrow/drop (plus text and pointer scans),
-  hook add/enable/disable/remove, patch add/remove/clear, saved-list save/delete, bookmark
-  add/remove/clear, a speed change and every deliberate reload. That is one funnel (`callTab`), so a
-  human clicking Freeze in the DevTools panel produces the same line an agent's `wasmcheat_freeze`
-  would, with the tab, the address and, for writes, `before -> after`. Reads, `scan_results`,
-  listing calls and watch polls are not logged: they change nothing and would bury the writes.
+  hook add/enable/disable/remove, patch add/remove/clear, watchpoint arm/stop/clear, pointer scan,
+  bookmark add/remove/clear, a speed change and every deliberate reload. Text scans and scans are
+  covered too. That is one funnel (`callTab`), so a human clicking Freeze in the DevTools panel
+  produces the same line an agent's `wasmcheat_freeze` would, with the tab, the address and, for
+  writes, `before -> after`. Two things are recorded by the MCP server instead, because they are not
+  page calls: saved scan lists (`wasmcheat_saved` save / open / delete, so the name and match count
+  show up) and the attach/detach/approval trail. Reads, `scan_results`, `pointer_resolve`, listing calls and watch
+  polls are not logged: they change nothing and would bury the writes.
 - Every write, freeze, hook add/remove, attach/detach and approval goes to
   `$WASMCHEAT_HOME/audit.jsonl` (append-only JSON lines, timestamped, with the tab, the address
   and the before/after value where relevant). Read it back with `wasmcheat_audit`.
@@ -522,7 +525,7 @@ that is not moving — the automated test does exactly that.
 ## Tests
 
 ```bash
-npm test           # build → vitest (121 unit) → playwright (19 end-to-end)
+npm test           # build → vitest (122 unit) → playwright (21 end-to-end)
 npm run test:unit  # page agent: memory, registry, scanner, hooks, trace, rewriter — no browser
 npm run test:e2e   # real Chromium, real extension, real MCP stdio client
 ```
@@ -551,7 +554,11 @@ serves the demo, connects a real MCP client to `dist/bin.js`, and then, in order
 17. saves a scan list, reloads the tab and keeps narrowing the restored list;
 18. attaches to a page whose wasm lives in a Web Worker, writes to the worker's memory, scans and
     narrows there, and sees the worker's own published state change;
-19. bookmarks the score address, reloads, reads through the remembered address and forgets it.
+19. bookmarks the score address, reloads, reads through the remembered address and forgets it;
+20. measures the score clock at 1x and 4x (`wasmcheat_speed`), freezes it at 0 and resets it, and
+    asserts the change reached the audit log;
+21. opens `nested.html`, where a worker starts the game worker, and drives `k1n1-1`: list, read,
+    mine, write and scan through two worker hops.
 
 Costs and gotchas: one browser and one bridge port, so the suite runs with a single worker and
 fails fast if the port is already taken (it picks `7399` by default so it does not collide with a

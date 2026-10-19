@@ -413,14 +413,31 @@ test('every mutation is in the audit log, whoever made it', async () => {
   });
   expect(unpatched.isError, unpatched.text).toBe(false);
 
+  // Watchpoint arm/stop and pointer scans are mutations too: a human pressing the same buttons in the
+  // DevTools panel must produce the same lines an agent does.
+  const armed = await call(mcp, 'wasmcheat_trace', { tabId, action: 'arm', address: 'w1:0x408', type: 'i32' });
+  expect(armed.isError, armed.text).toBe(false);
+  const stopped = await call(mcp, 'wasmcheat_trace', { tabId, action: 'stop' });
+  expect(stopped.isError, stopped.text).toBe(false);
+  const pointers = await call(mcp, 'wasmcheat_pointer_scan', {
+    tabId,
+    address: 'w1:0x408',
+    maxDepth: 2,
+    maxOffset: 0x100,
+  });
+  expect(pointers.isError, pointers.text).toBe(false);
+
   const entries = await call<{ kind: string; summary: string; ok: boolean; tabId?: number }[]>(mcp, 'wasmcheat_audit', {
-    limit: 200,
+    limit: 300,
   });
   expect(entries.isError, entries.text).toBe(false);
   const kinds = new Set(entries.data.map((entry) => entry.kind));
-  for (const kind of ['write', 'freeze', 'hook', 'scan', 'watch', 'patch', 'attach']) {
+  for (const kind of ['write', 'freeze', 'hook', 'scan', 'watch', 'patch', 'trace', 'attach']) {
     expect([...kinds], `audit kinds: ${[...kinds].join(', ')}`).toContain(kind);
   }
+  // The two lines that used to be missing: arming a watchpoint and scanning for pointer paths.
+  expect(entries.data.some((entry) => entry.kind === 'trace' && entry.summary.includes('trace armed'))).toBe(true);
+  expect(entries.data.some((entry) => entry.summary.includes('pointer scan'))).toBe(true);
   // Attribution: every line that names a mutation also names the tab it happened on.
   const mutations = entries.data.filter((entry) => entry.kind !== 'trace' && entry.kind !== 'approval');
   expect(mutations.length, 'audit should have lines').toBeGreaterThan(0);

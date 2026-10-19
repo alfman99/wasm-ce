@@ -9,12 +9,17 @@ Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`
 ## Proven end to end (real browser, real tab)
 
 - Attach with human approval, granted per tab **and site**; every **mutation** ends up in one audit
-  funnel (attach, detach, scan begin/narrow/drop, write, freeze set/clear, watch add/remove, hook
-  add/enable/remove, patch add/remove/clear, trace arm/stop, saved-list save/delete, bookmark
-  add/remove/clear, function patch, speed change, reload), visible from MCP (`wasmcheat_audit`), the
-  DevTools panel and `$WASMCHEAT_HOME/audit.jsonl`. Reads, `scan_results`, listing calls and
-  watch polls are deliberately not logged: they change nothing, and logging them would bury the
-  writes in noise.
+  funnel. The extension reports these page methods from `callTab` (`describeAction` in
+  `packages/extension/src/sw.ts`): `page.write`, `page.freeze.set|clear`, `page.watch.add|remove`,
+  `page.scan.begin|next|drop|text`, `page.pointer.scan`, `page.hook.add|setEnabled|remove`,
+  `page.patch.add|remove|clear`, `page.trace.arm|stop|clear`, `page.bookmark.add|remove|clear`,
+  `page.speed.set`, plus `ext.reload`. Attach, detach, approvals and saved scan lists
+  (`wasmcheat_saved` save / open / delete) are recorded by the MCP server, which is the only writer
+  for them.
+  All of it is visible from MCP (`wasmcheat_audit`), the DevTools panel and
+  `$WASMCHEAT_HOME/audit.jsonl`. Reads, `scan_results`, `pointer_resolve`, listing calls and watch
+  polls are deliberately not logged: they change nothing, and logging them would bury the writes in
+  noise.
 - Scan / narrow (13 modes: exact, not-equal, less, greater, less-or-equal, greater-or-equal,
   between, changed, unchanged, increased, decreased, increased-by, decreased-by), text scan
   (ascii / utf8 / hex bytes), read, write, freeze, watch.

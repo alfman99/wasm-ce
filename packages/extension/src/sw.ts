@@ -528,8 +528,9 @@ async function traceArm(params: {
   };
   pendingTraces.set(params.tabId, options);
   persistSession();
-  const frameId = await resolveFrame(params.tabId);
-  return sendToTab(params.tabId, 'page.trace.arm', options, 8_000, frameId);
+  // Through `callTab`, so arming is gated on approval and lands in the same audit funnel as an
+  // agent's `page.trace.arm` — a human clicking "Arm & reload" must not be invisible.
+  return callTab({ tabId: params.tabId, method: 'page.trace.arm', params: options, timeoutMs: 8_000 });
 }
 
 async function ensureAgent(params: { tabId: number; reload?: boolean; frameId?: number }): Promise<PageAgentInfo> {
@@ -640,7 +641,8 @@ type ActionKind =
   | 'patch'
   | 'reload'
   | 'bookmark'
-  | 'speed';
+  | 'speed'
+  | 'trace';
 
 interface ActionLine {
   kind: ActionKind;
@@ -776,6 +778,30 @@ function describeAction(
           ? `text scan ${String(p?.encoding ?? 'ascii')} "${String(p?.text)}" -> ${String(r?.total)} match(es)`
           : `text scan failed: ${failure}`,
       };
+    case 'page.pointer.scan':
+      return {
+        kind: 'scan',
+        tabId,
+        ok,
+        summary: ok
+          ? `pointer scan for ${String(p?.instanceId)}:0x${Number(p?.offset ?? 0).toString(16)} (depth ${String(p?.maxDepth ?? 3)}) -> ${Array.isArray(r) ? r.length : 0} chain(s)`
+          : `pointer scan failed: ${failure}`,
+        detail: { maxOffset: p?.maxOffset },
+      };
+    case 'page.trace.arm':
+      return {
+        kind: 'trace',
+        tabId,
+        ok,
+        summary: ok
+          ? `trace armed on ${address ?? '?'} ${String(p?.kind ?? 'write')} ${String(p?.type ?? 'i32')}`
+          : `trace arming failed: ${failure}`,
+        detail: { installed: (r as { installed?: boolean } | null)?.installed, maxHits: p?.maxHits },
+      };
+    case 'page.trace.stop':
+      return { kind: 'trace', tabId, ok, summary: ok ? 'trace stopped' : `trace stop failed: ${failure}` };
+    case 'page.trace.clear':
+      return { kind: 'trace', tabId, ok, summary: ok ? 'trace hits cleared' : `trace clear failed: ${failure}` };
     case 'page.hook.add':
       return {
         kind: 'hook',
