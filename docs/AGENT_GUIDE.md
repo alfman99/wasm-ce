@@ -100,6 +100,13 @@ Available modes: `exact`, `not-equal`, `less`, `greater`, `less-or-equal`, `grea
 Text and byte search: `wasmcheat_scan_text` with `"encoding": "ascii" | "utf8" | "bytes"` (bytes wants
 even-length hex like `"deadbeef"`).
 
+**Save the list before anything reloads the page.** A scan lives in page memory and dies on reload — and
+you will reload, because `find_writes`, `find_reads` and function patches all need it. Once a scan is
+narrow enough to be useful, `wasmcheat_saved {action: "save", name: "score", scanId}` freezes it in the
+tab's own `sessionStorage`; after the reload, `{action: "open", name: "score"}` returns a fresh `scanId`
+(and the `instanceId` to use) that narrows like any other. Saving costs one call and saves you a scan;
+do it before every reload you cause.
+
 **Choose the right width before you choose the value.** Currencies, scores and timers in engine-built games
 (Unity, Godot, Emscripten) are frequently `i64` or `f64`, and are frequently mirrored in two places. If an
 `i32` exact scan returns nothing, try `i64` and `f64` with the same number before concluding the value is

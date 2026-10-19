@@ -8,6 +8,7 @@
  */
 import {
   BridgeError,
+  type SavedScanSummary,
   PATCH_MODES,
   SCAN_MODES,
   TRACE_KINDS,
@@ -829,6 +830,45 @@ async function scanDrop(): Promise<string> {
   return dropped ? `${id} dropped` : `${id} was already closed`;
 }
 
+async function savedList(): Promise<string> {
+  const items = await pageCall<SavedScanSummary[]>('page.saved.list');
+  renderList(
+    el('saved-list-out'),
+    items.map((item) => listItem([span(`${item.name} · ${item.matchCount} match(es) · ${item.mode} ${item.type}`)])),
+    'no saved scans in this tab',
+  );
+  return items.length === 0 ? 'nothing saved yet' : `${items.length} saved scan(s)`;
+}
+
+async function savedSave(): Promise<string> {
+  const name = requireSavedName();
+  const saved = await pageCall<SavedScanSummary>('page.saved.save', { name, scanId: requireScanId() });
+  await savedList();
+  return `saved "${saved.name}" · ${saved.matchCount} match(es)`;
+}
+
+async function savedOpen(): Promise<string> {
+  const name = requireSavedName();
+  const opened = await pageCall<{ scanId: string; summary: ScanSummary }>('page.saved.open', { name });
+  activeScanId = opened.scanId;
+  el('scan-id').textContent = `scan ${opened.scanId} · ${opened.summary.matchCount} match(es) (from "${name}")`;
+  renderList(el('scan-hits'), [], 'no sample hits');
+  return `opened "${name}" as ${opened.scanId} · narrow it with the scan form above`;
+}
+
+async function savedDelete(): Promise<string> {
+  const name = requireSavedName();
+  const deleted = await pageCall<boolean>('page.saved.delete', { name });
+  await savedList();
+  return deleted ? `deleted "${name}"` : `no saved scan named "${name}"`;
+}
+
+function requireSavedName(): string {
+  const name = el<HTMLInputElement>('saved-name').value.trim();
+  if (!name) throw new BridgeError('BAD_PARAMS', 'type a name first');
+  return name;
+}
+
 async function scanText(): Promise<string> {
   const text = el<HTMLInputElement>('text-value').value;
   if (!text) throw new BridgeError('BAD_PARAMS', 'text is empty');
@@ -1271,6 +1311,10 @@ function wire(): void {
   bind('scan-results', el('scan-out'), scanResults);
   bind('scan-drop', el('scan-out'), scanDrop);
   bind('text-scan', el('text-out'), scanText);
+  bind('saved-save', el('saved-out'), savedSave);
+  bind('saved-list', el('saved-out'), savedList);
+  bind('saved-open', el('saved-out'), savedOpen);
+  bind('saved-delete', el('saved-out'), savedDelete);
 
   bind('trace-run', el('trace-out'), traceRun);
   bind('trace-stop', el('trace-out'), traceStop);

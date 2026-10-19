@@ -242,6 +242,25 @@
       </section>
 
       <section class="card card--wide">
+        <h2>Saved scans</h2>
+        <p class="hint">
+          Saving keeps the addresses you narrowed down to, in this tab, so a reload does not throw the work away.
+        </p>
+        <div class="form">
+          <label class="field">
+            <span>name</span>
+            <input id="saved-name" type="text" placeholder="player health" spellcheck="false" maxlength="64" />
+          </label>
+          <button id="saved-save" type="button">Save current scan</button>
+          <button id="saved-list" type="button">List</button>
+          <button id="saved-open" type="button">Open</button>
+          <button id="saved-delete" type="button" class="danger">Delete</button>
+        </div>
+        <pre id="saved-out" class="out"></pre>
+        <ul id="saved-list-out" class="list list--hits"></ul>
+      </section>
+
+      <section class="card card--wide">
         <h2>Watchpoints</h2>
         <div class="form">
           <label class="field field--wide">

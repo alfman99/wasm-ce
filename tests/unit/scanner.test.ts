@@ -327,3 +327,51 @@ describe('scanText', () => {
     expect(() => scanText(access, { instanceId: INSTANCE, text: 'abc', encoding: 'bytes' })).toThrow(/even-length/);
   });
 });
+
+describe('saved scan round trip', () => {
+  const options = { instanceId: INSTANCE, type: 'i32' as const, mode: 'exact' as const, value: 4242 };
+
+  it('serialises a session and adopts it back with the same candidates', () => {
+    const first = setup();
+    first.access.write(0x100, 'i32', 4242);
+    first.access.write(0x400, 'i32', 4242);
+    const begun = first.scans.pass(first.access, options);
+    const data = first.scans.serialize(begun.scanId);
+    expect(data.count).toBe(2);
+    expect(typeof data.addresses).toBe('string');
+
+    // A reload means a new page: new memory, same instance id, and a store that has never seen
+    // this scan. Adopting must reproduce the candidate list from the stored bytes alone.
+    const second = setup();
+    second.access.write(0x100, 'i32', 4242);
+    second.access.write(0x400, 'i32', 4242);
+    const { scanId, summary } = second.scans.adopt(second.access, data);
+    expect(summary.matchCount).toBe(2);
+    expect(scanId).toMatch(/^s\d+$/);
+
+    // The adopted session narrows like any other, comparing against the values saved with it.
+    second.access.write(0x400, 'i32', 9999);
+    const narrowed = second.scans.narrow(second.access, scanId, 'changed', {});
+    expect(narrowed.matchCount).toBe(1);
+    expect(narrowed.sample[0]?.address.offset).toBe(0x400);
+    first.scans.drop(begun.scanId);
+  });
+
+  it('drops candidates that no longer fit in a smaller heap', () => {
+    const first = setup();
+    first.access.write(0x18000, 'i32', 7);
+    const begun = first.scans.pass(first.access, {
+      instanceId: INSTANCE,
+      type: 'i32',
+      mode: 'exact',
+      value: 7,
+      range: { start: 0x18000, end: 0x18004 },
+    });
+    const data = first.scans.serialize(begun.scanId);
+
+    // One page of memory instead of two: the saved address is now past the end.
+    const smaller = new MemoryAccess(new WebAssembly.Memory({ initial: 1 }));
+    const adopted = new ScanStore().adopt(smaller, data);
+    expect(adopted.summary.matchCount).toBe(0);
+  });
+});

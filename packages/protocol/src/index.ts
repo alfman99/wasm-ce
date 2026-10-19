@@ -140,6 +140,34 @@ export type ScanMode =
   | 'increased-by'
   | 'decreased-by';
 
+/**
+ * A scan session frozen into something `sessionStorage` can hold: a reload destroys the page's
+ * memory of a scan, and a user who has narrowed 40,000 candidates down to six does not want to
+ * start over. Addresses and values travel as base64 typed arrays.
+ */
+export interface SavedScanData {
+  instanceId: string;
+  type: ValueType;
+  mode: ScanMode;
+  count: number;
+  addresses: string;
+  values: string;
+  memoryByteLength: number;
+  passes: number;
+  createdAt: number;
+}
+
+/** What `page.saved.list` reports: everything but the arrays. */
+export interface SavedScanSummary {
+  name: string;
+  createdAt: number;
+  type: ValueType;
+  mode: ScanMode;
+  matchCount: number;
+  instanceId: string;
+  memoryByteLength: number;
+}
+
 export const SCAN_MODES: ScanMode[] = [
   'exact',
   'not-equal',
@@ -617,6 +645,10 @@ export const Methods = {
   pageScanNext: 'page.scan.next',
   pageScanResults: 'page.scan.results',
   pageScanDrop: 'page.scan.drop',
+  pageSavedList: 'page.saved.list',
+  pageSavedSave: 'page.saved.save',
+  pageSavedOpen: 'page.saved.open',
+  pageSavedDelete: 'page.saved.delete',
   pageFreezeSet: 'page.freeze.set',
   pageFreezeClear: 'page.freeze.clear',
   pageFreezeList: 'page.freeze.list',

@@ -239,6 +239,10 @@ Addresses are `"<instanceId>:<offset>"`, e.g. `w1:0x408` or `w1:1032`. `instance
 | `wasmcheat_scan_text` | Find a string or byte pattern (ascii / utf8 / hex bytes). |
 | `wasmcheat_scan_results` | Page through hits of a scan. |
 | `wasmcheat_scan_drop` | Free a scan session. |
+| `wasmcheat_saved` | `list` / `save` / `open` / `delete` named scan lists that survive a reload. |
+| `wasmcheat_list_workers` | Web Workers, including module workers, that own their own wasm. |
+| `wasmcheat_pointer_scan` | Find pointer paths whose last offset lands on an address. |
+| `wasmcheat_pointer_resolve` | Follow a saved path and return the current address. |
 | `wasmcheat_read` | Typed values (optionally an array) or raw bytes as hex. |
 | `wasmcheat_write` | One typed write, returns before → after, audited. |
 | `wasmcheat_freeze` | `set` / `clear` / `list` frozen addresses. |
@@ -296,7 +300,17 @@ snapshot with `changed` / `unchanged` / `increased` / `decreased` as the value m
 { "tabId": …, "instanceId": "w1", "text": "combo", "encoding": "ascii", "caseSensitive": false }
 { "tabId": …, "instanceId": "w1", "text": "deadbeef", "encoding": "bytes" }
 // → {"encoding": "ascii", "matches": 3, "sample": [{"address": "w1:0x210", "preview": "…"}]}
+// wasmcheat_saved — keep a narrowed list across a reload
+{ "tabId": …, "action": "save", "name": "player health", "scanId": "s1" }
+{ "tabId": …, "action": "list" }                       // [{ "name", "matchCount", "mode", "type", "createdAt" }]
+{ "tabId": …, "action": "open", "name": "player health" } // → { "scanId": "s2", "instanceId": "w1", … }
 ```
+
+A scan session lives in page memory, so it dies with the page — and a game that reloads, or an agent
+that reloads the tab to install a hook, is the normal case. Naming a list stores the surviving
+addresses (plus the values they held) in the page's own `sessionStorage`: it survives a reload of
+that tab, does not leak into another tab, and the re-opened list narrows exactly like a fresh scan
+(`changed`, `increased`, …). The DevTools panel has the same four actions under **Saved scans**.
 
 Parameters: `type` (i8…f64), `mode`, `value` (and `value2` for `between`), `tolerance` (floats,
 defaults to `max(|value|·1e-6, 1e-6)`), `alignment` (defaults to the type width; `1` catches

@@ -763,3 +763,84 @@ test('the DevTools panel drives the tab without an agent', async () => {
 
   await panel.close();
 });
+
+test('a saved scan survives a reload and keeps narrowing', async () => {
+  await game.evaluate(() => (window as unknown as { __foundry: { pause: () => void } }).__foundry.pause());
+  await game.click('#reset');
+  for (let i = 0; i < 4; i++) await game.click('#mine');
+  const before = await snapshot(game);
+  expect(before.score).toBe(100);
+
+  const scan = await call<ScanSummary>(mcp, 'wasmcheat_scan', {
+    tabId,
+    instanceId,
+    type: 'i32',
+    mode: 'exact',
+    value: before.score,
+  });
+  expect(scan.isError, scan.text).toBe(false);
+
+  const saved = await call<{ name: string; matchCount: number }>(mcp, 'wasmcheat_saved', {
+    tabId,
+    action: 'save',
+    name: 'score candidates',
+    scanId: scan.data.scanId,
+  });
+  expect(saved.isError, saved.text).toBe(false);
+  expect(saved.data.name).toBe('score candidates');
+  expect(saved.data.matchCount).toBe(scan.data.matchCount);
+
+  // A reload is exactly what kills an in-memory session: the list has to come back from the page's
+  // own storage, not from anything the MCP server kept.
+  const reloaded = await call(mcp, 'wasmcheat_attach', { tabId, reload: true, waitSeconds: 30 });
+  expect(reloaded.isError, reloaded.text).toBe(false);
+  await expect(game.locator('#status')).toContainText('wasm ready', { timeout: 30_000 });
+  await game.evaluate(() => (window as unknown as { __foundry: { pause: () => void } }).__foundry.pause());
+
+  const listed = await call<{ name: string; matchCount: number }[]>(mcp, 'wasmcheat_saved', { tabId, action: 'list' });
+  expect(listed.isError, listed.text).toBe(false);
+  expect(listed.data.map((item) => item.name)).toContain('score candidates');
+
+  const opened = await call<{ scanId: string; matchCount: number; instanceId: string }>(mcp, 'wasmcheat_saved', {
+    tabId,
+    action: 'open',
+    name: 'score candidates',
+  });
+  expect(opened.isError, opened.text).toBe(false);
+  expect(opened.data.matchCount).toBe(saved.data.matchCount);
+
+  // The reload rebuilt the heap, so put the demo back in the same state before narrowing.
+  await game.click('#reset');
+  for (let i = 0; i < 4; i++) await game.click('#mine');
+  expect((await snapshot(game)).score).toBe(100);
+
+  // The re-opened list must still be a working session: change the score and narrow by `changed`.
+  await game.click('#mine');
+  const after = await snapshot(game);
+  expect(after.score).toBe(125);
+  const narrowed = await call<ScanSummary>(mcp, 'wasmcheat_scan', {
+    tabId,
+    instanceId: opened.data.instanceId,
+    scanId: opened.data.scanId,
+    type: 'i32',
+    mode: 'changed',
+  });
+  expect(narrowed.isError, narrowed.text).toBe(false);
+  const hits = await call<{ hits: { address: string }[] }>(mcp, 'wasmcheat_scan_results', {
+    tabId,
+    scanId: opened.data.scanId,
+    limit: 20,
+  });
+  expect(hits.isError, hits.text).toBe(false);
+  expect(hits.data.hits.map((hit) => hit.address)).toContain('w1:0x408');
+
+  const deleted = await call<{ deleted: boolean }>(mcp, 'wasmcheat_saved', {
+    tabId,
+    action: 'delete',
+    name: 'score candidates',
+  });
+  expect(deleted.isError, deleted.text).toBe(false);
+  expect(deleted.data.deleted).toBe(true);
+  const empty = await call<{ name: string }[]>(mcp, 'wasmcheat_saved', { tabId, action: 'list' });
+  expect(empty.data.map((item) => item.name)).not.toContain('score candidates');
+});

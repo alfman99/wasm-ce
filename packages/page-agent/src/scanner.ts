@@ -4,6 +4,7 @@ import {
   type ScanMode,
   type ScanOptions,
   type ScanSummary,
+  type SavedScanData,
   type TextScanOptions,
   type TextScanResult,
   type ValueType,
@@ -253,6 +254,63 @@ export class ScanStore {
     return summarise(session, session.instanceId, mode, access);
   }
 
+  /**
+   * Freeze a session for storage. Only the live part of the arrays is copied, so a scan that once
+   * held 250,000 candidates and narrowed to six stores six.
+   */
+  serialize(scanId: string): SavedScanData {
+    const session = this.get(scanId);
+    const addresses = session.addresses.slice(0, session.count);
+    const values = session.values.slice(0, session.count);
+    return {
+      instanceId: session.instanceId,
+      type: session.type,
+      mode: session.mode,
+      count: session.count,
+      addresses: toBase64(new Uint8Array(addresses.buffer, addresses.byteOffset, addresses.byteLength)),
+      values: toBase64(new Uint8Array(values.buffer, values.byteOffset, values.byteLength)),
+      memoryByteLength: session.memoryByteLength,
+      passes: session.passes,
+      createdAt: session.createdAt,
+    };
+  }
+
+  /**
+   * Rebuild a session from a saved snapshot. After a reload the instance keeps its id (`w1`) but the
+   * heap can be a different size, so addresses that no longer fit are dropped instead of throwing on
+   * the next read, and the count that comes back is the honest one.
+   */
+  adopt(access: MemoryAccess, data: SavedScanData): { scanId: string; summary: ScanSummary } {
+    const width = VALUE_TYPE_BYTES[data.type];
+    const addresses = new Uint32Array(fromBase64(data.addresses).buffer);
+    const values = new Float64Array(fromBase64(data.values).buffer);
+    const limit = access.byteLength;
+    let count = 0;
+    for (let index = 0; index < addresses.length && index < values.length; index++) {
+      const address = addresses[index]!;
+      if (address + width > limit) continue;
+      addresses[count] = address;
+      values[count] = values[index]!;
+      count++;
+    }
+
+    const session: ScanSession = {
+      id: `s${this.nextId++}`,
+      instanceId: data.instanceId,
+      type: data.type,
+      mode: data.mode,
+      addresses,
+      values,
+      count,
+      truncated: false,
+      memoryByteLength: limit,
+      passes: data.passes,
+      createdAt: data.createdAt,
+    };
+    this.sessions.set(session.id, session);
+    return { scanId: session.id, summary: summarise(session, session.instanceId, session.mode, access) };
+  }
+
   results(scanId: string, access: MemoryAccess, offset: number, limit: number): { hits: ScanHit[]; total: number } {
     const session = this.get(scanId);
     const total = session.count;
@@ -364,3 +422,21 @@ function summarise(session: ScanSession, instanceId: string, mode: ScanMode, acc
   };
 }
 
+
+const BASE64_CHUNK = 0x8000;
+
+/** `sessionStorage` holds strings only, and spreading a whole heap-sized array would blow the stack. */
+export function toBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let at = 0; at < bytes.length; at += BASE64_CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(at, at + BASE64_CHUNK));
+  }
+  return btoa(binary);
+}
+
+export function fromBase64(text: string): Uint8Array {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}

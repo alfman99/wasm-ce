@@ -17,6 +17,8 @@ import {
   type ReadResult,
   type ScanMode,
   type ScanOptions,
+  type ScanSummary,
+  type SavedScanSummary,
   type TextScanOptions,
   type TextScanResult,
   type TraceArmOptions,
@@ -39,6 +41,7 @@ import {
   type TrackedInstance,
 } from './registry.js';
 import { ScanStore, scanText } from './scanner.js';
+import { deleteSaved, listSaved, loadSaved, saveScan } from './saved-scans.js';
 import { HookStore, detectEvalAllowed } from './hooks.js';
 import { TraceStore } from './trace.js';
 import { PatchStore } from './patch.js';
@@ -484,6 +487,23 @@ export class PageRuntime {
     return this.scans.pass(access, options);
   }
 
+  /** Freezes a narrowed session under a name so a reload does not cost the user the work. */
+  savedSave(params: { name?: unknown; scanId?: string }): SavedScanSummary {
+    const scanId = params?.scanId;
+    if (typeof scanId !== 'string') throw new BridgeError('BAD_PARAMS', 'scanId is required');
+    return saveScan(params?.name, this.scans.serialize(scanId));
+  }
+
+  /** Rebuilds a saved session; the returned scanId narrows exactly like a fresh one. */
+  savedOpen(params: { name?: unknown; instanceId?: string }): { scanId: string; instanceId: string; summary: ScanSummary } {
+    const data = loadSaved(params?.name);
+    // A reload creates a new instance object, which the registry numbers from w1 again, so the
+    // saved id is usually still right; a caller that knows better can override it.
+    const instanceId = params?.instanceId ?? data.instanceId;
+    const { access } = this.access(instanceId);
+    return { ...this.scans.adopt(access, { ...data, instanceId }), instanceId };
+  }
+
   scanText(params: TextScanOptions): TextScanResult {
     const { access } = this.access(params.instanceId);
     return scanText(access, params);
@@ -748,6 +768,14 @@ export class PageRuntime {
         return this.scanResults(p);
       case 'page.scan.drop':
         return this.scanDrop(p);
+      case 'page.saved.list':
+        return listSaved();
+      case 'page.saved.save':
+        return this.savedSave(p);
+      case 'page.saved.open':
+        return this.savedOpen(p);
+      case 'page.saved.delete':
+        return deleteSaved((p as unknown as { name?: unknown })?.name);
       case 'page.freeze.set':
         return this.freezeSet(p);
       case 'page.freeze.clear':

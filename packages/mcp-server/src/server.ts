@@ -3,6 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import {
   BridgeError,
+  type SavedScanSummary,
   Events,
   PATCH_MODES,
   TRACE_KINDS,
@@ -516,6 +517,55 @@ export function createServer(bridge: Bridge): McpServer {
     async ({ tabId, scanId }) => {
       try {
         return ok({ dropped: await page<boolean>(tabId, 'page.scan.drop', { scanId }) });
+      } catch (error) {
+        return fail(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'wasmcheat_saved',
+    {
+      title: 'Save, list, re-open and delete scan lists',
+      description:
+        'A scan session dies with the page, and narrowing 40,000 candidates down to six is the slow part of ' +
+        'the job. Saving keeps the surviving addresses under a name in the page, so after a reload you re-open ' +
+        'the list and keep narrowing instead of starting over. Actions: list, save (needs scanId and name), ' +
+        'open (needs name; returns a new scanId), delete (needs name).',
+      inputSchema: {
+        tabId: z.number().int(),
+        action: z.enum(['list', 'save', 'open', 'delete']),
+        name: z.string().min(1).max(64).optional(),
+        scanId: z.string().optional().describe('Session to save (action save).'),
+        instanceId: z.string().optional().describe('Instance to attach an opened list to (default: the saved one).'),
+      },
+    },
+    async ({ tabId, action, name, scanId, instanceId }) => {
+      try {
+        if (action === 'list') return ok(await page<SavedScanSummary[]>(tabId, 'page.saved.list'));
+        if (action === 'delete') {
+          if (!name) return fail(new BridgeError('BAD_PARAMS', 'name is required for delete'));
+          const deleted = await page<boolean>(tabId, 'page.saved.delete', { name });
+          record({ kind: 'scan', tabId, ok: true, summary: `deleted saved scan "${name}"` });
+          return ok({ deleted, name });
+        }
+        if (action === 'save') {
+          if (!name) return fail(new BridgeError('BAD_PARAMS', 'name is required for save'));
+          if (!scanId) return fail(new BridgeError('BAD_PARAMS', 'scanId is required for save'));
+          const saved = await page<SavedScanSummary>(tabId, 'page.saved.save', { name, scanId });
+          record({ kind: 'scan', tabId, ok: true, summary: `saved scan "${saved.name}" (${saved.matchCount} match(es))` });
+          return ok(saved, `saved ${saved.matchCount} address(es) as "${saved.name}"; it survives a reload of this tab`);
+        }
+        if (!name) return fail(new BridgeError('BAD_PARAMS', 'name is required for open'));
+        const opened = await page<{ scanId: string; instanceId: string; summary: ScanSummary }>(tabId, 'page.saved.open', {
+          name,
+          ...(instanceId ? { instanceId } : {}),
+        });
+        record({ kind: 'scan', tabId, ok: true, summary: `re-opened saved scan "${name}" (${opened.summary.matchCount} match(es))` });
+        return ok(
+          { ...opened.summary, scanId: opened.scanId, instanceId: opened.instanceId, name },
+          `narrow it with wasmcheat_scan {scanId: "${opened.scanId}", mode: "changed"}`,
+        );
       } catch (error) {
         return fail(error);
       }
