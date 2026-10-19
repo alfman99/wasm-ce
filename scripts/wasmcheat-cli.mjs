@@ -51,7 +51,10 @@ const client = new Client({ name: 'wasmcheat-cli', version: '0.0.0' });
 await client.connect(transport);
 
 const start = Date.now();
-let result = await client.callTool({ name: tool, arguments: args });
+let result = await client.callTool({ name: tool, arguments: args }, undefined, {
+    // The SDK client gives up after 60 s by default, while an approval wait can last minutes.
+    timeout: Number(process.env.WASMCHEAT_RPC_TIMEOUT ?? 900_000),
+  });
 
 // The bridge needs a moment to see the extension after this process opened the port.
 while (
@@ -60,7 +63,7 @@ while (
   Date.now() - start < WAIT_MS
 ) {
   await new Promise((resolve) => setTimeout(resolve, 500));
-  result = await client.callTool({ name: tool, arguments: args });
+  result = await client.callTool({ name: tool, arguments: args }, undefined, { timeout: 900_000 });
 }
 
 const body = text(result);

@@ -69,6 +69,9 @@ test.beforeAll(async () => {
   await assertPortFree(BRIDGE_PORT);
   demo = await startDemoServer();
   browser = await launchBrowser();
+  // The extension defaults to 7331; this run uses its own port so the human's browser cannot join.
+  const worker = browser.context.serviceWorkers()[0] ?? (await browser.context.waitForEvent('serviceworker'));
+  await worker.evaluate((port) => chrome.storage.local.set({ wasmcheatPort: port }), BRIDGE_PORT);
   mcp = await connectMcp();
   await waitForBridge(mcp);
 

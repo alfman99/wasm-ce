@@ -17,7 +17,8 @@ export const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 export const DEMO_PORT = Number(process.env.DEMO_PORT ?? 4174);
 // The extension dials a port baked in at build time (WASMCHEAT_PORT, default 7331), so the
 // suite has to use the same one and refuse to run against a server someone else started.
-export const BRIDGE_PORT = Number(process.env.WASMCHEAT_PORT ?? 7331);
+// Not 7331: the human's own extension dials that port, and it would answer for its own tabs.
+export const BRIDGE_PORT = Number(process.env.WASMCHEAT_PORT ?? 7399);
 export const DEMO_URL = `http://127.0.0.1:${DEMO_PORT}/`;
 
 export const PATHS = {

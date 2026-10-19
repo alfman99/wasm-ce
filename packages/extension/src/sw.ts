@@ -23,7 +23,19 @@ import {
 // without a settings UI: rebuild the extension with the same port the server listens on.
 declare const __BRIDGE_PORT__: number;
 const BRIDGE_PORT: number = typeof __BRIDGE_PORT__ === 'number' ? __BRIDGE_PORT__ : 7331;
-const BRIDGE_URL = `ws://127.0.0.1:${BRIDGE_PORT}/extension`;
+const DEFAULT_BRIDGE_PORT = 7331;
+
+/**
+ * The port lives in storage so a test run (or a second server) can point the extension elsewhere
+ * without a rebuild: two extensions dialling one port cross-talk, and an e2e suite that shares 7331
+ * with the human's browser ends up reading the human's tabs.
+ */
+async function bridgeUrl(): Promise<string> {
+  const stored = await chrome.storage.local.get('wasmcheatPort');
+  const configured = Number(stored.wasmcheatPort ?? BRIDGE_PORT ?? DEFAULT_BRIDGE_PORT);
+  const port = Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_BRIDGE_PORT;
+  return `ws://127.0.0.1:${port}/extension`;
+}
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 10_000;
 const RPC_TIMEOUT_MS = 30_000;
@@ -93,10 +105,10 @@ async function refreshBadge(approvals?: Approvals): Promise<void> {
 
 // ---------------------------------------------------------------- bridge socket
 
-function connect(): void {
+async function connect(): Promise<void> {
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
   try {
-    socket = new WebSocket(BRIDGE_URL);
+    socket = new WebSocket(await bridgeUrl());
   } catch {
     scheduleReconnect();
     return;
@@ -582,6 +594,16 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse: (v
   return undefined;
 });
 
+/** Two URLs on the same origin count as the same site; a missing URL is never a match. */
+function sameSite(before: string | undefined, after: string | undefined): boolean {
+  if (!before || !after) return false;
+  try {
+    return new URL(before).origin === new URL(after).origin;
+  } catch {
+    return before === after;
+  }
+}
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   attachedTabs.delete(tabId);
   tabFrames.delete(tabId);
@@ -603,15 +625,14 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     attachedTabs.delete(tabId);
     tabFrames.delete(tabId);
     activeFrame.delete(tabId);
-    // Our own reload of the same page: the grant the human already gave still applies.
-    if (kept && kept.state === 'granted' && kept.tabUrl === changeInfo.url) return;
+    // A grant is scoped to the tab and the site, not to one URL: games navigate (a level select, a
+    // hash route, a reload we caused ourselves) and re-prompting for every step would train the
+    // human to approve without reading. Leaving the site still revokes.
+    if (kept && kept.state === 'granted' && sameSite(kept.tabUrl, changeInfo.url)) return;
     void (async () => {
       const approvals = await readApprovals();
       const entry = approvals[String(tabId)];
-      // A reload of the same URL is our own reload (arming a watchpoint, installing a patch), and
-      // the grant the human gave still applies. Compare the URLs in storage rather than trusting
-      // the in-memory `keepApprovalOnReload` map, which a service-worker restart erases.
-      if (entry && entry.state === 'granted' && entry.tabUrl === changeInfo.url) {
+      if (entry && entry.state === 'granted' && sameSite(entry.tabUrl, changeInfo.url)) {
         attachedTabs.delete(tabId);
         return;
       }
@@ -634,5 +655,5 @@ chrome.runtime.onInstalled.addListener(() => {
 connect();
 chrome.alarms?.create?.('wasmcheat-bridge-keepalive', { periodInMinutes: 0.5 });
 chrome.alarms?.onAlarm?.addListener?.((alarm) => {
-  if (alarm.name === 'wasmcheat-bridge-keepalive') connect();
+  if (alarm.name === 'wasmcheat-bridge-keepalive') void connect();
 });
