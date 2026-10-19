@@ -3,14 +3,15 @@ import {
   formatAddress,
   parseAddress,
   type TraceArmOptions,
+  type TraceKind,
   type ValueType,
   type WriteTraceHit,
   type WriteTraceStatus,
 } from '@wasmcheat/protocol';
 import { MemoryAccess } from './memory.js';
-import type { InstrumentedBinary, TrackedInstance, WasmRegistry } from './registry.js';
+import type { InstrumentModes, InstrumentedBinary, TrackedInstance, WasmRegistry } from './registry.js';
 
-export type BinaryRewriter = (bytes: Uint8Array) => InstrumentedBinary | null;
+export type BinaryRewriter = (bytes: Uint8Array, modes: InstrumentModes) => InstrumentedBinary | null;
 
 const DEFAULT_MAX_HITS = 50;
 
@@ -26,12 +27,13 @@ const DEFAULT_MAX_HITS = 50;
 const STORAGE_KEY = 'wasmcheat.trace';
 
 /**
- * Write watchpoints.
+ * Read and write watchpoints.
  *
- * WebAssembly reports nothing when a store executes, so there is no way to ask a live instance
- * "who wrote here?". The answer has to be built into the module: every store gains a guarded
- * call back into this class, which diffs the watched address and, when it moved, records the
- * function index that the call site passed in.
+ * WebAssembly reports nothing when a store or a load executes, so there is no way to ask a live
+ * instance "who touched this address?". The answer has to be built into the module: every store
+ * gains a guarded call back into this class, and every load gains a guarded identity call that
+ * hands us the address it is about to read. Both carry the index of the function they were
+ * compiled into, which is what makes the attribution exact.
  *
  * The consequence is honest and unavoidable: a watchpoint can only be installed on a module
  * that has not been compiled yet, so arming takes effect at the next instantiation (the tools
@@ -44,6 +46,9 @@ export class TraceStore {
   private installed = false;
   private note: string | undefined;
   private watch: { offset: number; type: ValueType; last: number } | null = null;
+  private kind: TraceKind = 'write';
+  /** Hits per function, counted even after `maxHits` stops the list from growing. */
+  private readonly counts = new Map<number, number>();
   private current: TrackedInstance | null = null;
   private functionNames: Record<number, string> = {};
   private maxHits = DEFAULT_MAX_HITS;
@@ -60,7 +65,13 @@ export class TraceStore {
       installed: this.installed,
       hits: this.hitList.slice(),
       dropped: this.dropped,
-      ...(this.watch ? { address: this.describeAddress(), type: this.watch.type } : {}),
+      functions: [...this.counts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([funcIndex, hits]) => {
+          const name = this.functionNames[funcIndex];
+          return { funcIndex, hits, ...(name ? { name } : {}) };
+        }),
+      ...(this.watch ? { address: this.describeAddress(), type: this.watch.type, kind: this.kind } : {}),
       ...(this.current ? { instanceId: this.current.id } : {}),
       ...(this.note ? { note: this.note } : {}),
     };
@@ -69,6 +80,7 @@ export class TraceStore {
   arm(options: TraceArmOptions): WriteTraceStatus {
     const address = parseAddress(options.address);
     const type = options.type ?? 'i32';
+    const kind: TraceKind = options.kind ?? 'write';
     // Re-arming the same watchpoint (a reload re-arms it, and the extension may ask again)
     // must not wipe the hits the page already produced.
     if (
@@ -76,7 +88,8 @@ export class TraceStore {
       this.installed &&
       this.watch &&
       this.watch.offset === address.offset &&
-      this.watch.type === type
+      this.watch.type === type &&
+      this.kind === kind
     ) {
       return this.status();
     }
@@ -87,12 +100,17 @@ export class TraceStore {
     this.installed = false;
     this.note = undefined;
     this.maxHits = Math.max(1, options.maxHits ?? DEFAULT_MAX_HITS);
+    this.kind = kind;
+    this.counts.clear();
     this.watch = { offset: address.offset, type, last: 0 };
     this.armedInstanceId = address.instanceId;
     this.current = null;
+    const modes: InstrumentModes = { reads: kind === 'read', writes: kind === 'write' };
     this.registry.setInstrumenter({
-      rewrite: (bytes) => this.rewrite(bytes),
-      onStore: (funcIndex) => this.onStore(funcIndex),
+      modes,
+      rewrite: (bytes, requested) => this.rewrite(bytes, requested),
+      onStore: (funcIndex) => this.record(funcIndex),
+      onRead: (address, funcIndex) => this.onRead(address, funcIndex),
     });
 
     // An instance compiled before arming can never report stores: say so once, plainly.
@@ -111,6 +129,7 @@ export class TraceStore {
     this.installed = false;
     this.watch = null;
     this.current = null;
+    this.counts.clear();
     this.registry.setInstrumenter(null);
     return this.status();
   }
@@ -150,13 +169,25 @@ export class TraceStore {
     this.watch.last = access.read(this.watch.offset, this.watch.type);
   }
 
-  private onStore(funcIndex: number): void {
+  /**
+   * A load of `address` about to happen. Every load in the module reports here, so the watched
+   * address is the only thing worth doing work for.
+   */
+  private onRead(address: number, funcIndex: number): void {
+    if (!this.watch || address !== this.watch.offset) return;
+    this.record(funcIndex);
+  }
+
+  private record(funcIndex: number): void {
     if (!this.armed || !this.watch || !this.current) return;
     const access = this.access();
     const value = access.read(this.watch.offset, this.watch.type);
-    if (value === this.watch.last) return;
+    // A store that writes the same value still ran, but reporting it as a write would be noise
+    // for the "changed" question this answers; reads carry no such ambiguity.
+    if (this.kind === 'write' && value === this.watch.last) return;
     const previous = this.watch.last;
     this.watch.last = value;
+    this.counts.set(funcIndex, (this.counts.get(funcIndex) ?? 0) + 1);
     if (this.hitList.length >= this.maxHits) {
       this.dropped += 1;
       return;
@@ -164,6 +195,7 @@ export class TraceStore {
     const name = this.functionNames[funcIndex];
     this.hitList.push({
       at: Date.now(),
+      kind: this.kind,
       funcIndex,
       ...(name ? { funcName: name } : {}),
       address: this.describeAddress(),

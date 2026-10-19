@@ -1,41 +1,57 @@
 /**
- * Wasm binary rewriting for write watchpoints.
+ * Wasm binary rewriting for memory watchpoints.
  *
- * A running WebAssembly instance gives no way to observe a memory write: the engine executes
- * `i32.store` without telling anyone. The only way to answer "which function wrote this
- * address?" is to change the module before it is compiled — append a guarded callback after
- * every store instruction — which is what this package does.
+ * A running WebAssembly instance gives no way to observe a memory access: the engine executes
+ * `i32.load` and `i32.store` without telling anyone. The only way to answer "which function
+ * touched this address?" is to change the module before it is compiled — append a guarded
+ * callback after every store, and put a guarded probe call before every load.
  *
- * The appended sequence is straight-line code:
+ * Writes are the easy direction, because a store leaves the operand stack empty. Straight-line
+ * code can simply follow it:
  *
  *     global.get <flags>     ; arming flag, 0 until the host calls __wc_arm(1)
  *     if                     ; empty block type
  *       i32.const <function> ; the function this call site belongs to
- *       call <on_store>      ; the single host import
+ *       call <on_store>      ; host import
  *     end
  *
- * A store leaves the operand stack empty, so this can be appended without touching locals or
- * the stack — which is why the rewriter is far simpler than one that has to prepend checks.
- * While the flag is 0 the cost is one `global.get` and one not-taken branch per store, and no
- * JavaScript ever runs.
+ * A load is not empty — `[addr] -> LOAD -> [value]` — so the rewriter calls a generated probe
+ * immediately before it and lets the load run untouched afterwards:
  *
- * Adding the `on_store` import moves every defined function up one slot in the function index
- * space, so the rewriter repairs every place a function index is encoded: function exports,
- * `call`, `ref.func`, the start section and element segments. The index reported at runtime is
- * therefore an index of the *instrumented* module; a host turns it into a name by reading that
- * module's export section.
+ *     call <probe>           ; (i32) -> (i32), reports the address and returns it unchanged
+ *     i32.load <align> <off> ; the original instruction, immediates re-emitted as they were
+ *
+ * The address is already on the stack when the probe runs, and the probe is stack-neutral, so
+ * the load sees exactly the stack it expects. That is why this rewriter needs no stack
+ * analysis at all: the load is never moved, only preceded. One probe exists per reading
+ * function, with that function's index baked in as a constant.
+ *
+ * While the flag is 0 the cost is one `global.get`/branch per store and one call per load, and
+ * no JavaScript ever runs.
+ *
+ * Adding the callback imports moves every defined function up in the function index space, by
+ * as many slots as imports were added, so the rewriter repairs every place a function index is
+ * encoded: function exports, `call`, `ref.func`, the start section and element segments. The
+ * index reported at runtime is therefore an index of the *instrumented* module; a host turns it
+ * into a name by reading that module's export section.
  */
 
 import { BridgeError } from '@wasmcheat/protocol';
 
-/** Name the instrumented module imports its callback from. */
+/** Name the instrumented module imports its callbacks from. */
 const CALLBACK_MODULE = '__wasmcheat';
 
-/** Field the instrumented module imports its callback as. */
+/** Field the instrumented module imports its store callback as. */
 const CALLBACK_FIELD = 'on_store';
 
-/** Export the host calls to arm and disarm the callback. */
+/** Field the instrumented module imports its load callback as. */
+const READ_FIELD = 'on_read';
+
+/** Export the host calls to arm and disarm the callbacks. */
 const ARM_EXPORT = '__wc_arm';
+
+/** `i32` value type, the only type the callbacks and the probes deal in. */
+const I32 = 0x7f;
 
 const HEADER = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
@@ -79,67 +95,163 @@ export interface InstrumentedModule {
   /** Rewritten module, ready for `new WebAssembly.Module` or `WebAssembly.instantiate`. */
   bytes: Uint8Array<ArrayBuffer>;
   importModule: '__wasmcheat';
+  /**
+   * Store callback field. Always reported, so callers written before reads existed keep working;
+   * the module only imports it while `writes` is on.
+   */
   importField: 'on_store';
   armExport: '__wc_arm';
   /** Injected call sites: every store instruction plus the bulk-memory writes. */
   storeCount: number;
+  /** Load instructions that were wrapped by a probe call. */
+  readCount: number;
+  /** Probe functions appended, one per defined function that reads memory. */
+  probeCount: number;
   /** Defined functions in the input module, i.e. how many code bodies were rewritten. */
   functionCount: number;
 }
 
+/** Which memory accesses to instrument. Both directions default to on. */
+export interface InstrumentOptions {
+  /** Wrap loads with a probe call. `false` leaves every load byte-for-byte untouched. */
+  reads?: boolean;
+  /** Append the guarded callback after every write. `false` leaves writes untouched. */
+  writes?: boolean;
+}
+
 /**
- * Rewrites `bytes` so every memory write reports the instrumented module's function index to
- * the `__wasmcheat.on_store` import while `__wc_arm(1)` is in effect.
+ * Rewrites `bytes` so every memory access reports the instrumented module's function index to
+ * the `__wasmcheat.on_store` / `__wasmcheat.on_read` imports while `__wc_arm(1)` is in effect.
  *
  * Throws `BridgeError` with code `UNSUPPORTED`, naming the opcode or section, when the module
  * uses something this rewriter cannot decode; the input bytes are never partially rewritten.
  */
-export function instrumentModule(bytes: Uint8Array): InstrumentedModule {
+export function instrumentModule(bytes: Uint8Array, options: InstrumentOptions = {}): InstrumentedModule {
+  const reads = options.reads ?? true;
+  const writes = options.writes ?? true;
   const sections = parseSections(bytes);
   const layout = inspectModule(sections);
 
-  const callbackTypeIndex = layout.typeCount;
-  const callbackImportIndex = layout.importedFunctionCount;
-  const flagsGlobalIndex = layout.globalCount;
-  const armFunctionIndex = layout.importedFunctionCount + 1 + layout.functionCount;
+  const importedFunctionCount = layout.importedFunctionCount;
+  // The callback imports are appended after the existing imports, so they take the first slots
+  // the defined functions used to occupy. Every index shift uses this count, never a literal 1.
+  const addedImports = (writes ? 1 : 0) + (reads ? 1 : 0);
+  const shiftFunctionIndex = (index: number): number =>
+    index >= importedFunctionCount ? index + addedImports : index;
+  /** Index the defined function at `definedFunctionIndex` occupies once instrumented. */
+  const definedFunctionSlot = (definedFunctionIndex: number): number =>
+    importedFunctionCount + addedImports + definedFunctionIndex;
 
-  // The callback import is appended after the existing imports, so it takes the first slot the
-  // defined functions used to occupy: every defined function index grows by one.
+  // Appended type entries, in the order the callbacks and then the probe need them.
+  const appendedTypes: FunctionType[] = [];
+  const appendType = (params: number[], results: number[]): number => {
+    const index = layout.types.length + appendedTypes.length;
+    appendedTypes.push({ params: Uint8Array.from(params), results: Uint8Array.from(results) });
+    return index;
+  };
+  const existingProbeType = layout.types.findIndex(
+    (type) =>
+      type.params.length === 1 && type.params[0] === I32 && type.results.length === 1 && type.results[0] === I32,
+  );
+
+  const storeCallbackTypeIndex = writes ? appendType([I32], []) : null;
+  const readCallbackTypeIndex = reads ? appendType([I32, I32], []) : null;
+  // `__wc_arm` takes and answers an i32 exactly like a probe, so both share one type entry.
+  const probeTypeIndex = existingProbeType === -1 ? appendType([I32], [I32]) : existingProbeType;
+
+  const storeCallbackIndex = writes ? importedFunctionCount : null;
+  const readCallbackIndex = reads ? importedFunctionCount + (writes ? 1 : 0) : null;
+  const flagsGlobalIndex = layout.globalCount;
+  const armFunctionIndex = definedFunctionSlot(layout.functionCount);
+
+  const storeInjectionFor = (definedFunctionIndex: number): Uint8Array<ArrayBuffer> | null => {
+    if (storeCallbackIndex === null) return null;
+    return new Writer()
+      .u8(0x23)
+      .u32(flagsGlobalIndex) // global.get <flags>
+      .u8(0x04)
+      .u8(0x40) // if, no result
+      .u8(0x41)
+      .s32(definedFunctionSlot(definedFunctionIndex)) // i32.const <function>
+      .u8(0x10)
+      .u32(storeCallbackIndex) // call <on_store>
+      .u8(0x0b) // end
+      .toBytes();
+  };
+
+  const probes = ((): RewriteContext['probes'] => {
+    if (readCallbackIndex === null) return null;
+    const callbackIndex = readCallbackIndex;
+    return {
+      // `__wc_arm` sits between the original functions and the probes.
+      firstIndex: armFunctionIndex + 1,
+      bodyFor: (definedFunctionIndex, offset) => {
+        const body = new Writer()
+          .u32(0) // no local declarations
+          .u8(0x23)
+          .u32(flagsGlobalIndex) // global.get <flags>
+          .u8(0x04)
+          .u8(0x40) // if, no result
+          .u8(0x20)
+          .u8(0x00) // local.get 0: the address the load is about to use
+        if (offset !== 0) {
+          // The load's own offset immediate is part of the effective address; add it here so the
+          // host is told the address that is actually touched, not the base operand.
+          body.u8(0x41).s32(offset).u8(0x6a); // i32.const <offset>; i32.add
+        }
+        return body
+          .u8(0x41)
+          .s32(definedFunctionSlot(definedFunctionIndex)) // i32.const <function>
+          .u8(0x10)
+          .u32(callbackIndex) // call <on_read>
+          .u8(0x0b) // end
+          .u8(0x20)
+          .u8(0x00) // local.get 0: hand the address back to the load
+          .u8(0x0b) // end
+          .toBytes();
+      },
+    };
+  })();
+
   const context: RewriteContext = {
-    shiftFunctionIndex: (index) => (index >= layout.importedFunctionCount ? index + 1 : index),
-    injectionFor: (definedFunctionIndex) =>
-      new Writer()
-        .u8(0x23)
-        .u32(flagsGlobalIndex) // global.get <flags>
-        .u8(0x04)
-        .u8(0x40) // if, no result
-        .u8(0x41)
-        .s32(layout.importedFunctionCount + 1 + definedFunctionIndex) // i32.const <function>
-        .u8(0x10)
-        .u32(callbackImportIndex) // call <on_store>
-        .u8(0x0b) // end
-        .toBytes(),
+    shiftFunctionIndex,
+    storeInjectionFor,
+    probes,
     armBody: new Writer()
       .u32(0) // no local declarations
       .u8(0x20)
       .u8(0x00) // local.get 0
       .u8(0x24)
       .u32(flagsGlobalIndex) // global.set <flags>
+      .u8(0x20)
+      .u8(0x00) // local.get 0: the (i32)->(i32) type wants the flags back
       .u8(0x0b)
       .toBytes(),
   };
 
-  let storeCount = 0;
+  const callbackImports: CallbackImport[] = [];
+  if (storeCallbackTypeIndex !== null) {
+    callbackImports.push({ field: CALLBACK_FIELD, typeIndex: storeCallbackTypeIndex });
+  }
+  if (readCallbackTypeIndex !== null) {
+    callbackImports.push({ field: READ_FIELD, typeIndex: readCallbackTypeIndex });
+  }
+
+  // The code section is rewritten first: how many probes the bodies needed decides how many
+  // function entries the function section has to declare, and that section comes earlier.
+  const rewrittenCode = rewriteCodeSection(requireSection(sections, 10).payload, context);
+
   for (const section of sections) {
     switch (section.id) {
       case 1:
-        section.payload = appendCallbackType(section.payload);
+        section.payload = appendTypes(section.payload, appendedTypes);
         break;
       case 2:
-        section.payload = appendCallbackImport(section.payload, callbackTypeIndex);
+        if (callbackImports.length > 0) section.payload = appendImports(section.payload, callbackImports);
         break;
       case 3:
-        section.payload = appendArmFunction(section.payload, callbackTypeIndex);
+        // `__wc_arm` and every probe are `(i32)->(i32)`, so they all share one type index.
+        section.payload = appendGeneratedFunctions(section.payload, probeTypeIndex, 1 + rewrittenCode.probeCount);
         break;
       case 6:
         section.payload = appendFlagsGlobal(section.payload, context);
@@ -153,20 +265,17 @@ export function instrumentModule(bytes: Uint8Array): InstrumentedModule {
       case 9:
         section.payload = shiftElementFunctions(section.payload, context);
         break;
-      case 10: {
-        const rewritten = rewriteCodeSection(section.payload, context);
-        section.payload = rewritten.payload;
-        storeCount += rewritten.storeCount;
+      case 10:
+        section.payload = rewrittenCode.payload;
         break;
-      }
       default:
         // Table, memory, data count, data and custom sections carry no function indices.
         break;
     }
   }
 
-  if (!sections.some((section) => section.id === 2)) {
-    insertSection(sections, { id: 2, payload: appendCallbackImport(null, callbackTypeIndex) });
+  if (callbackImports.length > 0 && !sections.some((section) => section.id === 2)) {
+    insertSection(sections, { id: 2, payload: appendImports(null, callbackImports) });
   }
   if (!sections.some((section) => section.id === 6)) {
     insertSection(sections, { id: 6, payload: appendFlagsGlobal(null, context) });
@@ -180,7 +289,9 @@ export function instrumentModule(bytes: Uint8Array): InstrumentedModule {
     importModule: CALLBACK_MODULE,
     importField: CALLBACK_FIELD,
     armExport: ARM_EXPORT,
-    storeCount,
+    storeCount: rewrittenCode.storeCount,
+    readCount: rewrittenCode.readCount,
+    probeCount: rewrittenCode.probeCount,
     functionCount: layout.functionCount,
   };
 }
@@ -190,18 +301,37 @@ interface Section {
   payload: Uint8Array;
 }
 
+/** One function-type entry, kept so a probe can reuse an existing signature instead of adding one. */
+interface FunctionType {
+  params: Uint8Array;
+  results: Uint8Array;
+}
+
+/** One import entry to append, in callback order. */
+interface CallbackImport {
+  field: string;
+  typeIndex: number;
+}
+
 interface ModuleLayout {
-  typeCount: number;
+  types: FunctionType[];
   importedFunctionCount: number;
   functionCount: number;
   globalCount: number;
 }
 
 interface RewriteContext {
-  /** Maps a function index of the input module to its index once the callback import is added. */
+  /** Maps a function index of the input module to its index once the callback imports are added. */
   shiftFunctionIndex(index: number): number;
   /** Guard + callback bytes appended after every write in the given defined function. */
-  injectionFor(definedFunctionIndex: number): Uint8Array<ArrayBuffer>;
+  storeInjectionFor(definedFunctionIndex: number): Uint8Array<ArrayBuffer> | null;
+  /** Everything needed to wrap loads, or null when reads are off and loads must stay untouched. */
+  probes: {
+    /** Instrumented-module index the first probe occupies; the probes follow one another. */
+    firstIndex: number;
+    /** Body of the probe of one (defined function, memory offset) pair, both baked in. */
+    bodyFor(definedFunctionIndex: number, offset: number): Uint8Array<ArrayBuffer>;
+  } | null;
   /** Body of the `__wc_arm` function the code section gains. */
   armBody: Uint8Array<ArrayBuffer>;
 }
@@ -328,21 +458,33 @@ interface SequenceRewrite {
   /** Offset just past the terminating `end`, so callers can continue from it. */
   end: number;
   storeCount: number;
+  readCount: number;
+}
+
+interface SequenceOptions {
+  /** Maps a function index of the input module to its index in the rewritten module. */
+  shiftFunctionIndex(index: number): number;
+  /** Guard + callback bytes appended after every write; null leaves stores untouched. */
+  storeInjection: Uint8Array | null;
+  /** Builds the `call <probe>` bytes emitted before every load; null leaves loads untouched. */
+  probeCall: ((offset: number) => Uint8Array<ArrayBuffer>) | null;
 }
 
 /**
  * Re-emits one instruction sequence (a function body's instructions or a constant expression),
- * shifting every function index and appending the guarded callback after every memory write.
+ * shifting every function index, appending the guarded callback after every memory write and
+ * preceding every load with a probe call.
  */
 function rewriteInstructionSequence(
   source: Uint8Array,
   start: number,
-  options: { shiftFunctionIndex: (index: number) => number; injection: Uint8Array | null },
+  options: SequenceOptions,
 ): SequenceRewrite {
   const reader = new Reader(source, start);
   const out = new Writer();
   let depth = 0;
   let storeCount = 0;
+  let readCount = 0;
   let terminated = false;
 
   while (!terminated) {
@@ -350,7 +492,10 @@ function rewriteInstructionSequence(
     const instructionStart = reader.offset;
     const opcode = reader.u8();
     let shiftedIndex: number | null = null;
-    // 0x36-0x3e are the i32/i64/f32/f64 stores; the 0xFC cases below add the bulk writes.
+    let memoryOffset: number | null = null;
+    // 0x28-0x35 are the i32/i64/f32/f64 loads, 0x36-0x3e the stores; the 0xFC cases below add
+    // the bulk-memory writes.
+    const loads = opcode >= 0x28 && opcode <= 0x35;
     let writes = opcode >= 0x36 && opcode <= 0x3e;
 
     switch (opcode) {
@@ -431,7 +576,10 @@ function rewriteInstructionSequence(
         reader.u8();
         break;
       case 0xfc: {
-        // Bulk memory and table operations, prefixed.
+        // Bulk memory and table operations, prefixed. The bulk writes (memory.init/copy/fill)
+        // are deliberately never wrapped as reads: they take their length on top of the stack,
+        // so a `(i32)->(i32)` probe would receive the length, not an address. Wrapping them
+        // would need the stack analysis this rewriter exists to avoid.
         const subopcode = reader.u32();
         switch (subopcode) {
           case 0:
@@ -487,27 +635,36 @@ function rewriteInstructionSequence(
         throw unsupported('atomic opcode 0xFE is not supported');
       default:
         if (opcode >= 0x28 && opcode <= 0x3e) {
-          // Loads and stores: alignment then offset.
+          // Loads and stores: alignment then offset. The offset is part of the effective
+          // address, and compilers emit `i32.const 0; i32.load offset=N` for globals, so a probe
+          // that only saw the base operand would report 0 for every static address.
           reader.u32();
-          reader.u32();
+          const offset = reader.u32();
+          if (opcode <= 0x35) memoryOffset = offset;
           break;
         }
         if (opcode >= 0x45 && opcode <= 0xc4) break; // numeric instructions, no immediates
         throw unsupported(`unknown opcode 0x${opcode.toString(16)}`);
     }
 
+    if (loads && options.probeCall !== null) {
+      // The address is on top of the stack already; the probe reports it and hands it back, so
+      // the untouched load that follows consumes exactly what it would have consumed alone.
+      out.bytes(options.probeCall(memoryOffset ?? 0));
+      readCount += 1;
+    }
     if (shiftedIndex === null) {
       out.bytes(source.subarray(instructionStart, reader.offset));
     } else {
       out.u8(opcode).u32(options.shiftFunctionIndex(shiftedIndex));
     }
-    if (writes && options.injection !== null) {
-      out.bytes(options.injection);
+    if (writes && options.storeInjection !== null) {
+      out.bytes(options.storeInjection);
       storeCount += 1;
     }
   }
 
-  return { bytes: out.toBytes(), end: reader.offset, storeCount };
+  return { bytes: out.toBytes(), end: reader.offset, storeCount, readCount };
 }
 
 function parseSections(bytes: Uint8Array): Section[] {
@@ -540,7 +697,7 @@ function parseSections(bytes: Uint8Array): Section[] {
 }
 
 function inspectModule(sections: Section[]): ModuleLayout {
-  const typeCount = countTypes(requireSection(sections, 1).payload);
+  const types = readTypes(requireSection(sections, 1).payload);
   const importSection = sections.find((section) => section.id === 2);
   const imports =
     importSection === undefined ? { functionCount: 0, memoryCount: 0 } : inspectImports(importSection.payload);
@@ -554,7 +711,7 @@ function inspectModule(sections: Section[]): ModuleLayout {
   }
   const globalSection = sections.find((section) => section.id === 6);
   return {
-    typeCount,
+    types,
     importedFunctionCount: imports.functionCount,
     functionCount,
     globalCount: globalSection === undefined ? 0 : countGlobals(globalSection.payload),
@@ -575,18 +732,20 @@ function sectionOrder(id: number): number {
   return SECTION_ORDER[id] ?? 0;
 }
 
-function countTypes(payload: Uint8Array): number {
+function readTypes(payload: Uint8Array): FunctionType[] {
   const reader = new Reader(payload);
   const count = reader.u32();
+  const types: FunctionType[] = [];
   for (let index = 0; index < count; index += 1) {
     const form = reader.u8();
     if (form !== 0x60) {
       throw unsupported(`type ${index} uses type form 0x${form.toString(16)}, only function types are supported`);
     }
-    reader.skip(reader.u32()); // parameter value types, one byte each
-    reader.skip(reader.u32()); // result value types
+    const params = reader.bytes(reader.u32()); // parameter value types, one byte each
+    const results = reader.bytes(reader.u32()); // result value types
+    types.push({ params, results });
   }
-  return count;
+  return types;
 }
 
 function inspectImports(payload: Uint8Array): { functionCount: number; memoryCount: number } {
@@ -656,41 +815,46 @@ function countGlobals(payload: Uint8Array): number {
     reader.u8(); // mutability
     const expression = rewriteInstructionSequence(payload, reader.offset, {
       shiftFunctionIndex: IDENTITY,
-      injection: null,
+      storeInjection: null,
+      probeCall: null,
     });
     reader.seek(expression.end);
   }
   return count;
 }
 
-function appendCallbackType(payload: Uint8Array): Uint8Array<ArrayBuffer> {
+function appendTypes(payload: Uint8Array, appended: FunctionType[]): Uint8Array<ArrayBuffer> {
   const reader = new Reader(payload);
   const count = reader.u32();
-  return new Writer()
-    .u32(count + 1)
-    .bytes(payload.subarray(reader.offset))
-    .u8(0x60)
-    .u32(1)
-    .u8(0x7f)
-    .u32(0) // (func (param i32))
-    .toBytes();
+  const types = new Writer().u32(count + appended.length).bytes(payload.subarray(reader.offset));
+  for (const type of appended) {
+    types.u8(0x60).u32(type.params.length).bytes(type.params).u32(type.results.length).bytes(type.results);
+  }
+  return types.toBytes();
 }
 
-function appendCallbackImport(payload: Uint8Array | null, typeIndex: number): Uint8Array<ArrayBuffer> {
+/**
+ * Appends the callback imports in the order the caller built them, so the first one takes the
+ * lowest free function index — the order the caller's index arithmetic assumes.
+ */
+function appendImports(payload: Uint8Array | null, entries: CallbackImport[]): Uint8Array<ArrayBuffer> {
   const imports = new Writer();
   if (payload === null) {
-    imports.u32(1);
+    imports.u32(entries.length);
   } else {
     const reader = new Reader(payload);
-    imports.u32(reader.u32() + 1).bytes(payload.subarray(reader.offset));
+    imports.u32(reader.u32() + entries.length).bytes(payload.subarray(reader.offset));
   }
-  return imports.name(CALLBACK_MODULE).name(CALLBACK_FIELD).u8(0x00).u32(typeIndex).toBytes();
+  for (const entry of entries) imports.name(CALLBACK_MODULE).name(entry.field).u8(0x00).u32(entry.typeIndex);
+  return imports.toBytes();
 }
 
-function appendArmFunction(payload: Uint8Array, typeIndex: number): Uint8Array<ArrayBuffer> {
+function appendGeneratedFunctions(payload: Uint8Array, typeIndex: number, added: number): Uint8Array<ArrayBuffer> {
   const reader = new Reader(payload);
   const count = reader.u32();
-  return new Writer().u32(count + 1).bytes(payload.subarray(reader.offset)).u32(typeIndex).toBytes();
+  const functions = new Writer().u32(count + added).bytes(payload.subarray(reader.offset));
+  for (let index = 0; index < added; index += 1) functions.u32(typeIndex);
+  return functions.toBytes();
 }
 
 function appendFlagsGlobal(payload: Uint8Array | null, context: RewriteContext): Uint8Array<ArrayBuffer> {
@@ -706,7 +870,8 @@ function appendFlagsGlobal(payload: Uint8Array | null, context: RewriteContext):
       const mutability = reader.u8();
       const expression = rewriteInstructionSequence(payload, reader.offset, {
         shiftFunctionIndex: context.shiftFunctionIndex,
-        injection: null,
+        storeInjection: null,
+      probeCall: null,
       });
       globals.u8(valueType).u8(mutability).bytes(expression.bytes);
       reader.seek(expression.end);
@@ -757,7 +922,8 @@ function shiftElementFunctions(payload: Uint8Array, context: RewriteContext): Ui
   const copyExpression = (): void => {
     const expression = rewriteInstructionSequence(payload, reader.offset, {
       shiftFunctionIndex: context.shiftFunctionIndex,
-      injection: null,
+      storeInjection: null,
+      probeCall: null,
     });
     elements.bytes(expression.bytes);
     reader.seek(expression.end);
@@ -830,11 +996,15 @@ function shiftElementFunctions(payload: Uint8Array, context: RewriteContext): Ui
 function rewriteCodeSection(
   payload: Uint8Array,
   context: RewriteContext,
-): { payload: Uint8Array<ArrayBuffer>; storeCount: number } {
+): { payload: Uint8Array<ArrayBuffer>; storeCount: number; readCount: number; probeCount: number } {
   const reader = new Reader(payload);
   const count = reader.u32();
-  const code = new Writer().u32(count + 1);
+  const bodies: Uint8Array<ArrayBuffer>[] = [];
+  // A probe is allocated on the first load a body contains, which is why a body without loads
+  // costs nothing. One probe covers one (function, memory offset) pair.
+  const probeIndices = new Map<string, number>();
   let storeCount = 0;
+  let readCount = 0;
 
   for (let definedFunctionIndex = 0; definedFunctionIndex < count; definedFunctionIndex += 1) {
     const bodySize = reader.u32();
@@ -851,22 +1021,52 @@ function rewriteCodeSection(
       locals.u8(); // their value type
     }
     const localsEnd = bodyStart + locals.offset;
+    const probes = context.probes;
     const sequence = rewriteInstructionSequence(payload, localsEnd, {
       shiftFunctionIndex: context.shiftFunctionIndex,
-      injection: context.injectionFor(definedFunctionIndex),
+      storeInjection: context.storeInjectionFor(definedFunctionIndex),
+      probeCall:
+        probes === null
+          ? null
+          : (offset) => {
+              // The offset is baked into the probe (it is part of the effective address), so a
+              // function that reads through several offsets needs one probe per offset.
+              const key = `${definedFunctionIndex}:${offset}`;
+              let probeIndex = probeIndices.get(key);
+              if (probeIndex === undefined) {
+                probeIndex = probes.firstIndex + probeIndices.size;
+                probeIndices.set(key, probeIndex);
+              }
+              return new Writer().u8(0x10).u32(probeIndex).toBytes(); // call <probe>
+            },
     });
     if (sequence.end !== bodyEnd) {
       throw unsupported(`code body ${definedFunctionIndex} does not end where its declared size says it does`);
     }
-    code.u32(localsEnd - bodyStart + sequence.bytes.length);
-    code.bytes(payload.subarray(bodyStart, localsEnd));
-    code.bytes(sequence.bytes);
+    bodies.push(
+      new Writer().bytes(payload.subarray(bodyStart, localsEnd)).bytes(sequence.bytes).toBytes(),
+    );
     storeCount += sequence.storeCount;
+    readCount += sequence.readCount;
     reader.seek(bodyEnd);
   }
 
+  // `__wc_arm` and the probes are generated here, never re-read from the input, so the rewriter
+  // can never instrument its own instrumentation.
+  const probeBodies: Uint8Array<ArrayBuffer>[] = [];
+  const probes = context.probes;
+  if (probes !== null) {
+    for (const key of probeIndices.keys()) {
+      const [definedFunctionIndex, offset] = key.split(':');
+      probeBodies.push(probes.bodyFor(Number(definedFunctionIndex), Number(offset)));
+    }
+  }
+
+  const code = new Writer().u32(bodies.length + 1 + probeBodies.length);
+  for (const body of bodies) code.u32(body.length).bytes(body);
   code.u32(context.armBody.length).bytes(context.armBody);
-  return { payload: code.toBytes(), storeCount };
+  for (const body of probeBodies) code.u32(body.length).bytes(body);
+  return { payload: code.toBytes(), storeCount, readCount, probeCount: probeBodies.length };
 }
 
 function insertSection(sections: Section[], section: Section): void {

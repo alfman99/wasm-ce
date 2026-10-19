@@ -29,20 +29,33 @@ export interface TrackedInstance {
 export interface InstrumentedBinary {
   bytes: Uint8Array;
   importModule: string;
+  /** Import that reports a store to the watched address. */
   importField: string;
-  /** Exported function that flips the store checks on. */
+  /** Import that reports a load from the watched address. */
+  readField: string;
+  /** Exported function that flips the checks on. */
   armExport: string;
 }
 
+/** Which watchpoint the module is being rewritten for; both cost nothing while disarmed. */
+export interface InstrumentModes {
+  reads: boolean;
+  writes: boolean;
+}
+
 /**
- * Rewrites binaries before the engine sees them, which is the only moment a write watchpoint
- * can be added: a compiled module cannot be changed, and instances cannot observe stores.
+ * Rewrites binaries before the engine sees them, which is the only moment a watchpoint
+ * can be added: a compiled module cannot be changed, and instances cannot observe stores or
+ * loads. Loads get an identity call inserted before them, stores a call appended after them.
  */
 export interface Instrumenter {
+  modes: InstrumentModes;
   /** Returns null when this binary cannot be rewritten (the trace then explains why). */
-  rewrite(bytes: Uint8Array): InstrumentedBinary | null;
+  rewrite(bytes: Uint8Array, modes: InstrumentModes): InstrumentedBinary | null;
   /** One store ran inside an armed instance. */
   onStore(funcIndex: number): void;
+  /** One load of `address` ran inside an armed instance. */
+  onRead?(address: number, funcIndex: number): void;
 }
 
 /** A rule registered before an instance is created; applied as imports flow through. */
@@ -141,21 +154,23 @@ export class WasmRegistry {
     if (!instrumenter) return null;
     let plan: InstrumentedBinary | null = null;
     try {
-      plan = instrumenter.rewrite(bytes);
+      plan = instrumenter.rewrite(bytes, instrumenter.modes);
     } catch {
       return null;
     }
     if (!plan) return null;
-    // The rewritten module calls this on every store: the only channel an engine gives us.
+    // The rewritten module calls these on every store, and before every load: the only channel
+    // an engine gives us. The field the module does not import is never called.
     const importsAdd: ImportObject = {
       [plan.importModule]: {
         [plan.importField]: (funcIndex: number) => instrumenter.onStore(funcIndex),
+        [plan.readField]: (address: number, funcIndex: number) => instrumenter.onRead?.(address, funcIndex),
       },
     };
     return { plan, importsAdd };
   }
 
-  /** Flips the store checks on inside an instance we just instrumented. */
+  /** Flips the watchpoint checks on inside an instance we just instrumented. */
   private armInstrumented(tracked: TrackedInstance, plan: InstrumentedBinary): void {
     const arm = (tracked.instance.exports as Record<string, unknown>)[plan.armExport];
     if (typeof arm !== 'function') return;

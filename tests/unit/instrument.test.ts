@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { BridgeError } from '@wasmcheat/protocol';
 import { instrumentModule, type InstrumentedModule } from '../../packages/wasm-instrument/src/index';
 import {
+  buildLoadModule,
   buildSimdModule,
   buildStartModule,
   buildStoreModule,
@@ -16,6 +17,14 @@ interface StoreApi {
 }
 
 interface ArmedStoreApi extends StoreApi {
+  __wc_arm(flags: number): void;
+}
+
+interface LoadApi {
+  read_at(addr: number): number;
+  read64_at(addr: number): bigint;
+  bump(): number;
+  memory: WebAssembly.Memory;
   __wc_arm(flags: number): void;
 }
 
@@ -34,21 +43,33 @@ interface TableExports {
 
 interface Harness {
   instance: WebAssembly.Instance;
-  /** Function indices pushed by the injected callback, in call order. */
+  /** Function indices pushed by the injected store callback, in call order. */
   calls: number[];
+  /** Addresses and function indices pushed by the injected read callback, in call order. */
+  reads: { addr: number; func: number }[];
 }
 
 function instantiateModule(instrumented: InstrumentedModule): Harness {
   const calls: number[] = [];
+  const reads: { addr: number; func: number }[] = [];
   const imports = {
     [instrumented.importModule]: {
       [instrumented.importField]: (functionIndex: number): void => {
         calls.push(functionIndex);
       },
+      // Offered even when the module does not import it: the engine ignores extras.
+      on_read: (addr: number, func: number): void => {
+        reads.push({ addr, func });
+      },
     },
   };
   const module = new WebAssembly.Module(instrumented.bytes);
-  return { instance: new WebAssembly.Instance(module, imports), calls };
+  return { instance: new WebAssembly.Instance(module, imports), calls, reads };
+}
+
+/** The callback fields the instrumented module actually declares, straight from the engine. */
+function importNames(instrumented: InstrumentedModule): string[] {
+  return WebAssembly.Module.imports(new WebAssembly.Module(instrumented.bytes)).map((entry) => entry.name);
 }
 
 /** The engine's export object is untyped beyond `ExportValue`; the call sites know the shape. */
@@ -112,6 +133,35 @@ function readFunctionExports(bytes: Uint8Array): Map<string, number> {
   return names;
 }
 
+/**
+ * Entries the instrumented module's type section declares. A probe signature the module already
+ * has must be reused rather than appended, and this is the only way to see that from outside.
+ */
+function typeSectionCount(bytes: Uint8Array): number {
+  let offset = 8;
+  const readU32 = (): number => {
+    let result = 0;
+    let shift = 0;
+    for (;;) {
+      const byte = bytes[offset] ?? 0;
+      offset += 1;
+      result |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) return result;
+      shift += 7;
+    }
+  };
+
+  while (offset < bytes.length) {
+    const sectionId = bytes[offset] ?? 0;
+    offset += 1;
+    const size = readU32();
+    const end = offset + size;
+    if (sectionId === 1) return readU32();
+    offset = end;
+  }
+  return 0;
+}
+
 function captureRejection(run: () => unknown): BridgeError {
   try {
     run();
@@ -164,9 +214,9 @@ describe('instrumentModule', () => {
     const storeAtIndex = functionIndex(instrumented, 'store_at');
     const tickIndex = functionIndex(instrumented, 'tick');
 
-    // `store_at` was function 0 before the callback import took slot 0 and pushed it to 1.
-    expect(storeAtIndex).toBe(1);
-    expect(tickIndex).toBe(3);
+    // Two callback imports take slots 0 and 1, pushing `store_at` (was 0) to 2 and `tick` to 4.
+    expect(storeAtIndex).toBe(2);
+    expect(tickIndex).toBe(4);
 
     exports.__wc_arm(1);
 
@@ -214,10 +264,10 @@ describe('instrumentModule', () => {
     const exports = exportsOf<TableExports>(instance);
     const writeDirectIndex = functionIndex(instrumented, 'write_direct');
 
-    // Only the element segment moved: `write_direct` was function 1 and is now 2, while the
-    // indirect caller stayed at 1.
-    expect(functionIndex(instrumented, 'write_via_table')).toBe(1);
-    expect(writeDirectIndex).toBe(2);
+    // Both defined functions moved by the number of callback imports: `write_via_table` from 0
+    // to 2 and `write_direct` from 1 to 3.
+    expect(functionIndex(instrumented, 'write_via_table')).toBe(2);
+    expect(writeDirectIndex).toBe(3);
 
     // A stale element index would either trap on the type check or call the wrong function.
     exports.write_via_table(0x80);
@@ -241,5 +291,135 @@ describe('instrumentModule', () => {
 
     expect(error.code).toBe('UNSUPPORTED');
     expect(error.message).toContain('0xFD');
+  });
+
+  it('wraps every load without changing what the module returns', () => {
+    const instrumented = instrumentModule(buildLoadModule());
+    const { instance } = instantiateModule(instrumented);
+    const exports = exportsOf<LoadApi>(instance);
+
+    // read_at, read64_at and bump each hold exactly one load, so each gets exactly one probe.
+    expect(instrumented.readCount).toBe(3);
+    expect(instrumented.probeCount).toBe(3);
+    expect(instrumented.storeCount).toBe(1);
+    expect(instrumented.functionCount).toBe(3);
+
+    // The probe passes the address through, so every value is the one the plain module returns.
+    expect(exports.read_at(0x20)).toBe(0xdeadbeef | 0);
+    expect(exports.read_at(0x24)).toBe(0x44332211 | 0);
+    expect(exports.read64_at(0x28)).toBe(0x0807060504030201n);
+    expect(exports.bump()).toBe(7);
+    expect(exports.read_at(0x30)).toBe(7);
+
+    // Three original types plus the two callback types: the probe signature `(i32)->(i32)`
+    // already exists as type 0, so a deduplicating rewriter appends nothing for it.
+    expect(typeSectionCount(instrumented.bytes)).toBe(5);
+  });
+
+  it('reports the address and function of each armed load', () => {
+    const instrumented = instrumentModule(buildLoadModule());
+    const { instance, reads } = instantiateModule(instrumented);
+    const exports = exportsOf<LoadApi>(instance);
+    // `read_at` was defined function 0 and follows the two callback imports.
+    const readAtIndex = functionIndex(instrumented, 'read_at');
+    expect(readAtIndex).toBe(2);
+    expect(functionIndex(instrumented, 'read64_at')).toBe(3);
+    expect(functionIndex(instrumented, 'bump')).toBe(4);
+
+    exports.__wc_arm(1);
+
+    expect(exports.read_at(0x20)).toBe(0xdeadbeef | 0);
+    expect(reads).toEqual([{ addr: 0x20, func: readAtIndex }]);
+
+    reads.length = 0;
+    expect(exports.read_at(0x24)).toBe(0x44332211 | 0);
+    expect(reads).toEqual([{ addr: 0x24, func: readAtIndex }]);
+  });
+
+  it('reports nothing before the module is armed, and nothing after a disarm', () => {
+    const instrumented = instrumentModule(buildLoadModule());
+    const { instance, reads } = instantiateModule(instrumented);
+    const exports = exportsOf<LoadApi>(instance);
+
+    exports.read_at(0x20);
+    exports.read64_at(0x28);
+    exports.bump();
+    expect(reads).toEqual([]);
+
+    exports.__wc_arm(1);
+    exports.read_at(0x20);
+    expect(reads).toHaveLength(1);
+
+    exports.__wc_arm(0);
+    reads.length = 0;
+    exports.read_at(0x24);
+    expect(reads).toEqual([]);
+  });
+
+  it('leaves the direction it was told to skip completely alone', () => {
+    const source = buildStoreModule();
+
+    const noReads = instrumentModule(source, { reads: false });
+    expect(noReads.readCount).toBe(0);
+    expect(noReads.probeCount).toBe(0);
+    expect(noReads.storeCount).toBe(3);
+    expect(importNames(noReads)).toEqual(['on_store']);
+
+    const noWrites = instrumentModule(source, { writes: false });
+    expect(noWrites.storeCount).toBe(0);
+    // `load_at` holds the module's single load.
+    expect(noWrites.readCount).toBe(1);
+    expect(importNames(noWrites)).toEqual(['on_read']);
+
+    const skipped = instantiateModule(noWrites);
+    const exports = exportsOf<ArmedStoreApi>(skipped.instance);
+    exports.__wc_arm(1);
+    exports.store_at(0x100, 11);
+    expect(skipped.calls).toEqual([]);
+    expect(exports.load_at(0x100)).toBe(11);
+    expect(skipped.reads).toEqual([{ addr: 0x100, func: functionIndex(noWrites, 'load_at') }]);
+  });
+
+  it('reports stores and loads together, each with its own function index', () => {
+    const storeInstrumented = instrumentModule(buildStoreModule());
+    const stores = instantiateModule(storeInstrumented);
+    const storeExports = exportsOf<ArmedStoreApi>(stores.instance);
+    const storeAtIndex = functionIndex(storeInstrumented, 'store_at');
+    const loadAtIndex = functionIndex(storeInstrumented, 'load_at');
+
+    storeExports.__wc_arm(1);
+    storeExports.store_at(0x100, 5);
+    expect(stores.calls).toEqual([storeAtIndex]);
+    // Storing reports writes only: no probe sits in `store_at`.
+    expect(stores.reads).toEqual([]);
+
+    expect(storeExports.load_at(0x100)).toBe(5);
+    expect(stores.reads).toEqual([{ addr: 0x100, func: loadAtIndex }]);
+    expect(stores.calls).toEqual([storeAtIndex]);
+
+    // `bump` is the function that does both, so it reports twice under the same index.
+    const loadInstrumented = instrumentModule(buildLoadModule());
+    const loads = instantiateModule(loadInstrumented);
+    const loadExports = exportsOf<LoadApi>(loads.instance);
+    const bumpIndex = functionIndex(loadInstrumented, 'bump');
+
+    loadExports.__wc_arm(1);
+    expect(loadExports.bump()).toBe(7);
+    expect(loads.calls).toEqual([bumpIndex]);
+    expect(loads.reads).toEqual([{ addr: 0x30, func: bumpIndex }]);
+  });
+
+  it('keeps an i64 result intact across the probe', () => {
+    const instrumented = instrumentModule(buildLoadModule());
+    const { instance, reads } = instantiateModule(instrumented);
+    const exports = exportsOf<LoadApi>(instance);
+
+    exports.__wc_arm(1);
+    const value = exports.read64_at(0x28);
+
+    // A probe that ate or widened the i64 would either trap on the load or shorten the value.
+    expect(typeof value).toBe('bigint');
+    expect(value).toBe(0x0807060504030201n);
+    expect(reads).toEqual([{ addr: 0x28, func: functionIndex(instrumented, 'read64_at') }]);
   });
 });

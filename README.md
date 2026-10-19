@@ -176,9 +176,10 @@ choice.
   glue caches the function on first call (`_get_score = wasmExports['get_score']`), so patched
   exports are invisible to it — which is exactly why the demo ships a hand-written loader.
 - **A store reports nothing.** No engine hook exists for "this instruction wrote this byte", so
-  a write watchpoint cannot be attached to a compiled module at all. `wasmcheat_find_writes`
-  therefore rewrites the binary before it compiles: every store gains a gated call back into the
-  page agent. See [Watchpoints](#watchpoints-asking-who-wrote-an-address).
+  a watchpoint cannot be attached to a compiled module at all. `wasmcheat_find_writes` and
+  `wasmcheat_find_reads` therefore rewrite the binary before it compiles: every store gains a
+  gated call back into the page agent, and every load gains a gated identity call that reports
+  the address it is about to touch. See [Watchpoints](#watchpoints-asking-who-touched-an-address).
 
 ---
 
@@ -220,7 +221,8 @@ Addresses are `"<instanceId>:<offset>"`, e.g. `w1:0x408` or `w1:1032`. `instance
 | `wasmcheat_watch` | `add` / `remove` / `list` / `poll` change events. |
 | `wasmcheat_hook` | `add` / `list` / `enable` / `remove` export and import hooks. |
 | `wasmcheat_find_writes` | Which function writes to an address? Reloads with an instrumented module. |
-| `wasmcheat_trace` | `arm` / `status` / `poll` / `clear` / `stop` for the write watchpoint. |
+| `wasmcheat_find_reads` | Which function reads an address? Same mechanism, load probes instead of store hooks. |
+| `wasmcheat_trace` | `arm` / `status` / `poll` / `clear` / `stop` for a watchpoint (`kind`: `read` or `write`). |
 | `wasmcheat_diagnose` | Why is the instance list empty? Counts, frames, wasm URLs, one-line hint. |
 | `wasmcheat_audit` | The most recent audit entries. |
 
@@ -324,27 +326,43 @@ pass a declarative `fallback` instead (`{"mode": "replace-return", "value": 42}`
 
 ---
 
-## Watchpoints: asking "who wrote this address?"
+## Watchpoints: asking "who touched this address?"
 
-`wasmcheat_find_writes` is Cheat Engine's write breakpoint, translated to wasm:
+`wasmcheat_find_writes` and `wasmcheat_find_reads` are Cheat Engine's breakpoints, translated to
+wasm:
 
 ```jsonc
 { "tabId": …, "address": "w1:0x408", "type": "i32" }
-// → {"installed": true, "hits": [{"funcIndex": 3, "funcName": "mine", "previous": 75, "value": 100, …}],
-//    "writers": [{"name": "mine", "funcIndex": 3, "hits": 12, "last": 400}]}
+// find_writes → {"installed": true,
+//   "hits": [{"kind": "write", "funcIndex": 3, "funcName": "mine", "previous": 75, "value": 100, …}],
+//   "functions": [{"name": "mine", "funcIndex": 3, "hits": 12}]}
+
+{ "tabId": …, "address": "w1:0x408", "type": "i32" }   // wasmcheat_find_reads
+// → {"hits": [{"kind": "read", "funcName": "get_score", "value": 25, …}],
+//    "functions": [{"name": "get_score", "hits": 331}, {"name": "tick", "hits": 4}]}
 ```
+
+Reads answer a different question than writes: the writer tells you where a value comes from, the
+reader tells you what the value is *used for*. For a health bar, the reader is the code that
+decides the player dies.
 
 How it works, because the constraint is the interesting part:
 
 1. WebAssembly gives the host no notification when a `store` executes, and a compiled module
    cannot be modified. So the watchpoint has to be in the binary *before* the engine sees it.
 2. The tool arms the watchpoint, then reloads the tab (the approval survives, since it is our
-   own reload of the page you already approved). Your module is rewritten as it streams past:
-   one mutable `i32` global is added, one import (`__wasmcheat.on_store`) and one export
-   (`__wc_arm`), and after every store instruction the module runs
-   `global.get flags; if (flags) { on_store(funcIndex) }`.
+   own reload of the page you already approved). Your module is rewritten as it streams past one
+   mutable `i32` global, one import (`__wasmcheat.on_store` or `on_read`), one export
+   (`__wc_arm`), and then:
+   - **writes**: after every store instruction, `global.get flags; if (flags) { on_store(funcIndex) }`.
+     A store leaves the stack empty, so appending is always safe.
+   - **reads**: before every load, `call probe`, where the probe is `(i32) -> (i32)`:
+     `global.get flags; if (flags) { on_read(addr + offset, funcIndex) }; addr`. The address is
+     already on the stack, the probe hands it back unchanged, and no stack analysis is needed at
+     all. One probe is generated per (function, memory offset) pair — the offset has to be baked
+     in because compilers address globals as `i32.const 0; i32.load offset=1032`.
 3. `funcIndex` is a constant per call site, which is the attribution: it names the function that
-   performed the store. The page agent diffs the watched address on every callback and records
+   performed the access. The page agent diffs the watched address on every callback and records
    the hit with the value before and after.
 4. `wasmcheat_trace {action: "stop"}` removes the rewriting for the next reload, and nothing
    stays behind in the page.
@@ -353,9 +371,14 @@ Honest limits:
 
 - The watchpoint needs a reload; a module that is already compiled can never be instrumented.
   When you arm a live page, the status says so instead of pretending.
-- The gated check costs one global read and a branch per store even when disarmed; while armed
-  every store is a call into the page agent, which is slower than running free. That is the
-  same trade Cheat Engine makes with a hardware breakpoint.
+- The gated check costs one global read and a branch per store, and one call per load, even when
+  disarmed; while armed every access is a call into the page agent, which is slower than running
+  free. Only the watchpoint you asked for is instrumented: `find_reads` leaves stores untouched
+  and vice versa. That is the same trade Cheat Engine makes with a hardware breakpoint.
+- `memory.copy` / `memory.fill` are reported as writes only: they take a length on top of the
+  stack, so a `(i32) -> (i32)` probe would see the length instead of an address.
+- Atomic (thread) loads and SIMD are rejected by the rewriter rather than silently missed; a page
+  that uses them reports the rewrite as unsupported instead of returning an empty hit list.
 - Functions the module does not export appear as `wasm-function[12]`. That is all the identity
   the engine has; the index still lets you map it to a disassembly.
 - Modules using SIMD (`0xFD`) or atomics (`0xFE`) are rejected with `UNSUPPORTED` rather than
@@ -435,7 +458,7 @@ packages/protocol/src/index.ts      shared contract
 packages/page-agent/src/            registry (capture), memory, scanner, hooks, trace, runtime
 packages/extension/src/             sw.ts (approval + bridge), relay.ts, popup, manifest
 packages/extension/dist/            loadable unpacked extension (built)
-packages/wasm-instrument/src/       wasm binary rewriter behind write watchpoints
+packages/wasm-instrument/src/       wasm binary rewriter behind read/write watchpoints
 packages/mcp-server/src/            bridge.ts (WebSocket), server.ts (tools), audit.ts, bin.ts
 packages/demo-app/src/game.c        demo target, compiled to prebuilt/game.wasm
 packages/demo-app/framed.html       the demo inside a cross-origin iframe (subframe test)

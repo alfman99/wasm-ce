@@ -291,10 +291,11 @@ export interface PageAgentInfo {
 
 /** Why a tab shows no instances: the answer is almost always one of these fields. */
 /**
- * A write watchpoint. WebAssembly exposes no memory-write events, so the only way to learn
- * which function wrote an address is to rewrite the module before it compiles: every store gets
- * a guarded call back into the host. Arming therefore only takes effect on the next
- * instantiation, which is why the tools reload the tab.
+ * A read or write watchpoint. WebAssembly exposes no memory-access events, so the only way to
+ * learn which function touched an address is to rewrite the module before it compiles: every
+ * store gets a guarded call back into the host, and every load gains a guarded identity call
+ * that reports its address. Arming therefore only takes effect on the next instantiation, which
+ * is why the tools reload the tab.
  */
 export interface TraceArmOptions {
   /** Address to watch, e.g. "w1:0x408". The width comes from `type`. */
@@ -303,12 +304,19 @@ export interface TraceArmOptions {
   type?: ValueType;
   /** Stop recording after this many hits. Default 50. */
   maxHits?: number;
+  /** Which access to catch. Default `write`. */
+  kind?: TraceKind;
 }
+
+export const TRACE_KINDS = ['write', 'read'] as const;
+export type TraceKind = (typeof TRACE_KINDS)[number];
 
 export interface WriteTraceHit {
   /** Milliseconds since the epoch. */
   at: number;
-  /** Index of the wasm function that executed the store, in the module's function space. */
+  /** What the function did: stored to the address, or loaded from it. */
+  kind: TraceKind;
+  /** Index of the wasm function that performed the access, in the module's function space. */
   funcIndex: number;
   /** Export name of that function, when the module exports it. */
   funcName?: string;
@@ -323,10 +331,13 @@ export interface WriteTraceStatus {
   installed: boolean;
   address?: string;
   type?: ValueType;
+  kind?: TraceKind;
   instanceId?: string;
   hits: WriteTraceHit[];
   /** Hits dropped after `maxHits`. */
   dropped: number;
+  /** Functions that touched the address, most hits first. */
+  functions: { funcIndex: number; name?: string; hits: number }[];
   /** Why the trace cannot install, when it cannot. */
   note?: string;
 }

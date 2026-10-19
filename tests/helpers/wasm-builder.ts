@@ -197,6 +197,64 @@ export function buildStoreModule(): Uint8Array<ArrayBuffer> {
 }
 
 /**
+ * A module that only reads memory, plus the usual "load and store the same slot" shape:
+ *   exports: read_at(i32)->i32, read64_at(i32)->i64, bump()->i32, memory
+ * The one-page memory is filled by a data segment, so the known values exist before any code
+ * runs: 0xdeadbeef at 0x20, 0x44332211 at 0x24 and an eight-byte value at 0x28. `bump` stores 7
+ * into a private slot at 0x30 and loads it back, so one function both writes and reads.
+ */
+export function buildLoadModule(): Uint8Array<ArrayBuffer> {
+  const module = new Writer();
+  module.raw([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+
+  // Types: 0 = (i32)->i32, 1 = (i32)->i64, 2 = ()->i32. Type 0 is the probe signature too, so a
+  // rewriter that deduplicates its type entries has nothing to append for the probes.
+  const types = new Writer().u32(3);
+  types.u8(0x60).u32(1).u8(0x7f).u32(1).u8(0x7f);
+  types.u8(0x60).u32(1).u8(0x7f).u32(1).u8(0x7e);
+  types.u8(0x60).u32(0).u32(1).u8(0x7f);
+  module.section(1, types);
+
+  // Functions: read_at, read64_at, bump. No imports and no globals, so a rewriter has to create
+  // both sections itself.
+  module.section(3, new Writer().u32(3).u32(0).u32(1).u32(2));
+  module.section(5, new Writer().u32(1).u8(0x00).u32(1));
+
+  const exports = new Writer().u32(4);
+  exports.str('read_at').u8(0x00).u32(0);
+  exports.str('read64_at').u8(0x00).u32(1);
+  exports.str('bump').u8(0x00).u32(2);
+  exports.str('memory').u8(0x02).u32(0);
+  module.section(7, exports);
+
+  module.section(
+    10,
+    codeSection([
+      [0x20, 0x00, 0x28, 0x02, 0x00], // local.get 0; i32.load align=4 offset=0
+      [0x20, 0x00, 0x29, 0x03, 0x00], // local.get 0; i64.load align=8 offset=0
+      [
+        0x41, 0x30, 0x41, 0x07, 0x36, 0x02, 0x00, // i32.const 0x30; i32.const 7; i32.store
+        0x41, 0x30, 0x28, 0x02, 0x00, // i32.const 0x30; i32.load
+      ],
+    ]),
+  );
+
+  // One active segment at 0x20 holding the bytes that make read_at(0x20) answer 0xdeadbeef and
+  // read_at(0x24) answer 0x44332211, followed by the eight bytes read64_at(0x28) reads.
+  module.section(
+    11,
+    new Writer()
+      .u32(1) // one segment
+      .u32(0) // flags 0: active, memory 0, offset expression
+      .raw([0x41, 0x20, 0x0b]) // i32.const 0x20; end
+      .u32(16) // byte count
+      .raw([0xef, 0xbe, 0xad, 0xde, 0x11, 0x22, 0x33, 0x44, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]),
+  );
+
+  return Uint8Array.from(module.bytes);
+}
+
+/**
  * A module whose start function writes 7 to address 0:
  *   exports: peek(i32)->i32, memory
  * A rewriter that leaves the start section's function index alone makes this module fail to

@@ -362,6 +362,34 @@ test('a write watchpoint names the function that changed the score', async () =>
   await expect(game.locator('#score')).toHaveText('25');
 });
 
+test('a read watchpoint names the function that reads the score', async () => {
+  // Reads are instrumented the same way writes are, so this also reloads the tab.
+  const watching = call<{
+    installed: boolean;
+    hits: { funcName?: string; funcIndex: number; kind: string; value: number }[];
+    functions: { name?: string; hits: number }[];
+  }>(mcp, 'wasmcheat_find_reads', {
+    tabId,
+    address: 'w1:0x408',
+    type: 'i32',
+    timeoutSeconds: 25,
+  });
+
+  await game.waitForLoadState('load');
+  await expect(game.locator('#status')).toContainText('wasm ready', { timeout: 30_000 });
+  await game.click('#mine');
+
+  const result = await watching;
+  expect(result.isError, result.text).toBe(false);
+  expect(result.data.installed, result.text).toBe(true);
+  expect(result.data.hits.length, result.text).toBeGreaterThan(0);
+  expect(result.data.hits[0]?.kind, result.text).toBe('read');
+  // get_score() is the export the page calls on every frame to paint the score.
+  const reader = result.data.functions.find((entry) => entry.name === 'get_score');
+  expect(reader, `no read hit from get_score: ${result.text}`).toBeTruthy();
+  expect((await snapshot(game)).score).toBe(25);
+});
+
 test('detaching revokes access immediately', async () => {
   await call(mcp, 'wasmcheat_detach', { tabId, reason: 'e2e teardown' });
   const read = await call(mcp, 'wasmcheat_read', { tabId, address: 'w1:0x408', type: 'i32' });

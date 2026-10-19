@@ -63,7 +63,16 @@ export class PageRuntime {
       onInstrumented: (tracked) => this.trace.onInstrumented(tracked),
     });
     this.hooks = new HookStore(this.registry, detectEvalAllowed());
-    this.trace = new TraceStore(this.registry, (bytes) => instrumentModule(bytes));
+    this.trace = new TraceStore(this.registry, (bytes, modes) => {
+      const instrumented = instrumentModule(bytes, modes);
+      return {
+        bytes: instrumented.bytes,
+        importModule: instrumented.importModule,
+        importField: instrumented.importField,
+        readField: 'on_read',
+        armExport: instrumented.armExport,
+      };
+    });
   }
 
   install(): void {

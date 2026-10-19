@@ -3,6 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import {
   BridgeError,
+  TRACE_KINDS,
   VALUE_TYPES,
   formatAddress,
   parseAddress,
@@ -18,6 +19,7 @@ import {
   type ScanSummary,
   type TextScanResult,
   type TabInfo,
+  type TraceKind,
   type ValueType,
   type WatchEntry,
   type WatchEvent,
@@ -585,12 +587,61 @@ export function createServer(bridge: Bridge): McpServer {
     },
   );
 
+  /**
+   * The write breakpoint, for reads and writes alike: arm the watchpoint, reload so the module is
+   * instrumented as it loads, then poll until the page touches the address (or the wait expires).
+   */
+  async function findAccess(
+    kind: TraceKind,
+    args: { tabId: number; address: string; type?: ValueType; maxHits?: number; timeoutSeconds?: number; reload?: boolean },
+  ): Promise<ToolResult> {
+    const { tabId, address, type, maxHits, timeoutSeconds, reload } = args;
+    try {
+      const target = addr(address);
+      const formatted = formatAddress(target);
+      const wait = (timeoutSeconds ?? 15) * 1000;
+      await bridge.request('ext.traceArm', {
+        tabId,
+        address: formatted,
+        kind,
+        ...(type ? { type } : {}),
+        ...(maxHits ? { maxHits } : {}),
+      });
+      if (reload !== false) {
+        await bridge.request('ext.reload', { tabId }, 60_000);
+      }
+      const deadline = Date.now() + wait;
+      let status = await page<WriteTraceStatus>(tabId, 'page.trace.status');
+      while (status.hits.length === 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        status = await page<WriteTraceStatus>(tabId, 'page.trace.status');
+      }
+      const verb = kind === 'read' ? 'reads' : 'writes';
+      const past = kind === 'read' ? 'read' : 'wrote';
+      record({
+        kind: 'trace',
+        tabId,
+        ok: true,
+        summary: `watched ${verb} to ${formatted} (${status.hits.length} hit(s))`,
+        detail: { kind, hits: status.hits, installed: status.installed },
+      });
+      const note = status.installed
+        ? status.hits.length > 0
+          ? `${status.functions.length} function(s) ${past} ${formatted}`
+          : `no ${verb} to ${formatted} were seen in ${(wait / 1000).toFixed(0)}s — the page may not touch it until you interact with it`
+        : `the watchpoint never installed${status.note ? `: ${status.note}` : ''}`;
+      return ok({ ...status, writers: status.functions }, note);
+    } catch (error) {
+      return fail(error);
+    }
+  }
+
   server.registerTool(
     'wasmcheat_find_writes',
     {
       title: 'Find what writes to an address',
       description:
-        'Answers "which function writes here?" — Cheat Engine\'s write breakpoint, for wasm. WebAssembly has no write events, ' +
+        "Answers \"which function writes here?\" — Cheat Engine's write breakpoint, for wasm. WebAssembly has no write events, " +
         'so the tab is reloaded with an instrumented module: every store then calls back with the function index that made it. ' +
         'The reload keeps the existing approval. Returns every hit with the function that wrote and the value before/after.',
       inputSchema: {
@@ -602,50 +653,28 @@ export function createServer(bridge: Bridge): McpServer {
         reload: z.boolean().optional(),
       },
     },
-    async ({ tabId, address, type, maxHits, timeoutSeconds, reload }) => {
-      try {
-        const target = addr(address);
-        const formatted = formatAddress(target);
-        const wait = (timeoutSeconds ?? 15) * 1000;
-        await bridge.request('ext.traceArm', {
-          tabId,
-          address: formatted,
-          ...(type ? { type } : {}),
-          ...(maxHits ? { maxHits } : {}),
-        });
-        if (reload !== false) {
-          await bridge.request('ext.reload', { tabId }, 60_000);
-        }
-        const deadline = Date.now() + wait;
-        let status = await page<WriteTraceStatus>(tabId, 'page.trace.status');
-        while (status.hits.length === 0 && Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, 400));
-          status = await page<WriteTraceStatus>(tabId, 'page.trace.status');
-        }
-        record({
-          kind: 'trace',
-          tabId,
-          ok: true,
-          summary: `watched writes to ${formatted} (${status.hits.length} hit(s))`,
-          detail: { hits: status.hits, installed: status.installed },
-        });
-        const writers = new Map<string, { funcIndex: number; funcName?: string; hits: number; last: unknown }>();
-        for (const hit of status.hits) {
-          const key = hit.funcName ?? `wasm-function[${hit.funcIndex}]`;
-          const entry = writers.get(key);
-          if (entry) entry.hits += 1;
-          else writers.set(key, { funcIndex: hit.funcIndex, funcName: hit.funcName, hits: 1, last: hit.value });
-        }
-        const note = status.installed
-          ? status.hits.length > 0
-            ? `${writers.size} function(s) wrote ${formatted}`
-            : `no writes to ${formatted} were seen in ${(wait / 1000).toFixed(0)}s — the page may not touch it until you interact with it`
-          : `the watchpoint never installed${status.note ? `: ${status.note}` : ''}`;
-        return ok({ ...status, writers: [...writers.entries()].map(([name, entry]) => ({ name, ...entry })) }, note);
-      } catch (error) {
-        return fail(error);
-      }
+    (args) => findAccess('write', args),
+  );
+
+  server.registerTool(
+    'wasmcheat_find_reads',
+    {
+      title: 'Find what reads an address',
+      description:
+        'Answers "which function reads here?" — Cheat Engine\'s read breakpoint, for wasm. Every load in the module gains a small ' +
+        'guarded call that reports the address it is about to read, so the tab is reloaded once with the instrumented module ' +
+        '(the approval survives the reload). Reads are the better question for input flags, timers and health checks: the reader ' +
+        'is the code that decides what the value means.',
+      inputSchema: {
+        tabId: z.number().int(),
+        address: ADDRESS,
+        type: VALUE_TYPE.optional(),
+        maxHits: z.number().int().min(1).max(500).optional(),
+        timeoutSeconds: z.number().int().min(1).max(120).optional(),
+        reload: z.boolean().optional(),
+      },
     },
+    (args) => findAccess('read', args),
   );
 
   server.registerTool(
@@ -653,19 +682,20 @@ export function createServer(bridge: Bridge): McpServer {
     {
       title: 'Write watchpoint control',
       description:
-        'Low-level control for find_writes. arm (needs tabId + address) installs the watchpoint for the next instantiation and ' +
-        'remembers it across a reload, status reports whether it installed, poll drains the collected hits, clear resets them, ' +
-        'stop removes the watchpoint entirely.',
+        'Low-level control for find_writes / find_reads. arm (needs tabId + address, optional kind read|write) installs the ' +
+        'watchpoint for the next instantiation and remembers it across a reload, status reports whether it installed, poll ' +
+        'drains the collected hits, clear resets them, stop removes the watchpoint entirely.',
       inputSchema: {
         tabId: z.number().int(),
         action: z.enum(['arm', 'status', 'poll', 'clear', 'stop']),
         address: ADDRESS.optional(),
         type: VALUE_TYPE.optional(),
         maxHits: z.number().int().min(1).max(500).optional(),
+        kind: z.enum([...TRACE_KINDS]).optional(),
         limit: z.number().int().min(1).max(1000).optional(),
       },
     },
-    async ({ tabId, action, address, type, maxHits, limit }) => {
+    async ({ tabId, action, address, type, maxHits, kind, limit }) => {
       try {
         if (action === 'arm') {
           if (!address) return fail(new BridgeError('BAD_PARAMS', 'address is required for arm'));
@@ -674,6 +704,7 @@ export function createServer(bridge: Bridge): McpServer {
             address: formatAddress(addr(address)),
             ...(type ? { type } : {}),
             ...(maxHits ? { maxHits } : {}),
+            ...(kind ? { kind } : {}),
           });
           return ok(status, 'armed; it takes effect the next time the page instantiates its wasm');
         }

@@ -1,15 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { WasmRegistry } from '../../packages/page-agent/src/registry';
 import { TraceStore, type BinaryRewriter } from '../../packages/page-agent/src/trace';
-import { buildStoreModule } from '../helpers/wasm-builder';
+import { buildLoadModule, buildStoreModule } from '../helpers/wasm-builder';
 import { instrumentModule } from '../../packages/wasm-instrument/src/index';
 
-const rewriter: BinaryRewriter = (bytes) => {
-  const result = instrumentModule(bytes);
+const rewriter: BinaryRewriter = (bytes, modes) => {
+  const result = instrumentModule(bytes, modes);
   return {
     bytes: result.bytes,
     importModule: result.importModule,
     importField: result.importField,
+    readField: 'on_read',
     armExport: result.armExport,
   };
 };
@@ -61,5 +62,37 @@ describe('TraceStore', () => {
     expect(hits.length).toBeGreaterThan(0);
     expect(hits[0]?.funcName).toBe('store_at');
     expect(hits[0]?.value).toBe(4242);
+  });
+
+  it('records a read with the function that loaded the address, and nothing when disarmed', async () => {
+    const registry = new WasmRegistry({
+      onInstrumented: (tracked) => trace.onInstrumented(tracked),
+    });
+    registry.install();
+    const trace = new TraceStore(registry, rewriter);
+    const armed = trace.arm({ address: 'w1:0x20', type: 'i32', kind: 'read' });
+    expect(armed.kind).toBe('read');
+    expect(registry.hasInstrumenter).toBe(true);
+
+    const { instance } = await WebAssembly.instantiate(buildLoadModule(), { env: {} });
+    expect(registry.list()[0]?.instrumented).toBe(true);
+    const exports = instance.exports as unknown as { read_at: (addr: number) => number };
+
+    // Reads of other addresses are not recorded, reads of the watched one are.
+    expect(exports.read_at(0x24)).toBe(0x44332211);
+    expect(trace.status().hits).toHaveLength(0);
+    expect(exports.read_at(0x20)).toBe(-0x21524111); // 0xdeadbeef as a signed i32
+
+    const hits = trace.status().hits;
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.kind).toBe('read');
+    expect(hits[0]?.funcName).toBe('read_at');
+    expect(trace.status().functions[0]).toMatchObject({ name: 'read_at', hits: 1 });
+
+    // A disarmed trace leaves the instrumented module alone but records nothing further.
+    trace.stop();
+    expect(exports.read_at(0x20)).toBe(-0x21524111);
+    expect(trace.status().hits).toHaveLength(1);
+    expect(trace.status().armed).toBe(false);
   });
 });

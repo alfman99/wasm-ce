@@ -57,7 +57,7 @@ const keepApprovalOnReload = new Map<number, ApprovalEntry>();
  * has to outlive the reload that creates that document. The relay announces itself at
  * document_start, which is where we put it back.
  */
-const pendingTraces = new Map<number, { address: string; type?: string; maxHits?: number }>();
+const pendingTraces = new Map<number, { address: string; type?: string; maxHits?: number; kind?: string }>();
 
 // ---------------------------------------------------------------- storage
 
@@ -175,7 +175,7 @@ async function handleBridgeRequest(method: string, params: unknown): Promise<unk
     case 'ext.reload':
       return reloadTab(params as { tabId: number });
     case 'ext.traceArm':
-      return traceArm(params as { tabId: number; address: string; type?: string; maxHits?: number });
+      return traceArm(params as { tabId: number; address: string; type?: string; maxHits?: number; kind?: string });
     default:
       throw new BridgeError('BAD_PARAMS', `unknown extension method "${method}"`);
   }
@@ -315,11 +315,13 @@ async function traceArm(params: {
   address: string;
   type?: string;
   maxHits?: number;
+  kind?: string;
 }): Promise<unknown> {
   const options = {
     address: params.address,
     ...(params.type ? { type: params.type } : {}),
     ...(params.maxHits ? { maxHits: params.maxHits } : {}),
+    ...(params.kind ? { kind: params.kind } : {}),
   };
   pendingTraces.set(params.tabId, options);
   const frameId = await resolveFrame(params.tabId);
