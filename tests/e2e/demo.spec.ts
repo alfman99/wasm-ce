@@ -65,6 +65,8 @@ async function snapshot(page: Page): Promise<{ score: number; coins: number; liv
 /** A second page that hosts the demo inside a cross-origin iframe (localhost vs 127.0.0.1). */
 let framed: Page;
 let framedTabId: number;
+let workerPage: Page;
+let workerTabId: number;
 
 test.describe.configure({ mode: 'serial' });
 
@@ -843,4 +845,85 @@ test('a saved scan survives a reload and keeps narrowing', async () => {
   expect(deleted.data.deleted).toBe(true);
   const empty = await call<{ name: string }[]>(mcp, 'wasmcheat_saved', { tabId, action: 'list' });
   expect(empty.data.map((item) => item.name)).not.toContain('score candidates');
+});
+
+test('wasm instantiated inside a Web Worker is discovered and driven', async () => {
+  // Unity, Godot 4 and most itch.io builds instantiate their module in a worker, where the page
+  // realm's WebAssembly hook never sees it. The demo runs the same game that way.
+  workerPage = await browser.context.newPage();
+  await workerPage.goto(`${DEMO_URL}worker.html`);
+  await expect(workerPage.locator('#status')).toContainText('wasm ready', { timeout: 30_000 });
+
+  const tabs = await call<{ tabId: number; url: string }[]>(mcp, 'wasmcheat_list_tabs');
+  const host = tabs.data.find((tab) => tab.url.endsWith('/worker.html'));
+  expect(host, tabs.text).toBeDefined();
+  workerTabId = host!.tabId;
+
+  const pending = call(mcp, 'wasmcheat_attach', {
+    tabId: workerTabId,
+    reason: 'e2e: wasm inside a worker',
+    waitSeconds: 60,
+  });
+  await approveThroughPopup(browser, workerTabId);
+  const attached = await pending;
+  expect(attached.isError, attached.text).toBe(false);
+
+  const workers = await call<{ id: string; url: string; instances: number }[]>(mcp, 'wasmcheat_list_workers', {
+    tabId: workerTabId,
+  });
+  expect(workers.isError, workers.text).toBe(false);
+  expect(workers.data.length, workers.text).toBeGreaterThanOrEqual(1);
+  expect(workers.data.some((worker) => worker.instances > 0)).toBe(true);
+
+  const instances = await call<InstanceInfo[]>(mcp, 'wasmcheat_list_instances', { tabId: workerTabId });
+  expect(instances.isError, instances.text).toBe(false);
+  const inWorker = instances.data.find((instance) => instance.host === 'worker');
+  expect(inWorker, instances.text).toBeDefined();
+  expect(inWorker!.workerId).toBeTruthy();
+
+  // A worker instance id is namespaced by the worker that owns it, so nothing else needs to know
+  // which realm the memory lives in.
+  // Ore is the stable counter: the score ticks on its own, so a write to it proves nothing.
+  const coinsAddress = `${inWorker!.id}:0x40c`;
+  await workerPage.click('#mine');
+  await expect.poll(async () => Number(await workerPage.locator('#coins').textContent()), { timeout: 20_000 }).toBe(1);
+
+  const before = await call<{ values: number[] }>(mcp, 'wasmcheat_read', { tabId: workerTabId, address: coinsAddress, type: 'i32' });
+  expect(before.isError, before.text).toBe(false);
+  expect(before.data.values[0]).toBe(1);
+
+  const written = await call(mcp, 'wasmcheat_write', { tabId: workerTabId, address: coinsAddress, type: 'i32', value: 31337 });
+  expect(written.isError, written.text).toBe(false);
+
+  // The worker republishes its state after every tick, so the number on screen is proof the write
+  // reached the worker's memory and not just a page-realm copy.
+  await expect.poll(async () => Number(await workerPage.locator('#coins').textContent()), { timeout: 20_000 }).toBe(31337);
+
+  const scan = await call<ScanSummary>(mcp, 'wasmcheat_scan', {
+    tabId: workerTabId,
+    instanceId: inWorker!.id,
+    type: 'i32',
+    mode: 'exact',
+    value: 31337,
+  });
+  expect(scan.isError, scan.text).toBe(false);
+  expect(scan.data.scanId).toMatch(/^k\d+-s\d+$/);
+
+  // Narrowing keeps the ore address and drops everything else, which is the whole point of a scan.
+  const narrowed = await call<ScanSummary>(mcp, 'wasmcheat_scan', {
+    tabId: workerTabId,
+    instanceId: inWorker!.id,
+    type: 'i32',
+    mode: 'unchanged',
+    scanId: scan.data.scanId,
+  });
+  expect(narrowed.isError, narrowed.text).toBe(false);
+  const results = await call<{ hits: { address: string }[]; total: number }>(mcp, 'wasmcheat_scan_results', {
+    tabId: workerTabId,
+    scanId: narrowed.data.scanId,
+  });
+  expect(results.isError, results.text).toBe(false);
+  expect(results.data.hits.map((hit) => hit.address)).toContain(coinsAddress);
+
+  await call(mcp, 'wasmcheat_detach', { tabId: workerTabId, reason: 'e2e worker teardown' });
 });

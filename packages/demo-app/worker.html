@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Foundry — worker build</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Foundry <span class="tag">worker</span></h1>
+      <p class="lede">
+        The same game, instantiated inside a Web Worker. The page realm never sees this
+        <code>WebAssembly.Memory</code>: only the worker agent does.
+      </p>
+      <section class="hud">
+        <div><span class="label">score</span><b id="score">0</b></div>
+        <div><span class="label">ore</span><b id="coins">0</b></div>
+      </section>
+      <div class="row">
+        <button id="mine" type="button">Mine</button>
+        <button id="damage" type="button">Hazard</button>
+        <button id="reset" type="button">Reset</button>
+      </div>
+      <p id="status" class="status">starting worker…</p>
+    </main>
+    <script src="worker-demo.js"></script>
+  </body>
+</html>

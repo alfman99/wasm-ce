@@ -32,7 +32,14 @@ declare global {
   }
 }
 
-/** The wrapper is installed once, on the first ping that carries the agent's URL. */
+/** Attribute the isolated-world relay publishes the worker bundle URL on, at document_start. */
+const AGENT_URL_ATTRIBUTE = 'data-wasmcheat-agent';
+
+/**
+ * The wrapper is installed once, as soon as the document element exists, and resolves the bundle
+ * URL at call time. Waiting for the relay's message loses the race against page scripts that
+ * create a Worker during their own start-up, which is exactly what a game engine's loader does.
+ */
 let workerWrapperInstalled = false;
 
 /** `k1`, `k2`… in construction order; the prefix every worker-owned id carries. */
@@ -96,6 +103,9 @@ function instrumentWorker(
   scriptURL: string | URL,
   options?: WorkerOptions,
 ): Worker {
+  // No URL yet means no way to bootstrap the worker agent; run the worker as the page asked and
+  // stay out of its way rather than replacing it with a blob that cannot import the agent.
+  if (agentUrl === '') return new RealWorker(scriptURL, options);
   const id = `k${nextWorkerId++}`;
   const originalUrl = absoluteUrl(typeof scriptURL === 'string' ? scriptURL : scriptURL.href);
   const type = workerTypeOf(options);
@@ -142,7 +152,7 @@ function instrumentWorker(
 }
 
 /** Replaces `Worker` so that every worker created from here on also runs the worker agent. */
-function installWorkerWrapper(runtime: PageRuntime, agentUrl: string): void {
+function installWorkerWrapper(runtime: PageRuntime, resolveUrl: () => string): void {
   if (workerWrapperInstalled || typeof window.Worker !== 'function') return;
   workerWrapperInstalled = true;
   const RealWorker = window.Worker;
@@ -151,7 +161,7 @@ function installWorkerWrapper(runtime: PageRuntime, agentUrl: string): void {
   // constructor cannot call `super` twice. Returning a real Worker instance keeps `postMessage`,
   // `terminate`, `onmessage` and `instanceof Worker` exactly as the page expects.
   function InstrumentedWorker(this: unknown, scriptURL: string | URL, options?: WorkerOptions): Worker {
-    return instrumentWorker(runtime, RealWorker, agentUrl, scriptURL, options);
+    return instrumentWorker(runtime, RealWorker, resolveUrl(), scriptURL, options);
   }
 
   InstrumentedWorker.prototype = RealWorker.prototype;
@@ -179,6 +189,19 @@ async function answer(
   post({ type: 'result', channelId, id, result, error });
 }
 
+/**
+ * Reads the URL the relay published on the document element. Falls back to an empty string when the
+ * relay is not there (a page the extension only injected dynamically), in which case workers run
+ * uninstrumented instead of breaking.
+ */
+function agentUrlFromDocument(): string {
+  try {
+    return document.documentElement?.getAttribute(AGENT_URL_ATTRIBUTE) ?? '';
+  } catch {
+    return '';
+  }
+}
+
 function main(): void {
   if (window[GLOBAL_KEY]) {
     // Already injected (dynamic script + late injection can both fire). The existing
@@ -190,6 +213,12 @@ function main(): void {
   runtime.install();
   // A watchpoint armed before the reload is re-armed here, before the app's scripts run.
   restoreTrace(runtime.trace);
+
+  // Install the Worker wrapper now, not when the first message arrives: the app's loader may create
+  // its worker in the same document_start batch, and a worker created before the wrapper exists is
+  // invisible forever. The URL is resolved per construction so a later message can fill it in.
+  let workerAgentUrl = agentUrlFromDocument();
+  installWorkerWrapper(runtime, () => workerAgentUrl || agentUrlFromDocument());
 
   const agent: AgentGlobal = {
     version: AGENT_VERSION,
@@ -222,7 +251,8 @@ function main(): void {
 
     // The relay is the only party that can resolve an extension URL, so it names the worker agent.
     if (typeof data.workerAgentUrl === 'string' && data.workerAgentUrl !== '') {
-      installWorkerWrapper(runtime, data.workerAgentUrl);
+      workerAgentUrl = data.workerAgentUrl;
+      installWorkerWrapper(runtime, () => workerAgentUrl || agentUrlFromDocument());
     }
 
     if (data.type === 'ping') {

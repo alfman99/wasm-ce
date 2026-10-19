@@ -93,15 +93,15 @@ if (compiled) {
 }
 
 await build({
-  entryPoints: [join(SRC, 'demo.js')],
-  outfile: `${OUT}/demo.js`,
+  entryPoints: [join(SRC, 'demo.js'), join(SRC, 'worker-demo.js'), join(SRC, 'worker-game.js')],
+  outdir: OUT,
   bundle: true,
   format: 'iife',
   target: ['chrome110'],
   legalComments: 'none',
 });
 
-for (const file of ['index.html', 'framed.html', 'styles.css']) {
+for (const file of ['index.html', 'framed.html', 'worker.html', 'styles.css']) {
   await copyFile(join(HERE, file), join(OUT, file));
 }
 

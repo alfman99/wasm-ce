@@ -36,6 +36,20 @@ function resolveWorkerAgentUrl(): string {
 
 const WORKER_AGENT_URL = resolveWorkerAgentUrl();
 
+/**
+ * The page agent cannot build an extension URL, and it has to know one *before* the page's own
+ * scripts run their first `new Worker(...)`. Messages are asynchronous and lose that race, so the
+ * URL is also published synchronously on the document element at document_start, where the
+ * MAIN-world agent reads it.
+ */
+export const AGENT_URL_ATTRIBUTE = 'data-wasmcheat-agent';
+
+try {
+  if (WORKER_AGENT_URL !== '') document.documentElement.setAttribute(AGENT_URL_ATTRIBUTE, WORKER_AGENT_URL);
+} catch {
+  // A document without a root element at this point is not ours to fix; messages still work.
+}
+
 if (!(window as unknown as PageAgentGlobal)[RELAY_FLAG]) {
   (window as unknown as PageAgentGlobal)[RELAY_FLAG] = true;
 

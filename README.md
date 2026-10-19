@@ -180,6 +180,22 @@ frame that actually captured a wasm instance (probing each one with `page.diagno
 to). `wasmcheat_list_tabs` shows the frames; `wasmcheat_attach` accepts `frameId` to override the
 choice.
 
+### Web Workers
+
+Unity, Godot 4 and most itch.io builds instantiate their module **inside a Web Worker**, where the
+page realm's `WebAssembly` hook can never see it. The page agent therefore replaces `Worker` itself
+and boots a second copy of itself inside each worker (prepending `importScripts('<extension>/dist/worker-agent.js')`
+to a small blob wrapper), so worker instances are captured by the same registry, scan store and
+hook store as page instances — `wasmcheat_list_workers` reports them, and their instance ids are
+namespaced by the worker that owns them (`k1-1`).
+
+The wrapper is installed **at `document_start`**, before the page's own scripts, because a worker
+created earlier than the wrapper is invisible forever — game loaders create their worker in their
+first script, which is exactly the losing side of that race. The agent cannot build an extension
+URL on its own, so the isolated-world relay publishes it on `document.documentElement`
+(`data-wasmcheat-agent`) synchronously, and the wrapper resolves it per construction; if the
+attribute is ever missing the page gets a plain, uninstrumented worker rather than a broken one.
+
 ### Two WebAssembly facts that shape the tool
 
 - **Imports are bound at instantiation.** A running instance can never gain a replaced import.

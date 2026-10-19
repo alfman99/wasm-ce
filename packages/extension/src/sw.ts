@@ -551,8 +551,28 @@ async function ensureAgent(params: { tabId: number; reload?: boolean; frameId?: 
     persistSession();
   }
   const frameId = params.frameId ?? (await resolveFrame(params.tabId));
-  const info = await sendToTab<PageAgentInfo>(params.tabId, 'page.hello', {}, 8_000, frameId);
+  const info = await helloWithRetry(params.tabId, frameId);
   return frameId === undefined ? info : { ...info, frameId };
+}
+
+/**
+ * Right after a reload the document can be replaced between the relay announcing itself and this
+ * call, and a message sent to a dying frame resolves with no payload at all. That is a race, not a
+ * missing agent, so it is worth a few hundred milliseconds before telling the human to reload.
+ */
+async function helloWithRetry(tabId: number, frameId: number | undefined): Promise<PageAgentInfo> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    try {
+      return await sendToTab<PageAgentInfo>(tabId, 'page.hello', {}, 8_000, frameId);
+    } catch (error) {
+      lastError = error;
+      const retryable = error instanceof BridgeError && error.code === 'NO_AGENT';
+      if (!retryable || attempt === 6) break;
+      await sleep(250);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new BridgeError('NO_AGENT', `tab ${tabId} has no agent`);
 }
 
 /**
