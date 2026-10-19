@@ -201,6 +201,16 @@ so the grandchild's ids chain the names (`k1n1-1` belongs to the worker `k1` sta
 one is routed down the chain rather than refused. The e2e suite covers a page → worker → worker
 chain in `nested.html`.
 
+### The DevTools panel
+
+Open DevTools → **WasmCheat**. Every tool is also a form, so a human can work without an agent: tabs and
+approval, instances and `diagnose`, typed reads/writes, a hex **memory viewer** (16 bytes per row,
+Earlier/Later, **Follow pointer**, and any address you click — a scan hit, a bookmark, a watch event —
+jumps the dump to it), workers, pointer scan/resolve, speed hack, freeze, watch, every scan mode plus
+text scan, saved lists, bookmarks, watchpoints, patches, hooks, the live audit view and a raw RPC
+console. The panel shares one dispatcher with the WebSocket (`wasmcheat.panel.call` →
+`handleBridgeRequest`), so it needs the same approval and cannot skip the gate.
+
 ### Two WebAssembly facts that shape the tool
 
 - **Imports are bound at instantiation.** A running instance can never gain a replaced import.
@@ -233,15 +243,15 @@ chain in `nested.html`.
 - The grant is scoped to the tab **and the site**: navigating or reloading inside the same site keeps it
   (a game that reloads itself is the normal case), leaving the site revokes it, and closing the tab
   discards it. Revoking (`wasmcheat_detach`, or the popup) takes effect immediately.
-- Every mutation is logged, and the extension reports it rather than each caller doing so: a
-  write, freeze set/clear, watch add/remove, scan begin/narrow/drop (plus text and pointer scans),
-  hook add/enable/disable/remove, patch add/remove/clear, watchpoint arm/stop/clear, pointer scan,
-  bookmark add/remove/clear, a speed change and every deliberate reload. Text scans and scans are
-  covered too. That is one funnel (`callTab`), so a human clicking Freeze in the DevTools panel
-  produces the same line an agent's `wasmcheat_freeze` would, with the tab, the address and, for
-  writes, `before -> after`. Two things are recorded by the MCP server instead, because they are not
-  page calls: saved scan lists (`wasmcheat_saved` save / open / delete, so the name and match count
-  show up) and the attach/detach/approval trail. Reads, `scan_results`, `pointer_resolve`, listing calls and watch
+- Every mutation is logged, and the extension reports it rather than each caller doing so: a write,
+  freeze set/clear, watch add/remove, scan begin/narrow/drop, text scan, hook
+  add/enable/disable/remove, patch add/remove/clear, watchpoint arm/stop/clear, pointer scan,
+  bookmark add/remove/clear, a speed change and every deliberate reload. That is one funnel
+  (`callTab`), so a human clicking Freeze in the DevTools panel produces the same line an agent's
+  `wasmcheat_freeze` would, with the tab, the address and, for writes, `before -> after`. Two things
+  are recorded by the MCP server instead, because they are not page calls: saved scan lists
+  (`wasmcheat_saved` save / open / delete, so the name and match count show up) and the
+  attach/detach/approval trail. Reads, `scan_results`, `pointer_resolve`, listing calls and watch
   polls are not logged: they change nothing and would bury the writes.
 - Every write, freeze, hook add/remove, attach/detach and approval goes to
   `$WASMCHEAT_HOME/audit.jsonl` (append-only JSON lines, timestamped, with the tab, the address
@@ -342,8 +352,9 @@ that tab, does not leak into another tab, and the re-opened list narrows exactly
 
 Parameters: `type` (i8…f64), `mode`, `value` (and `value2` for `between`), `tolerance` (floats,
 defaults to `max(|value|·1e-6, 1e-6)`), `alignment` (defaults to the type width; `1` catches
-unaligned data), `range` (`{start, end}`), `maxResults` (default 250 000, sets `truncated`), and
-`scanId` to narrow.
+unaligned data), `from` / `to` (byte bounds of the scan; omit for the whole memory), `maxResults`
+(default 250 000, sets `truncated`), and `scanId` to narrow. The page-layer call spells the bounds
+`range: {start, end}` — that is what the panel sends; the MCP tool takes `from` / `to` and builds it.
 
 ### Reading, writing, freezing, watching
 
@@ -557,8 +568,8 @@ serves the demo, connects a real MCP client to `dist/bin.js`, and then, in order
 19. bookmarks the score address, reloads, reads through the remembered address and forgets it;
 20. measures the score clock at 1x and 4x (`wasmcheat_speed`), freezes it at 0 and resets it, and
     asserts the change reached the audit log;
-21. opens `nested.html`, where a worker starts the game worker, and drives `k1n1-1`: list, read,
-    mine, write and scan through two worker hops.
+21. opens `nested.html`, where a worker starts the game worker, and drives `k1n1-1` through two
+    worker hops: list it, click Mine, write to its memory, watch the page repaint, then scan it.
 
 Costs and gotchas: one browser and one bridge port, so the suite runs with a single worker and
 fails fast if the port is already taken (it picks `7399` by default so it does not collide with a
@@ -576,6 +587,7 @@ packages/mcp-server/src/            bridge.ts (WebSocket), server.ts (tools), au
 packages/demo-app/src/game.c        demo target, compiled to prebuilt/game.wasm
 packages/demo-app/framed.html       the demo inside a cross-origin iframe (subframe test)
 packages/demo-app/worker.html       the demo instantiated inside a Web Worker (worker test)
+packages/demo-app/nested.html       the demo inside a worker started by another worker (nested test)
 tests/unit/                         vitest: memory, registry, scanner, hooks, wasm exports
 tests/e2e/                          playwright: harness.ts + demo.spec.ts
 ```
@@ -589,10 +601,14 @@ tests/e2e/                          playwright: harness.ts + demo.spec.ts
 - The page-agent runs in the MAIN world, so a hostile page can talk to (or lie to) the relay. The
   approval gate protects you from the agent, not from the site you loaded.
 - Strict-CSP pages block hook bodies; declarative fallbacks still work.
-- The speed hack overrides `performance.now`, `Date.now` and `requestAnimationFrame` in the page
-  realm only; clock reads inside a worker keep real time.
-- The panel's memory viewer dumps bytes and pans by row, but it cannot follow a pointer yet.
-  `docs/STATUS.md` keeps the current list.
+- The speed hack overrides `performance.now`, `Date.now` and `requestAnimationFrame` in the page realm
+  and forwards the scale to every worker realm, so worker games speed up too. A game that derives
+  time from `performance.timeOrigin`, or captured `Date.now` before the agent installed, keeps the
+  real clock.
+- The panel's memory viewer is read-only: it dumps, pans, follows a pointer and jumps to any address
+  you click, but byte edits go through the typed write form (audited, returns `before -> after`).
+- Pages that need cross-origin isolation for `SharedArrayBuffer` threads are not exercised; single
+  realm atomics are probed. `docs/STATUS.md` keeps the current list.
 
 ## Policy
 

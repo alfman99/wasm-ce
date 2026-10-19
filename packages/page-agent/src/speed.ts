@@ -45,7 +45,13 @@ export class TimeMachine {
     this.source = {
       now: options.source?.now ?? (() => performance.now()),
       date: options.source?.date ?? (() => Date.now()),
-      requestFrame: options.source?.requestFrame ?? ((callback) => requestAnimationFrame(callback)),
+      requestFrame:
+        options.source?.requestFrame ??
+        ((callback) => {
+          // Absent in a worker: the game there reads only `performance.now` / `Date.now`.
+          if (typeof requestAnimationFrame !== 'function') return 0;
+          return requestAnimationFrame(callback);
+        }),
     };
     this.segmentReal = this.source.now();
     this.segmentVirtual = this.segmentReal;
@@ -69,10 +75,12 @@ export class TimeMachine {
     if (this.installed) return this.status();
     const realNow = performance.now.bind(performance);
     const realDate = Date.now.bind(Date);
-    const realFrame = requestAnimationFrame.bind(window);
+    // A worker realm has no `window` and no `requestAnimationFrame`; there, two clocks are all there is.
+    const scope = typeof window === 'undefined' ? null : window;
+    const realFrame = typeof requestAnimationFrame === 'function' ? requestAnimationFrame.bind(globalThis) : null;
     this.source.now = () => realNow();
     this.source.date = () => realDate();
-    this.source.requestFrame = (callback) => realFrame(callback);
+    this.source.requestFrame = realFrame ? (callback) => realFrame(callback) : () => 0;
     this.segmentReal = realNow();
     this.segmentVirtual = this.segmentReal;
     this.dateOffset = realDate() - this.segmentVirtual;
@@ -82,8 +90,10 @@ export class TimeMachine {
     Date.now = () => machine.virtual() + machine.dateOffset;
     // A frame callback's timestamp shares the `performance.now` time base, so the scale applies to it
     // the same way. The real frame still runs at the display's pace; only the number changes.
-    window.requestAnimationFrame = (callback: FrameRequestCallback): number =>
-      realFrame((timestamp) => callback(machine.virtualTimestamp(timestamp)));
+    if (scope && realFrame) {
+      scope.requestAnimationFrame = (callback: FrameRequestCallback): number =>
+        realFrame((timestamp) => callback(machine.virtualTimestamp(timestamp)));
+    }
     this.installed = true;
     return this.status();
   }

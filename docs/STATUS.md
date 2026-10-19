@@ -3,7 +3,7 @@
 Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`):
 
 - `npm ci` clean, `npm run build` 0 errors, `npm run typecheck` 0 errors
-- `npx vitest run` **122 passed** (13 files)
+- `npx vitest run` **123 passed** (13 files)
 - `npx playwright test` **21 passed, 0 skipped** (21 s, real Chromium, real extension, no mocks)
 
 ## Proven end to end (real browser, real tab)
@@ -32,11 +32,13 @@ Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`
   (`wasmcheat_list_workers`), scanned, written to, and the write shows up in the worker's own
   published state (e2e).
 - Nested workers: a worker started from inside a worker is captured too (id `k1n1`), its wasm is
-  listed, read, written and scanned through the chain, proven by `nested.html` in the e2e suite.
+  listed, written and scanned through the chain, proven by `nested.html` in the e2e suite.
 - Speed hack (`wasmcheat_speed`): scales `performance.now` / `Date.now` / `requestAnimationFrame` in
-  the page realm (0–20x, and 0 freezes the clock); e2e measures score growth at 4x against 1x, at 0,
-  and after reset.
-- Memory viewer in the DevTools panel: 16 bytes per row, pan earlier/later, ASCII gutter.
+  the page realm and in every worker realm (0–20x, and 0 freezes the clock); e2e measures score
+  growth at 4x against 1x, at 0, and after reset; a unit test proves the scale reaches workers.
+- Memory viewer in the DevTools panel: 16 bytes per row, pan earlier/later, ASCII gutter, **Follow
+  pointer** (reads a u32 and jumps), and clicking any address — a scan hit, a bookmark, a watch
+  event — jumps the dump to it. Proven in the panel e2e.
 - Cross-origin iframes: `all_frames`, per-frame relay, frame resolution by instance count, e2e
   against `framed.html` (a genuinely cross-origin `localhost` vs `127.0.0.1` embed).
 - DevTools panel (`packages/extension/dist` → DevTools → WasmCheat): every tool as a form, a raw
@@ -64,16 +66,18 @@ Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`
   `HOOK_EVAL_BLOCKED`; declarative fallbacks (`replace-return`, `offset-result`) still work.
 - **Frame pick is a heuristic**: the service worker probes frames with `page.diagnose` and takes the
   one holding the most instances. `wasmcheat_attach {frameId}` overrides it.
+- **The memory viewer is read-only**: it dumps and navigates, and writes go through the typed write
+  form (which returns `before -> after` and is audited). That split is deliberate, not missing.
 
-## Known missing (in the order worth fixing)
+## Environment limits (not gaps in the tool)
 
-1. **Hex memory viewer navigation** — the panel dumps bytes and pans by row, but it cannot follow a
-   pointer or jump to a hit from a scan list. Cetus has that; it is the largest remaining UI gap.
-2. **SharedArrayBuffer / `pthread` workers** — worker realms are reached through `postMessage`, so a
-   page that needs cross-origin isolation to use threads is not exercised yet.
-3. **Speed hack reach** — `performance.now`, `Date.now` and `requestAnimationFrame` are covered; a
-   game that reads `Date.now` inside a worker, or uses `performance.timeOrigin` arithmetic, keeps
-   the real clock.
+1. **SharedArrayBuffer / `pthread` workers** — reaching a worker realm needs `postMessage`, which a
+   page only gets with cross-origin isolation. Single-realm atomics loads/stores are probed; a page
+   that shares memory between threads is not exercised by the suite.
+2. **Speed hack scope** — `performance.now`, `Date.now` and `requestAnimationFrame` are wrapped in the
+   page realm *and* in every worker realm (the scale is forwarded down the chain), so a worker game
+   speeds up too. A game that measures time with `performance.timeOrigin` arithmetic, or with a
+   `Date.now` captured before the agent installed, keeps the real clock.
 
 ## Operating notes
 

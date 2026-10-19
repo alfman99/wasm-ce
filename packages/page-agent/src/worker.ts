@@ -241,6 +241,9 @@ function main(): void {
       ? scope.__wasmcheatWorkerId
       : FALLBACK_WORKER_ID;
   const agent = new WorkerAgent({ workerId, post: (message) => scope.postMessage(message) });
+  // The scene clock a game reads inside a worker is this realm's clock, so the speed hack has to be
+  // installed here too, before the worker's own script runs.
+  agent.runtime.speed.install();
   installNestedWorkerWrapper(agent, scope);
   scope.addEventListener('message', (event) => {
     void agent.handleMessage(event.data);

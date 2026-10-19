@@ -304,9 +304,15 @@ function addressLink(text: string): HTMLButtonElement {
   button.type = 'button';
   button.className = 'link';
   button.textContent = text;
-  button.title = 'Fill this address into the forms';
+  button.title = 'Fill this address into the forms and show it in the memory viewer';
   button.addEventListener('click', () => {
     fillAddress(text);
+    // A hit in a scan list is a place to look, not just a value to copy: jumping the viewer here is
+    // what makes a hex dump usable without retyping addresses.
+    void jumpViewer(text).catch((error: unknown) => {
+      const output = document.getElementById('viewer-out');
+      if (output) output.textContent = error instanceof Error ? error.message : String(error);
+    });
   });
   return button;
 }
@@ -668,6 +674,26 @@ async function viewMemory(direction: 0 | -1 | 1 = 0): Promise<string> {
     );
   }
   return lines.join('\n') || '(nothing to show)';
+}
+
+/** Points the viewer at an address and re-renders it: what every address link in the panel does. */
+async function jumpViewer(text: string): Promise<void> {
+  el<HTMLInputElement>('viewer-address').value = text;
+  const output = document.getElementById('viewer-out');
+  if (!output) return;
+  output.textContent = await viewMemory(0);
+}
+
+/**
+ * Reads the 32-bit pointer stored at the viewer's address and follows it, because a pointer chain is
+ * how an address survives a reload: the dump can walk it without an agent.
+ */
+async function followPointer(): Promise<string> {
+  const from = viewer ?? parseAddress(el<HTMLInputElement>('viewer-address').value.trim());
+  const read = await pageCall<ReadResult>('page.read', { address: from, type: 'u32' });
+  const next = { instanceId: from.instanceId, offset: (read.values as number[])[0] ?? 0 };
+  el<HTMLInputElement>('viewer-address').value = formatAddress(next);
+  return viewMemory(0);
 }
 
 async function listWorkers(): Promise<string> {
@@ -1451,6 +1477,7 @@ function wire(): void {
   bind('viewer-view', el('viewer-out'), () => viewMemory(0));
   bind('viewer-prev', el('viewer-out'), () => viewMemory(-1));
   bind('viewer-next', el('viewer-out'), () => viewMemory(1));
+  bind('viewer-follow', el('viewer-out'), followPointer);
   bind('workers-list', el('workers-out'), listWorkers);
   bind('ptr-scan', el('ptr-out'), scanPointers);
   bind('ptr-resolve', el('ptr-out'), resolvePointer);

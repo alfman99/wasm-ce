@@ -241,6 +241,21 @@ describe('page routing to workers', () => {
     expect(await page.runtime.handle('page.read', { address: 'k1n1-1:0x10', type: 'i32' })).toEqual({ values: [1] });
   });
 
+  it('sends a speed change down to every worker realm', async () => {
+    const page = makePage();
+    page.respondWith(() => ({ scale: 4, installed: true }));
+
+    const status = (await page.runtime.handle('page.speed.set', { scale: 4 })) as { scale: number };
+    expect(status.scale).toBe(4);
+
+    // The page realm cannot see a worker's clock, so the scale has to be forwarded, not stored once.
+    const forwarded = page.sent.find((message) => message.method === 'page.speed.set');
+    expect(forwarded?.params).toEqual({ scale: 4 });
+
+    await page.runtime.handle('page.speed.set', { scale: 1 });
+    expect(page.sent.filter((message) => message.method === 'page.speed.set')).toHaveLength(2);
+  });
+
   it('times out instead of hanging when a worker never answers', async () => {
     const page = makePage();
     await expect(page.runtime.workerCall('k1', 'page.hello', {}, 20)).rejects.toMatchObject({ code: 'TIMEOUT' });

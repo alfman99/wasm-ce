@@ -798,6 +798,33 @@ test('the DevTools panel drives the tab without an agent', async () => {
   await panel.locator('#viewer-prev').click();
   await expect(viewer).toContainText('w1:0x400');
 
+  // Following a pointer is a click, not a retyped address: park a pointer, point the viewer at it,
+  // and the dump must land on the address the pointer holds (0x408 = the score).
+  await rawMethod.fill('page.write');
+  await rawParams.fill('{"address":"w1:0x600","type":"u32","value":1032}');
+  await panel.locator('#raw-send').click();
+  await expect(rawOut).toContainText('"after": 1032');
+  await panel.locator('#viewer-address').fill('w1:0x600');
+  await panel.locator('#viewer-view').click();
+  await expect(viewer).toContainText('w1:0x600');
+  await panel.locator('#viewer-follow').click();
+  await expect(viewer).toContainText('w1:0x408');
+  await expect(panel.locator('#viewer-address')).toHaveValue('w1:0x408');
+
+  // A hit in a scan list jumps the viewer too, so a hit list and a hex dump are one workflow.
+  await panel.locator('#scan-instance').fill('w1');
+  await panel.locator('#scan-type').selectOption('i32');
+  await panel.locator('#scan-mode').selectOption('exact');
+  await panel.locator('#scan-value').fill('987654');
+  await panel.locator('#scan-begin').click();
+  await expect(panel.locator('#scan-hits button.link').first()).toBeVisible({ timeout: 20_000 });
+  await panel.locator('#viewer-address').fill('w1:0x400');
+  await panel.locator('#viewer-view').click();
+  await expect(viewer).toContainText('w1:0x400');
+  await panel.locator('#scan-hits button.link').first().click();
+  await expect(panel.locator('#viewer-address')).toHaveValue('w1:0x408');
+  await expect(viewer).toContainText('w1:0x408');
+
   // Workers and pointer chains have forms of their own; the raw console is the fallback, not the only way in.
   await panel.locator('#workers-list').click();
   await expect(panel.locator('#workers-out')).toContainText('worker');

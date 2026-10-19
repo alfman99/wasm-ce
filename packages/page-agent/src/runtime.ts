@@ -21,6 +21,7 @@ import {
   type SavedScanSummary,
   type TextScanOptions,
   type TextScanResult,
+  type SpeedStatus,
   type TraceArmOptions,
   type WatchEntry,
   type WatchEvent,
@@ -388,6 +389,21 @@ export class PageRuntime {
   }
 
   /** Forward one page method into a worker realm and wait for its answer. */
+  /** Applies a speed scale here and in every worker realm this page owns. */
+  private async setSpeedEverywhere(scale: number): Promise<SpeedStatus> {
+    const status = this.speed.set(scale);
+    await Promise.all(
+      [...this.workers.keys()].map(async (id) => {
+        try {
+          await this.workerCall(id, 'page.speed.set', { scale }, WORKER_PROBE_TIMEOUT_MS);
+        } catch {
+          // A worker that is gone or blocked must not fail the page's own speed change.
+        }
+      }),
+    );
+    return status;
+  }
+
   async workerCall(
     workerId: string,
     method: string,
@@ -736,7 +752,9 @@ export class PageRuntime {
       case 'page.listWorkers':
         return this.listWorkers();
       case 'page.speed.set':
-        return this.speed.set(Number((params as { scale?: unknown } | null)?.scale));
+        // A game that reads the clock inside a worker keeps real time unless the workers are told too.
+        // The broadcast recurses down the chain: each realm applies the scale and forwards it.
+        return this.setSpeedEverywhere(Number((params as { scale?: unknown } | null)?.scale));
       case 'page.speed.status':
         return this.speed.status();
       case 'page.freeze.list':
