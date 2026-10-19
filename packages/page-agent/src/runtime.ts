@@ -195,7 +195,11 @@ export class PageRuntime {
   // ---------------------------------------------------------------- memory
 
   private access(instanceId: string): { tracked: TrackedInstance; access: MemoryAccess } {
-    const tracked = this.registry.get(instanceId);
+    // "latest" is how an address stays valid across the reloads real apps do: the id is resolved
+    // at call time instead of being baked into a string the agent remembered.
+    const resolved = instanceId === 'latest' ? this.registry.list().at(-1)?.id ?? instanceId : instanceId;
+    const tracked = this.registry.get(resolved);
+    const instanceId2 = resolved;
     if (!tracked) {
       throw new BridgeError('NO_INSTANCE', `unknown instance "${instanceId}"`, {
         known: this.registry.list().map((entry) => entry.id),
@@ -204,7 +208,7 @@ export class PageRuntime {
     if (!tracked.memory) {
       throw new BridgeError(
         'NO_MEMORY',
-        `instance ${instanceId} exposes no WebAssembly.Memory (checked exports and imports)`,
+        `instance ${instanceId2} exposes no WebAssembly.Memory (checked exports and imports)`,
       );
     }
     return { tracked, access: new MemoryAccess(tracked.memory) };
