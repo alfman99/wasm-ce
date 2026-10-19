@@ -82,12 +82,13 @@ const pendingTraces = new Map<number, { address: string; type?: string; maxHits?
  * suspension costs the human a re-attach and the agent a scan session. So the routing state
  * (which frames exist, which one owns the wasm, what watchpoint is pending) is mirrored into
  * `chrome.storage.session`: same trust level as the grant table, gone when the browser closes.
+ * The chosen frame is deliberately *not* persisted: which frame owns the wasm can change between
+ * documents, and a restored answer from the previous document is worse than re-probing.
  */
 const SESSION_KEY = 'wasmcheat.session';
 interface SessionState {
   attached: number[];
   frames: Record<string, Record<string, string>>;
-  activeFrame: Record<string, number>;
   traces: Record<string, { address: string; type?: string; maxHits?: number; kind?: string }>;
 }
 
@@ -102,7 +103,6 @@ function persistSession(): void {
       frames: Object.fromEntries(
         [...tabFrames].map(([tabId, frames]) => [String(tabId), Object.fromEntries(frames)]),
       ),
-      activeFrame: Object.fromEntries(activeFrame),
       traces: Object.fromEntries(pendingTraces),
     };
     void chrome.storage.session.set({ [SESSION_KEY]: state }).catch(() => undefined);
@@ -117,7 +117,6 @@ async function restoreSession(): Promise<void> {
     for (const [tabId, frames] of Object.entries(stored.frames ?? {})) {
       tabFrames.set(Number(tabId), new Map(Object.entries(frames).map(([id, url]) => [Number(id), url])));
     }
-    for (const [tabId, frameId] of Object.entries(stored.activeFrame ?? {})) activeFrame.set(Number(tabId), frameId);
     for (const [tabId, trace] of Object.entries(stored.traces ?? {})) pendingTraces.set(Number(tabId), trace);
   } catch {
     // A fresh window has no session state; nothing to restore.
