@@ -8,10 +8,13 @@ Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`
 
 ## Proven end to end (real browser, real tab)
 
-- Attach with human approval, granted per tab **and site**; every mutation ends up in one audit
-  funnel (scan begin/narrow/results/drop, read, write, freeze, watch, hook, patch, trace, attach,
-  detach, saved lists), visible from MCP (`wasmcheat_audit`), the DevTools panel and
-  `$WASMCHEAT_HOME/audit.jsonl`.
+- Attach with human approval, granted per tab **and site**; every **mutation** ends up in one audit
+  funnel (attach, detach, scan begin/narrow/drop, write, freeze set/clear, watch add/remove, hook
+  add/enable/remove, patch add/remove/clear, trace arm/stop, saved-list save/delete, bookmark
+  add/remove/clear, function patch, speed change, reload), visible from MCP (`wasmcheat_audit`), the
+  DevTools panel and `$WASMCHEAT_HOME/audit.jsonl`. Reads, `scan_results`, listing calls and
+  watch polls are deliberately not logged: they change nothing, and logging them would bury the
+  writes in noise.
 - Scan / narrow (13 modes: exact, not-equal, less, greater, less-or-equal, greater-or-equal,
   between, changed, unchanged, increased, decreased, increased-by, decreased-by), text scan
   (ascii / utf8 / hex bytes), read, write, freeze, watch.
