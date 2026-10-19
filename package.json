@@ -9,13 +9,14 @@
   },
   "workspaces": [
     "packages/protocol",
+    "packages/wasm-instrument",
     "packages/page-agent",
     "packages/extension",
     "packages/mcp-server",
     "packages/demo-app"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build --workspace @wasmcheat/protocol && npm run build --workspace @wasmcheat/wasm-instrument && npm run build --workspace @wasmcheat/page-agent && npm run build --workspace @wasmcheat/extension && npm run build --workspace @wasmcheat/mcp-server && npm run build --workspace @wasmcheat/demo-app",
     "build:demo": "node packages/demo-app/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && vitest run && playwright test",

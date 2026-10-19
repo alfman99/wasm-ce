@@ -7,6 +7,7 @@ import {
   makeResponse,
   type ApprovalState,
   type PageAgentInfo,
+  type PageDiagnostics,
   type TabInfo,
 } from '@wasmcheat/protocol';
 
@@ -43,6 +44,20 @@ let socket: WebSocket | null = null;
 let reconnectDelay = RECONNECT_BASE_MS;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 const attachedTabs = new Set<number>();
+/** tabId → frameId → url, filled from relay announcements (one per frame). */
+const tabFrames = new Map<number, Map<number, string>>();
+/** tabId → the frame that owns the wasm, so page.* calls land in the right realm. */
+const activeFrame = new Map<number, number>();
+/** tabId → the grant that should survive the reload we are about to cause ourselves. */
+const keepApprovalOnReload = new Map<number, ApprovalEntry>();
+/**
+ * tabId → a watchpoint that must be re-armed in the next document.
+ *
+ * A watchpoint only exists if it is in place before the app compiles its module, so the intent
+ * has to outlive the reload that creates that document. The relay announces itself at
+ * document_start, which is where we put it back.
+ */
+const pendingTraces = new Map<number, { address: string; type?: string; maxHits?: number }>();
 
 // ---------------------------------------------------------------- storage
 
@@ -157,6 +172,10 @@ async function handleBridgeRequest(method: string, params: unknown): Promise<unk
       return callTab(params as { tabId: number; method: string; params?: unknown; timeoutMs?: number });
     case 'ext.detach':
       return revoke(params as { tabId: number; reason?: string });
+    case 'ext.reload':
+      return reloadTab(params as { tabId: number });
+    case 'ext.traceArm':
+      return traceArm(params as { tabId: number; address: string; type?: string; maxHits?: number });
     default:
       throw new BridgeError('BAD_PARAMS', `unknown extension method "${method}"`);
   }
@@ -180,6 +199,10 @@ async function listTabs(): Promise<TabInfo[]> {
       active: tab.active ?? false,
       agentAttached: attachedTabs.has(tab.id),
       approval: approvals[String(tab.id)]?.state ?? 'none',
+      frames: [...(tabFrames.get(tab.id) ?? new Map<number, string>()).entries()].map(([frameId, url]) => ({
+        frameId,
+        url,
+      })),
     });
   }
   return visible.sort((a, b) => Number(b.active) - Number(a.active) || a.tabId - b.tabId);
@@ -261,7 +284,49 @@ async function revoke(params: { tabId: number; reason?: string }): Promise<{ ok:
 
 // ---------------------------------------------------------------- page calls
 
-async function ensureAgent(params: { tabId: number; reload?: boolean }): Promise<PageAgentInfo> {
+/**
+ * Reloads a tab that is already approved, keeping the grant.
+ *
+ * A write watchpoint has to be in place before the app compiles its module, so tracing a page
+ * that is already running means reloading it. A navigation normally revokes approval, but this
+ * reload is ours and lands on the same URL, so the grant carries over instead of asking the
+ * human a second time for the same page.
+ */
+async function reloadTab(params: { tabId: number }): Promise<{ reloaded: true }> {
+  const approvals = await readApprovals();
+  const entry = approvals[String(params.tabId)];
+  if (!entry || entry.state !== 'granted') {
+    throw new BridgeError('NEED_APPROVAL', `tab ${params.tabId} is not approved`);
+  }
+  keepApprovalOnReload.set(params.tabId, entry);
+  attachedTabs.delete(params.tabId);
+  await chrome.tabs.reload(params.tabId);
+  const ready = await waitFor(() => attachedTabs.has(params.tabId), 15_000);
+  if (!ready) {
+    throw new BridgeError('NO_AGENT', `tab ${params.tabId} did not re-attach after reload`);
+  }
+  activeFrame.delete(params.tabId);
+  return { reloaded: true };
+}
+
+/** Arms a write watchpoint now and remembers it for the next document of that tab. */
+async function traceArm(params: {
+  tabId: number;
+  address: string;
+  type?: string;
+  maxHits?: number;
+}): Promise<unknown> {
+  const options = {
+    address: params.address,
+    ...(params.type ? { type: params.type } : {}),
+    ...(params.maxHits ? { maxHits: params.maxHits } : {}),
+  };
+  pendingTraces.set(params.tabId, options);
+  const frameId = await resolveFrame(params.tabId);
+  return sendToTab(params.tabId, 'page.trace.arm', options, 8_000, frameId);
+}
+
+async function ensureAgent(params: { tabId: number; reload?: boolean; frameId?: number }): Promise<PageAgentInfo> {
   const tab = await getTab(params.tabId);
   if (params.reload) {
     await chrome.tabs.reload(params.tabId);
@@ -272,14 +337,61 @@ async function ensureAgent(params: { tabId: number; reload?: boolean }): Promise
   } else if (!attachedTabs.has(params.tabId)) {
     await injectAgent(params.tabId);
   }
-  return sendToTab<PageAgentInfo>(params.tabId, 'page.hello', {}, 8_000);
+
+  // Re-resolve every attach: a reloaded page may instantiate its wasm somewhere else.
+  activeFrame.delete(params.tabId);
+  if (params.frameId !== undefined) activeFrame.set(params.tabId, params.frameId);
+  const frameId = params.frameId ?? (await resolveFrame(params.tabId));
+  const info = await sendToTab<PageAgentInfo>(params.tabId, 'page.hello', {}, 8_000, frameId);
+  return frameId === undefined ? info : { ...info, frameId };
+}
+
+/**
+ * Which frame holds the wasm? Games usually live in a cross-origin subframe, and a content
+ * script in the top frame cannot see into it. Ask every frame we know about and pick the one
+ * that actually captured an instance; fall back to the frame with the most instances.
+ */
+async function resolveFrame(tabId: number): Promise<number | undefined> {
+  const cached = activeFrame.get(tabId);
+  if (cached !== undefined) return cached;
+
+  const frames = tabFrames.get(tabId);
+  if (!frames || frames.size === 0) return undefined;
+  if (frames.size === 1) {
+    const [only] = [...frames.keys()];
+    if (only !== undefined) activeFrame.set(tabId, only);
+    return only;
+  }
+
+  let best: { frameId: number; instances: number } | null = null;
+  for (const [frameId, url] of frames) {
+    if (!/^https?:/i.test(url)) continue;
+    try {
+      const info = await sendToTab<PageDiagnostics>(tabId, 'page.diagnose', {}, 4_000, frameId);
+      if (!best || info.instances > best.instances) best = { frameId, instances: info.instances };
+    } catch {
+      // Frame raced away or has no relay; ignore it.
+    }
+  }
+  if (best) activeFrame.set(tabId, best.frameId);
+  return best?.frameId;
 }
 
 async function injectAgent(tabId: number): Promise<void> {
   await getTab(tabId);
   try {
-    await chrome.scripting.executeScript({ target: { tabId }, world: 'ISOLATED', files: ['dist/relay.js'] });
-    await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', files: ['dist/page-agent.js'] });
+    // allFrames matters: the app often lives in a cross-origin iframe (YouTube Playables,
+    // itch.io embeds, Unity WebGL wrappers), which the top frame cannot reach into.
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: 'ISOLATED',
+      files: ['relay.js'],
+    });
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: 'MAIN',
+      files: ['page-agent.js'],
+    });
   } catch (error) {
     throw new BridgeError(
       'NO_AGENT',
@@ -311,27 +423,36 @@ async function callTab(params: {
   }
 
   const timeoutMs = Math.max(1_000, Math.min(params.timeoutMs ?? RPC_TIMEOUT_MS, 120_000));
+  const frameId = await resolveFrame(params.tabId);
   try {
-    return await sendToTab(params.tabId, params.method, params.params ?? {}, timeoutMs);
+    return await sendToTab(params.tabId, params.method, params.params ?? {}, timeoutMs, frameId);
   } catch (error) {
     if (!(error instanceof BridgeError) || error.code !== 'NO_AGENT') throw error;
     await injectAgent(params.tabId);
     attachedTabs.add(params.tabId);
-    return sendToTab(params.tabId, params.method, params.params ?? {}, timeoutMs);
+    const retryId = frameId ?? (await resolveFrame(params.tabId));
+    return sendToTab(params.tabId, params.method, params.params ?? {}, timeoutMs, retryId);
   }
 }
 
-async function sendToTab<T>(tabId: number, method: string, params: unknown, timeoutMs: number): Promise<T> {
+async function sendToTab<T>(
+  tabId: number,
+  method: string,
+  params: unknown,
+  timeoutMs: number,
+  frameId?: number,
+): Promise<T> {
   let response: unknown;
   try {
+    const message = { type: 'wasmcheat.rpc', method, params };
     response = await withTimeout(
-      chrome.tabs.sendMessage(tabId, { type: 'wasmcheat.rpc', method, params }),
+      frameId === undefined ? chrome.tabs.sendMessage(tabId, message) : chrome.tabs.sendMessage(tabId, message, { frameId }),
       timeoutMs,
       method,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (/Receiving end does not exist|Could not establish connection/i.test(message)) {
+    if (/Receiving end does not exist|Could not establish connection|No frame with id/i.test(message)) {
       throw new BridgeError('NO_AGENT', `no WasmCheat relay in tab ${tabId}; the page needs a reload`);
     }
     throw error;
@@ -386,7 +507,20 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse: (v
     const tabId = sender.tab?.id;
     if (tabId !== undefined) {
       attachedTabs.add(tabId);
-      emit(Events.tabsChanged, { tabId, attached: true });
+      const frameId = sender.frameId ?? 0;
+      let frames = tabFrames.get(tabId);
+      if (!frames) tabFrames.set(tabId, (frames = new Map()));
+      const url = (msg as { url?: string }).url ?? sender.url ?? '';
+      if (!frames.has(frameId) || frames.get(frameId) !== url) {
+        frames.set(frameId, url);
+        emit(Events.tabsChanged, { tabId, attached: true, frameId });
+      }
+      const trace = pendingTraces.get(tabId);
+      if (trace) {
+        // Best effort and deliberately fire-and-forget: the page may still instantiate first,
+        // and the trace status reports that honestly.
+        void sendToTab(tabId, 'page.trace.arm', trace, 5_000, frameId).catch(() => undefined);
+      }
     }
     return undefined;
   }
@@ -435,6 +569,8 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse: (v
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   attachedTabs.delete(tabId);
+  tabFrames.delete(tabId);
+  activeFrame.delete(tabId);
   void (async () => {
     const approvals = await readApprovals();
     if (approvals[String(tabId)]) {
@@ -447,7 +583,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // A navigation invalidates the approval: the new page is not the one the human vetted.
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === 'loading' && changeInfo.url) {
+    const kept = keepApprovalOnReload.get(tabId);
+    keepApprovalOnReload.delete(tabId);
     attachedTabs.delete(tabId);
+    tabFrames.delete(tabId);
+    activeFrame.delete(tabId);
+    // Our own reload of the same page: the grant the human already gave still applies.
+    if (kept && kept.state === 'granted' && kept.tabUrl === changeInfo.url) return;
     void (async () => {
       const approvals = await readApprovals();
       const entry = approvals[String(tabId)];

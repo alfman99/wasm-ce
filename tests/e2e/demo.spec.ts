@@ -59,6 +59,10 @@ async function snapshot(page: Page): Promise<{ score: number; coins: number; liv
   });
 }
 
+/** A second page that hosts the demo inside a cross-origin iframe (localhost vs 127.0.0.1). */
+let framed: Page;
+let framedTabId: number;
+
 test.describe.configure({ mode: 'serial' });
 
 test.beforeAll(async () => {
@@ -325,9 +329,108 @@ test('every write, freeze and hook is in the audit log', async () => {
   expect(entries.data.filter((entry) => entry.kind === 'write').every((entry) => entry.ok)).toBe(true);
 });
 
+test('a write watchpoint names the function that changed the score', async () => {
+  // find_writes arms the watchpoint and reloads, so the module is instrumented as it loads.
+  const watching = call<{
+    installed: boolean;
+    hits: { funcName?: string; funcIndex: number; value: number; previous: number }[];
+    writers: { name: string; hits: number }[];
+  }>(mcp, 'wasmcheat_find_writes', {
+    tabId,
+    address: 'w1:0x408',
+    type: 'i32',
+    timeoutSeconds: 25,
+  });
+
+  // The reload is ours, so the approval the human already gave still applies.
+  await game.waitForLoadState('load');
+  await expect(game.locator('#status')).toContainText('wasm ready', { timeout: 30_000 });
+  await game.click('#reset');
+  await game.click('#mine');
+
+  const result = await watching;
+  expect(result.isError, result.text).toBe(false);
+  expect(result.data.installed, result.text).toBe(true);
+  expect(result.data.hits.length, result.text).toBeGreaterThan(0);
+  const mine = result.data.hits.find((hit) => hit.funcName === 'mine');
+  expect(mine, `no hit from mine: ${result.text}`).toBeTruthy();
+  expect(mine?.value).toBe(25);
+  expect(result.data.writers.some((writer) => writer.name === 'mine')).toBe(true);
+
+  // The instrumented module behaves exactly like the original one.
+  expect((await snapshot(game)).score).toBe(25);
+  await expect(game.locator('#score')).toHaveText('25');
+});
+
 test('detaching revokes access immediately', async () => {
   await call(mcp, 'wasmcheat_detach', { tabId, reason: 'e2e teardown' });
   const read = await call(mcp, 'wasmcheat_read', { tabId, address: 'w1:0x408', type: 'i32' });
   expect(read.isError).toBe(true);
   expect(read.text).toContain('NEED_APPROVAL');
+});
+
+test('a game inside a cross-origin iframe is found and driven', async () => {
+  framed = await browser.context.newPage();
+  await framed.goto(`${DEMO_URL}framed.html`);
+
+  const inner = framed.frameLocator('#game');
+  // Cross-origin: the host page cannot read into the frame, so wait through the frame locator.
+  await expect(inner.locator('#status')).toContainText('wasm ready', { timeout: 30_000 });
+
+  const tabs = await call<{ tabId: number; url: string; frames?: { frameId: number; url: string }[] }[]>(
+    mcp,
+    'wasmcheat_list_tabs',
+  );
+  const host = tabs.data.find((tab) => tab.url.endsWith('/framed.html'));
+  expect(host, tabs.text).toBeDefined();
+  framedTabId = host!.tabId;
+
+  // The top frame sees a cross-origin iframe and no wasm of its own; the hint must say so.
+  const attached = await call<{ instances: InstanceInfo[]; pageAgent: { frameId?: number; url: string } }>(
+    mcp,
+    'wasmcheat_attach',
+    { tabId: framedTabId, reason: 'e2e: drive a game inside an iframe', waitSeconds: 0 },
+  );
+  expect(attached.isError, attached.text).toBe(true);
+  expect(attached.text).toContain('NEED_APPROVAL');
+
+  const approving = call(mcp, 'wasmcheat_attach', {
+    tabId: framedTabId,
+    reason: 'e2e: drive a game inside an iframe',
+    waitSeconds: 60,
+  });
+  await approveThroughPopup(browser, framedTabId);
+  const done = await approving;
+  expect(done.isError, done.text).toBe(false);
+
+  const diagnostics = await call<{ instances: number; iframes: { src: string; crossOrigin: boolean }[] }>(
+    mcp,
+    'wasmcheat_diagnose',
+    { tabId: framedTabId },
+  );
+  expect(diagnostics.isError, diagnostics.text).toBe(false);
+  expect(diagnostics.data.instances).toBe(1);
+
+  const instances = await call<InstanceInfo[]>(mcp, 'wasmcheat_list_instances', { tabId: framedTabId });
+  expect(instances.isError, instances.text).toBe(false);
+  expect(instances.data).toHaveLength(1);
+
+  // Writes must land in the frame's realm, i.e. the game inside the iframe must react.
+  const written = await call(mcp, 'wasmcheat_write', {
+    tabId: framedTabId,
+    address: 'w1:0x408',
+    type: 'i32',
+    value: 777,
+  });
+  expect(written.isError, written.text).toBe(false);
+  await expect(inner.locator('#score')).toHaveText('777');
+
+  const read = await call<{ values: number[] }>(mcp, 'wasmcheat_read', {
+    tabId: framedTabId,
+    address: 'w1:0x408',
+    type: 'i32',
+  });
+  expect(read.data.values[0]).toBe(777);
+
+  await call(mcp, 'wasmcheat_detach', { tabId: framedTabId, reason: 'e2e framed teardown' });
 });

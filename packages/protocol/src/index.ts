@@ -88,6 +88,12 @@ export interface InstanceInfo {
   importPatchability: 'live' | 'next-instantiation' | 'none';
 }
 
+/** A frame inside a tab. Games are often served from a cross-origin subframe. */
+export interface FrameRef {
+  frameId: number;
+  url: string;
+}
+
 export interface TabInfo {
   tabId: number;
   windowId: number;
@@ -97,6 +103,8 @@ export interface TabInfo {
   /** True once the page agent has been injected and answered. */
   agentAttached: boolean;
   approval: ApprovalState;
+  /** Known frames with a live relay, once the page has announced itself. */
+  frames?: FrameRef[];
 }
 
 export type ApprovalState = 'none' | 'pending' | 'granted' | 'revoked';
@@ -109,14 +117,67 @@ export interface ApprovalRequest {
   createdAt: number;
 }
 
-export type ScanMode = 'exact' | 'changed' | 'unchanged' | 'increased' | 'decreased';
+/** Comparison applied by a scan pass. The first pass always snapshots; later passes filter. */
+export type ScanMode =
+  | 'exact'
+  | 'not-equal'
+  | 'less'
+  | 'greater'
+  | 'less-or-equal'
+  | 'greater-or-equal'
+  | 'between'
+  | 'changed'
+  | 'unchanged'
+  | 'increased'
+  | 'decreased'
+  | 'increased-by'
+  | 'decreased-by';
+
+export const SCAN_MODES: ScanMode[] = [
+  'exact',
+  'not-equal',
+  'less',
+  'greater',
+  'less-or-equal',
+  'greater-or-equal',
+  'between',
+  'changed',
+  'unchanged',
+  'increased',
+  'decreased',
+  'increased-by',
+  'decreased-by',
+];
+
+export type TextEncoding = 'ascii' | 'utf8' | 'bytes';
+
+export interface TextScanOptions {
+  instanceId: string;
+  /** Text to look for. For encoding `bytes`, a hex string like "deadbeef". */
+  text: string;
+  encoding?: TextEncoding;
+  caseSensitive?: boolean;
+  range?: { start: number; end: number };
+  maxResults?: number;
+}
+
+export interface TextScanResult {
+  encoding: TextEncoding;
+  /** Offsets of every match, capped at maxResults. */
+  matches: number[];
+  total: number;
+  truncated: boolean;
+  memoryByteLength: number;
+}
 
 export interface ScanOptions {
   instanceId: string;
   type: ValueType;
   mode: ScanMode;
-  /** Required for mode `exact`. */
+  /** Target of the comparison; required for every mode except the delta ones. */
   value?: number;
+  /** Upper bound for mode `between`. */
+  value2?: number;
   /** Absolute tolerance for f32/f64 comparisons. */
   tolerance?: number;
   /** Candidate stride. Defaults to the type width; 1 allows unaligned hits. */
@@ -222,8 +283,69 @@ export interface HookEntry {
 export interface PageAgentInfo {
   version: string;
   url: string;
+  /** Frame the extension routed this call to; absent on the top frame's own answer. */
+  frameId?: number;
   /** True when the page realm allows `new Function`, i.e. free-form hook scripts work. */
   evalAllowed: boolean;
+}
+
+/** Why a tab shows no instances: the answer is almost always one of these fields. */
+/**
+ * A write watchpoint. WebAssembly exposes no memory-write events, so the only way to learn
+ * which function wrote an address is to rewrite the module before it compiles: every store gets
+ * a guarded call back into the host. Arming therefore only takes effect on the next
+ * instantiation, which is why the tools reload the tab.
+ */
+export interface TraceArmOptions {
+  /** Address to watch, e.g. "w1:0x408". The width comes from `type`. */
+  address: string;
+  /** Width used for the value snapshots. Default i32. */
+  type?: ValueType;
+  /** Stop recording after this many hits. Default 50. */
+  maxHits?: number;
+}
+
+export interface WriteTraceHit {
+  /** Milliseconds since the epoch. */
+  at: number;
+  /** Index of the wasm function that executed the store, in the module's function space. */
+  funcIndex: number;
+  /** Export name of that function, when the module exports it. */
+  funcName?: string;
+  address: string;
+  previous: number | string;
+  value: number | string;
+}
+
+export interface WriteTraceStatus {
+  armed: boolean;
+  /** True once an instrumented instance exists and the callback is wired. */
+  installed: boolean;
+  address?: string;
+  type?: ValueType;
+  instanceId?: string;
+  hits: WriteTraceHit[];
+  /** Hits dropped after `maxHits`. */
+  dropped: number;
+  /** Why the trace cannot install, when it cannot. */
+  note?: string;
+}
+
+export interface PageDiagnostics extends PageAgentInfo {
+  title: string;
+  readyState: string;
+  /** Times the app went through each entry point we patched. All zero = it never tried. */
+  calls: { instantiate: number; instantiateStreaming: number; newInstance: number; compile: number };
+  /** Milliseconds between the agent being installed and now. */
+  agentAgeMs: number;
+  instances: number;
+  /** Frames in this document. A cross-origin game frame is invisible to the top frame's agent. */
+  iframes: { src: string; crossOrigin: boolean; width: number; height: number }[];
+  canvases: number;
+  /** .wasm URLs visible in the document markup, as a hint about where the code lives. */
+  wasmReferences: string[];
+  /** One line telling the agent what to do next. */
+  hint: string;
 }
 
 /** Envelope for every message on the bridge. */
@@ -338,6 +460,10 @@ export const Methods = {
   pageHookList: 'page.hook.list',
   pageHookSetEnabled: 'page.hook.setEnabled',
   pageHookRemove: 'page.hook.remove',
+  pageTraceArm: 'page.trace.arm',
+  pageTraceStop: 'page.trace.stop',
+  pageTraceStatus: 'page.trace.status',
+  pageTraceHits: 'page.trace.hits',
 } as const;
 
 /** Events the service worker pushes to the MCP server. */

@@ -78,6 +78,22 @@ Or run it by hand while iterating:
 npm start           # node packages/mcp-server/dist/bin.js, logs to stderr
 ```
 
+### Drive it from a shell, without an agent
+
+`scripts/wasmcheat-cli.mjs` is a one-shot MCP client, so you can poke a real site by hand:
+
+```bash
+node scripts/wasmcheat-cli.mjs tabs
+node scripts/wasmcheat-cli.mjs attach 1234567 '{"reason":"manual check","waitSeconds":120}'
+node scripts/wasmcheat-cli.mjs instances 1234567          # shorthand → {"tabId": …}
+node scripts/wasmcheat-cli.mjs scan '{"tabId":1234567,"instanceId":"w1","type":"i32","mode":"exact","value":75}'
+node scripts/wasmcheat-cli.mjs audit 40                   # last 40 audit entries
+```
+
+Every invocation spawns `dist/bin.js` itself, so the extension reconnects to the bridge each
+time; set `WASMCHEAT_WAIT=40` to let it wait longer. Exit code 1 means the tool returned an
+error (the message says which).
+
 Environment knobs:
 
 | Variable | Default | Meaning |
@@ -138,6 +154,16 @@ Why it looks like this:
 - **Memory reads re-read `memory.buffer` on every call**, because `memory.grow` detaches the old
   buffer.
 
+### Subframes
+
+Games rarely live in the document you are looking at: a YouTube Playable, an itch.io embed or a
+Unity wrapper runs in a **cross-origin iframe**, where a content script injected into the top
+document cannot see it. Both content scripts are therefore registered with `all_frames: true`,
+each frame's relay announces itself with its `frameId` and URL, and the service worker picks the
+frame that actually captured a wasm instance (probing each one with `page.diagnose` when it has
+to). `wasmcheat_list_tabs` shows the frames; `wasmcheat_attach` accepts `frameId` to override the
+choice.
+
 ### Two WebAssembly facts that shape the tool
 
 - **Imports are bound at instantiation.** A running instance can never gain a replaced import.
@@ -149,6 +175,10 @@ Why it looks like this:
   `instance.exports.get_score` works if the app calls `instance.exports.get_score()`. Emscripten's
   glue caches the function on first call (`_get_score = wasmExports['get_score']`), so patched
   exports are invisible to it — which is exactly why the demo ships a hand-written loader.
+- **A store reports nothing.** No engine hook exists for "this instruction wrote this byte", so
+  a write watchpoint cannot be attached to a compiled module at all. `wasmcheat_find_writes`
+  therefore rewrites the binary before it compiles: every store gains a gated call back into the
+  page agent. See [Watchpoints](#watchpoints-asking-who-wrote-an-address).
 
 ---
 
@@ -181,6 +211,7 @@ Addresses are `"<instanceId>:<offset>"`, e.g. `w1:0x408` or `w1:1032`. `instance
 | `wasmcheat_detach` | Revoke approval and cut access. |
 | `wasmcheat_list_instances` | Instances, memory sizes, exports, import patchability. |
 | `wasmcheat_scan` | Snapshot filtered memory, or narrow an existing scan. |
+| `wasmcheat_scan_text` | Find a string or byte pattern (ascii / utf8 / hex bytes). |
 | `wasmcheat_scan_results` | Page through hits of a scan. |
 | `wasmcheat_scan_drop` | Free a scan session. |
 | `wasmcheat_read` | Typed values (optionally an array) or raw bytes as hex. |
@@ -188,6 +219,9 @@ Addresses are `"<instanceId>:<offset>"`, e.g. `w1:0x408` or `w1:1032`. `instance
 | `wasmcheat_freeze` | `set` / `clear` / `list` frozen addresses. |
 | `wasmcheat_watch` | `add` / `remove` / `list` / `poll` change events. |
 | `wasmcheat_hook` | `add` / `list` / `enable` / `remove` export and import hooks. |
+| `wasmcheat_find_writes` | Which function writes to an address? Reloads with an instrumented module. |
+| `wasmcheat_trace` | `arm` / `status` / `poll` / `clear` / `stop` for the write watchpoint. |
+| `wasmcheat_diagnose` | Why is the instance list empty? Counts, frames, wasm URLs, one-line hint. |
 | `wasmcheat_audit` | The most recent audit entries. |
 
 ### Discovering and attaching
@@ -226,8 +260,20 @@ snapshot with `changed` / `unchanged` / `increased` / `decreased` as the value m
 // → {"hits": [{"address": "w1:0x408", "value": 100}], "total": 1}
 ```
 
-Parameters: `type` (i8…f64), `mode`, `value`, `tolerance` (floats), `alignment` (defaults to the
-type width; `1` catches unaligned data), `maxResults` (default 250 000, sets `truncated`), and
+```jsonc
+// wasmcheat_scan — comparison operators and deltas work in any pass
+{ "mode": "less", "value": 100 }              // also: not-equal, greater, less-or-equal,
+                                              // greater-or-equal, between (+ "value2"), increased-by,
+                                              // decreased-by, unchanged
+// wasmcheat_scan_text — strings and byte patterns
+{ "tabId": …, "instanceId": "w1", "text": "combo", "encoding": "ascii", "caseSensitive": false }
+{ "tabId": …, "instanceId": "w1", "text": "deadbeef", "encoding": "bytes" }
+// → {"encoding": "ascii", "matches": 3, "sample": [{"address": "w1:0x210", "preview": "…"}]}
+```
+
+Parameters: `type` (i8…f64), `mode`, `value` (and `value2` for `between`), `tolerance` (floats,
+defaults to `max(|value|·1e-6, 1e-6)`), `alignment` (defaults to the type width; `1` catches
+unaligned data), `range` (`{start, end}`), `maxResults` (default 250 000, sets `truncated`), and
 `scanId` to narrow.
 
 ### Reading, writing, freezing, watching
@@ -277,6 +323,44 @@ pass a declarative `fallback` instead (`{"mode": "replace-return", "value": 42}`
 `{"mode": "offset-result", "value": 1000}`, or `{"mode": "passthrough"}`).
 
 ---
+
+## Watchpoints: asking "who wrote this address?"
+
+`wasmcheat_find_writes` is Cheat Engine's write breakpoint, translated to wasm:
+
+```jsonc
+{ "tabId": …, "address": "w1:0x408", "type": "i32" }
+// → {"installed": true, "hits": [{"funcIndex": 3, "funcName": "mine", "previous": 75, "value": 100, …}],
+//    "writers": [{"name": "mine", "funcIndex": 3, "hits": 12, "last": 400}]}
+```
+
+How it works, because the constraint is the interesting part:
+
+1. WebAssembly gives the host no notification when a `store` executes, and a compiled module
+   cannot be modified. So the watchpoint has to be in the binary *before* the engine sees it.
+2. The tool arms the watchpoint, then reloads the tab (the approval survives, since it is our
+   own reload of the page you already approved). Your module is rewritten as it streams past:
+   one mutable `i32` global is added, one import (`__wasmcheat.on_store`) and one export
+   (`__wc_arm`), and after every store instruction the module runs
+   `global.get flags; if (flags) { on_store(funcIndex) }`.
+3. `funcIndex` is a constant per call site, which is the attribution: it names the function that
+   performed the store. The page agent diffs the watched address on every callback and records
+   the hit with the value before and after.
+4. `wasmcheat_trace {action: "stop"}` removes the rewriting for the next reload, and nothing
+   stays behind in the page.
+
+Honest limits:
+
+- The watchpoint needs a reload; a module that is already compiled can never be instrumented.
+  When you arm a live page, the status says so instead of pretending.
+- The gated check costs one global read and a branch per store even when disarmed; while armed
+  every store is a call into the page agent, which is slower than running free. That is the
+  same trade Cheat Engine makes with a hardware breakpoint.
+- Functions the module does not export appear as `wasm-function[12]`. That is all the identity
+  the engine has; the index still lets you map it to a disassembly.
+- Modules using SIMD (`0xFD`) or atomics (`0xFE`) are rejected with `UNSUPPORTED` rather than
+  rewritten half-way. Everything Emscripten, Unity and clang emit today (element segments,
+  start functions, indirect calls) is handled.
 
 ## Demo walkthrough
 
@@ -348,12 +432,14 @@ fails fast if port 7331 is already taken.
 
 ```
 packages/protocol/src/index.ts      shared contract
-packages/page-agent/src/            registry (capture), memory, scanner, hooks, runtime
+packages/page-agent/src/            registry (capture), memory, scanner, hooks, trace, runtime
 packages/extension/src/             sw.ts (approval + bridge), relay.ts, popup, manifest
 packages/extension/dist/            loadable unpacked extension (built)
+packages/wasm-instrument/src/       wasm binary rewriter behind write watchpoints
 packages/mcp-server/src/            bridge.ts (WebSocket), server.ts (tools), audit.ts, bin.ts
 packages/demo-app/src/game.c        demo target, compiled to prebuilt/game.wasm
-tests/unit/                         vitest: memory, registry, scanner, hooks
+packages/demo-app/framed.html       the demo inside a cross-origin iframe (subframe test)
+tests/unit/                         vitest: memory, registry, scanner, hooks, wasm exports
 tests/e2e/                          playwright: harness.ts + demo.spec.ts
 ```
 

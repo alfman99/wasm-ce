@@ -153,6 +153,159 @@ export function buildMemoryModule(pages = 1): Uint8Array<ArrayBuffer> {
   return Uint8Array.from(module.bytes);
 }
 
+/**
+ * A module whose only job is to write memory:
+ *   exports: store_at(i32,i32)->(), load_at(i32)->i32, tick()->(), memory
+ * `tick` stores at 0x10 and 0x20, so the module has three store sites in two functions.
+ */
+export function buildStoreModule(): Uint8Array<ArrayBuffer> {
+  const module = new Writer();
+  module.raw([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+
+  // Types: 0 = (i32,i32)->(), 1 = (i32)->i32, 2 = ()->()
+  const types = new Writer().u32(3);
+  types.u8(0x60).u32(2).u8(0x7f).u8(0x7f).u32(0);
+  types.u8(0x60).u32(1).u8(0x7f).u32(1).u8(0x7f);
+  types.u8(0x60).u32(0).u32(0);
+  module.section(1, types);
+
+  // Functions: store_at, load_at, tick. No imports and no globals, so a rewriter has to create
+  // the sections it appends to.
+  module.section(3, new Writer().u32(3).u32(0).u32(1).u32(2));
+  module.section(5, new Writer().u32(1).u8(0x00).u32(1));
+
+  const exports = new Writer().u32(4);
+  exports.str('store_at').u8(0x00).u32(0);
+  exports.str('load_at').u8(0x00).u32(1);
+  exports.str('tick').u8(0x00).u32(2);
+  exports.str('memory').u8(0x02).u32(0);
+  module.section(7, exports);
+
+  module.section(
+    10,
+    codeSection([
+      [0x20, 0x00, 0x20, 0x01, 0x36, 0x02, 0x00], // local.get 0; local.get 1; i32.store
+      [0x20, 0x00, 0x28, 0x02, 0x00], // local.get 0; i32.load
+      [
+        0x41, 0x10, 0x41, 0x01, 0x36, 0x02, 0x00, // i32.const 0x10; i32.const 1; i32.store
+        0x41, 0x20, 0x41, 0x02, 0x36, 0x02, 0x00, // i32.const 0x20; i32.const 2; i32.store
+      ],
+    ]),
+  );
+
+  return Uint8Array.from(module.bytes);
+}
+
+/**
+ * A module whose start function writes 7 to address 0:
+ *   exports: peek(i32)->i32, memory
+ * A rewriter that leaves the start section's function index alone makes this module fail to
+ * instantiate, because slot 0 becomes the callback import.
+ */
+export function buildStartModule(): Uint8Array<ArrayBuffer> {
+  const module = new Writer();
+  module.raw([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+
+  // Types: 0 = ()->(), 1 = (i32)->i32
+  const types = new Writer().u32(2);
+  types.u8(0x60).u32(0).u32(0);
+  types.u8(0x60).u32(1).u8(0x7f).u32(1).u8(0x7f);
+  module.section(1, types);
+
+  // Function 0 is the start function, function 1 is peek.
+  module.section(3, new Writer().u32(2).u32(0).u32(1));
+  module.section(5, new Writer().u32(1).u8(0x00).u32(1));
+
+  const exports = new Writer().u32(2);
+  exports.str('peek').u8(0x00).u32(1);
+  exports.str('memory').u8(0x02).u32(0);
+  module.section(7, exports);
+
+  module.section(8, new Writer().u32(0));
+
+  module.section(
+    10,
+    codeSection([
+      [0x41, 0x00, 0x41, 0x07, 0x36, 0x02, 0x00], // i32.const 0; i32.const 7; i32.store
+      [0x20, 0x00, 0x28, 0x02, 0x00], // local.get 0; i32.load
+    ]),
+  );
+
+  return Uint8Array.from(module.bytes);
+}
+
+/**
+ * A module that reaches its store function through a table, like compiler output does:
+ *   exports: write_via_table(i32)->(), write_direct(i32,i32)->(), peek(i32)->i32, memory
+ * The single element segment places `write_direct` (function 1) in table slot 0.
+ */
+export function buildTableModule(): Uint8Array<ArrayBuffer> {
+  const module = new Writer();
+  module.raw([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+
+  // Types: 0 = (i32,i32)->(), 1 = (i32)->(), 2 = (i32)->i32
+  const types = new Writer().u32(3);
+  types.u8(0x60).u32(2).u8(0x7f).u8(0x7f).u32(0);
+  types.u8(0x60).u32(1).u8(0x7f).u32(0);
+  types.u8(0x60).u32(1).u8(0x7f).u32(1).u8(0x7f);
+  module.section(1, types);
+
+  // Function 0 = write_via_table (type 1), 1 = write_direct (type 0), 2 = peek (type 2).
+  module.section(3, new Writer().u32(3).u32(1).u32(0).u32(2));
+  module.section(4, new Writer().u32(1).u8(0x70).u8(0x00).u32(1)); // one funcref slot
+  module.section(5, new Writer().u32(1).u8(0x00).u32(1));
+
+  const exports = new Writer().u32(4);
+  exports.str('write_via_table').u8(0x00).u32(0);
+  exports.str('write_direct').u8(0x00).u32(1);
+  exports.str('peek').u8(0x00).u32(2);
+  exports.str('memory').u8(0x02).u32(0);
+  module.section(7, exports);
+
+  // One active element segment: flags 0, offset expression `i32.const 0`, one function index.
+  const elements = new Writer().u32(1).u32(0).raw([0x41, 0x00, 0x0b]).u32(1).u32(1);
+  module.section(9, elements);
+
+  module.section(
+    10,
+    codeSection([
+      [0x20, 0x00, 0x41, 0x2a, 0x41, 0x00, 0x11, 0x00, 0x00], // local.get 0; i32.const 42; i32.const 0; call_indirect (type 0) (table 0)
+      [0x20, 0x00, 0x20, 0x01, 0x36, 0x02, 0x00], // local.get 0; local.get 1; i32.store
+      [0x20, 0x00, 0x28, 0x02, 0x00], // local.get 0; i32.load
+    ]),
+  );
+
+  return Uint8Array.from(module.bytes);
+}
+
+/** A module whose only body starts with the SIMD prefix, which a rewriter must reject. */
+export function buildSimdModule(): Uint8Array<ArrayBuffer> {
+  const module = new Writer();
+  module.raw([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+
+  module.section(1, new Writer().u32(1).u8(0x60).u32(0).u32(0)); // ()->()
+  module.section(3, new Writer().u32(1).u32(0));
+
+  const exports = new Writer().u32(1);
+  exports.str('simd').u8(0x00).u32(0);
+  module.section(7, exports);
+
+  // The prefix alone is enough: the rewriter refuses before reading the subopcode.
+  module.section(10, codeSection([[0xfd, 0x0c]]));
+
+  return Uint8Array.from(module.bytes);
+}
+
+/** Encodes a code section whose bodies all declare no locals. */
+function codeSection(bodies: number[][]): Writer {
+  const code = new Writer().u32(bodies.length);
+  for (const instructions of bodies) {
+    const encoded = new Writer().u32(0).raw(instructions).u8(0x0b);
+    code.u32(encoded.bytes.length).raw(encoded.bytes);
+  }
+  return code;
+}
+
 /** Wraps bytes so `WebAssembly.instantiateStreaming` accepts them. */
 export function wasmResponse(bytes: Uint8Array<ArrayBuffer>): Response {
   return new Response(bytes, { headers: { 'content-type': 'application/wasm' } });

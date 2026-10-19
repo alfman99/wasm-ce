@@ -11,14 +11,17 @@ import {
   type FreezeEntry,
   type HookEntry,
   type InstanceInfo,
+  type PageDiagnostics,
   type PageAgentInfo,
   type ReadResult,
   type ScanHit,
   type ScanSummary,
+  type TextScanResult,
   type TabInfo,
   type ValueType,
   type WatchEntry,
   type WatchEvent,
+  type WriteTraceStatus,
   type WriteResult,
 } from '@wasmcheat/protocol';
 import { Bridge } from './bridge.js';
@@ -27,7 +30,21 @@ import { record, tail } from './audit.js';
 export type ToolResult = CallToolResult;
 
 const VALUE_TYPE = z.enum(['i8', 'u8', 'i16', 'u16', 'i32', 'u32', 'i64', 'u64', 'f32', 'f64']);
-const SCAN_MODE = z.enum(['exact', 'changed', 'unchanged', 'increased', 'decreased']);
+const SCAN_MODE = z.enum([
+  'exact',
+  'not-equal',
+  'less',
+  'greater',
+  'less-or-equal',
+  'greater-or-equal',
+  'between',
+  'changed',
+  'unchanged',
+  'increased',
+  'decreased',
+  'increased-by',
+  'decreased-by',
+]);
 const ADDRESS = z
   .string()
   .describe('Address in instance form, e.g. "w1:0x408" (offset may be hex or decimal).');
@@ -111,9 +128,16 @@ export function createServer(bridge: Bridge): McpServer {
           .boolean()
           .optional()
           .describe('Reload the tab before attaching. Use when the page loaded before the extension did.'),
+        frameId: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            'Frame to drive, from wasmcheat_list_tabs frames[]. Omit to let the extension pick the frame that holds the wasm.',
+          ),
       },
     },
-    async ({ tabId, reason, waitSeconds, reload }) => {
+    async ({ tabId, reason, waitSeconds, reload, frameId }) => {
       const waitMs = (waitSeconds ?? 60) * 1_000;
       try {
         const approval = await bridge.request<{ requestId: string; state: ApprovalState; tab?: { title: string; url: string } }>(
@@ -135,7 +159,11 @@ export function createServer(bridge: Bridge): McpServer {
           );
         }
 
-        const info = await bridge.request<PageAgentInfo>('ext.ensureAgent', { tabId, reload }, 20_000);
+        const info = await bridge.request<PageAgentInfo>(
+          'ext.ensureAgent',
+          { tabId, reload, frameId },
+          20_000,
+        );
         const instances = await page<InstanceInfo[]>(tabId, 'page.listInstances');
         await record({
           kind: 'attach',
@@ -214,6 +242,26 @@ export function createServer(bridge: Bridge): McpServer {
   );
 
   server.registerTool(
+    'wasmcheat_diagnose',
+    {
+      title: 'Why does this tab show no wasm?',
+      description:
+        'Explain what the page agent can and cannot see in a tab: how many times the app went through ' +
+        'WebAssembly.instantiate, how many instances were captured, whether the document hosts a cross-origin ' +
+        'iframe (a game in a subframe is invisible to the top-frame agent), any .wasm URLs in the markup, and ' +
+        'whether the page allows eval (free-form hook bodies). Call this first when list_instances is empty.',
+      inputSchema: { tabId: z.number().int() },
+    },
+    async ({ tabId }) => {
+      try {
+        return ok(await page<PageDiagnostics>(tabId, 'page.diagnose'));
+      } catch (error) {
+        return fail(error);
+      }
+    },
+  );
+
+  server.registerTool(
     'wasmcheat_scan',
     {
       title: 'Scan memory (and narrow a scan)',
@@ -227,7 +275,13 @@ export function createServer(bridge: Bridge): McpServer {
         instanceId: z.string().describe('Instance id from wasmcheat_list_instances, e.g. "w1".'),
         type: VALUE_TYPE.describe('Value width to interpret memory as.'),
         mode: SCAN_MODE.optional().describe('Filter for this pass (default "exact" when a value is given, else "changed").'),
-        value: z.union([z.number(), z.string()]).optional().describe('Target value for exact scans and for tight narrowing.'),
+        value: z
+          .union([z.number(), z.string()])
+          .optional()
+          .describe(
+            'Target of the comparison: the value for exact/not-equal/less/greater/increased-by/decreased-by, the lower bound for between.',
+          ),
+        value2: z.union([z.number(), z.string()]).optional().describe('Upper bound, for mode "between" only.'),
         tolerance: z.number().min(0).optional().describe('Allowed absolute difference for float scans.'),
         alignment: z
           .union([z.literal(1), z.literal(2), z.literal(4), z.literal(8)])
@@ -237,15 +291,17 @@ export function createServer(bridge: Bridge): McpServer {
         scanId: z.string().optional().describe('Narrow this existing scan instead of starting a new one.'),
       },
     },
-    async ({ tabId, instanceId, type, mode, value, tolerance, alignment, maxResults, scanId }) => {
+    async ({ tabId, instanceId, type, mode, value, value2, tolerance, alignment, maxResults, scanId }) => {
       try {
         const parsedValue = numeric(value);
+        const parsedValue2 = numeric(value2);
         const effectiveMode = mode ?? (parsedValue === undefined ? 'changed' : 'exact');
         const summary = scanId
           ? await page<ScanSummary>(tabId, 'page.scan.next', {
               scanId,
               mode: effectiveMode,
               value: parsedValue,
+              value2: parsedValue2,
               tolerance,
             })
           : await page<ScanSummary>(tabId, 'page.scan.begin', {
@@ -253,6 +309,7 @@ export function createServer(bridge: Bridge): McpServer {
               type,
               mode: effectiveMode,
               value: parsedValue,
+              value2: parsedValue2,
               tolerance,
               alignment,
               maxResults,
@@ -279,6 +336,56 @@ export function createServer(bridge: Bridge): McpServer {
               ? `Truncated at ${summary.matchCount} hits; raise maxResults or narrow with a range.`
               : undefined;
         return ok(formatted, note);
+      } catch (error) {
+        return fail(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'wasmcheat_scan_text',
+    {
+      title: 'Search memory for text',
+      description:
+        'Byte search for a string in linear memory: names, ids, prices and labels that a numeric scan can never find. ' +
+        'encoding "ascii" (default) or "utf8" for text, "bytes" for a hex needle like "deadbeef". Returns matching ' +
+        'offsets you can read with wasmcheat_read.',
+      inputSchema: {
+        tabId: z.number().int(),
+        instanceId: z.string().describe('Instance id from wasmcheat_list_instances, e.g. "w1".'),
+        text: z.string().min(1).describe('Text to find, or a hex string when encoding is "bytes".'),
+        encoding: z.enum(['ascii', 'utf8', 'bytes']).optional().describe('How to encode the needle (default "ascii").'),
+        caseSensitive: z.boolean().optional().describe('Default true; set false to fold ASCII case.'),
+        from: z.number().int().min(0).optional().describe('Start offset in bytes (default 0).'),
+        to: z.number().int().min(0).optional().describe('End offset in bytes (default end of memory).'),
+        maxResults: z.number().int().min(1).max(250_000).optional(),
+      },
+    },
+    async ({ tabId, instanceId, text, encoding, caseSensitive, from, to, maxResults }) => {
+      try {
+        const result = await page<TextScanResult>(tabId, 'page.scan.text', {
+          instanceId,
+          text,
+          encoding,
+          caseSensitive,
+          range: from === undefined && to === undefined ? undefined : { start: from ?? 0, end: to ?? Number.MAX_SAFE_INTEGER },
+          maxResults,
+        });
+        await record({
+          kind: 'scan',
+          tabId,
+          ok: true,
+          summary: `text scan ${encoding ?? 'ascii'} "${text}" -> ${result.total} match(es)`,
+          detail: { instanceId },
+        });
+        return ok(
+          {
+            ...result,
+            // Addresses of the *start* of each match, ready for wasmcheat_read.
+            addresses: result.matches.map((offset) => formatAddress({ instanceId, offset })),
+          },
+          result.total === 0 ? 'No matches. Try a shorter needle, another encoding, or encoding "bytes" for raw bytes.' : undefined,
+        );
       } catch (error) {
         return fail(error);
       }
@@ -472,6 +579,110 @@ export function createServer(bridge: Bridge): McpServer {
         }
         if (!address || !type) return fail(new BridgeError('BAD_PARAMS', 'address and type are required for add'));
         return ok(await page<WatchEntry>(tabId, 'page.watch.add', { address: addr(address), type }));
+      } catch (error) {
+        return fail(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'wasmcheat_find_writes',
+    {
+      title: 'Find what writes to an address',
+      description:
+        'Answers "which function writes here?" — Cheat Engine\'s write breakpoint, for wasm. WebAssembly has no write events, ' +
+        'so the tab is reloaded with an instrumented module: every store then calls back with the function index that made it. ' +
+        'The reload keeps the existing approval. Returns every hit with the function that wrote and the value before/after.',
+      inputSchema: {
+        tabId: z.number().int(),
+        address: ADDRESS,
+        type: VALUE_TYPE.optional(),
+        maxHits: z.number().int().min(1).max(500).optional(),
+        timeoutSeconds: z.number().int().min(1).max(120).optional(),
+        reload: z.boolean().optional(),
+      },
+    },
+    async ({ tabId, address, type, maxHits, timeoutSeconds, reload }) => {
+      try {
+        const target = addr(address);
+        const formatted = formatAddress(target);
+        const wait = (timeoutSeconds ?? 15) * 1000;
+        await bridge.request('ext.traceArm', {
+          tabId,
+          address: formatted,
+          ...(type ? { type } : {}),
+          ...(maxHits ? { maxHits } : {}),
+        });
+        if (reload !== false) {
+          await bridge.request('ext.reload', { tabId }, 60_000);
+        }
+        const deadline = Date.now() + wait;
+        let status = await page<WriteTraceStatus>(tabId, 'page.trace.status');
+        while (status.hits.length === 0 && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 400));
+          status = await page<WriteTraceStatus>(tabId, 'page.trace.status');
+        }
+        record({
+          kind: 'trace',
+          tabId,
+          ok: true,
+          summary: `watched writes to ${formatted} (${status.hits.length} hit(s))`,
+          detail: { hits: status.hits, installed: status.installed },
+        });
+        const writers = new Map<string, { funcIndex: number; funcName?: string; hits: number; last: unknown }>();
+        for (const hit of status.hits) {
+          const key = hit.funcName ?? `wasm-function[${hit.funcIndex}]`;
+          const entry = writers.get(key);
+          if (entry) entry.hits += 1;
+          else writers.set(key, { funcIndex: hit.funcIndex, funcName: hit.funcName, hits: 1, last: hit.value });
+        }
+        const note = status.installed
+          ? status.hits.length > 0
+            ? `${writers.size} function(s) wrote ${formatted}`
+            : `no writes to ${formatted} were seen in ${(wait / 1000).toFixed(0)}s — the page may not touch it until you interact with it`
+          : `the watchpoint never installed${status.note ? `: ${status.note}` : ''}`;
+        return ok({ ...status, writers: [...writers.entries()].map(([name, entry]) => ({ name, ...entry })) }, note);
+      } catch (error) {
+        return fail(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'wasmcheat_trace',
+    {
+      title: 'Write watchpoint control',
+      description:
+        'Low-level control for find_writes. arm (needs tabId + address) installs the watchpoint for the next instantiation and ' +
+        'remembers it across a reload, status reports whether it installed, poll drains the collected hits, clear resets them, ' +
+        'stop removes the watchpoint entirely.',
+      inputSchema: {
+        tabId: z.number().int(),
+        action: z.enum(['arm', 'status', 'poll', 'clear', 'stop']),
+        address: ADDRESS.optional(),
+        type: VALUE_TYPE.optional(),
+        maxHits: z.number().int().min(1).max(500).optional(),
+        limit: z.number().int().min(1).max(1000).optional(),
+      },
+    },
+    async ({ tabId, action, address, type, maxHits, limit }) => {
+      try {
+        if (action === 'arm') {
+          if (!address) return fail(new BridgeError('BAD_PARAMS', 'address is required for arm'));
+          const status = await bridge.request<WriteTraceStatus>('ext.traceArm', {
+            tabId,
+            address: formatAddress(addr(address)),
+            ...(type ? { type } : {}),
+            ...(maxHits ? { maxHits } : {}),
+          });
+          return ok(status, 'armed; it takes effect the next time the page instantiates its wasm');
+        }
+        if (action === 'stop') return ok(await page<WriteTraceStatus>(tabId, 'page.trace.stop'));
+        if (action === 'clear') return ok(await page<WriteTraceStatus>(tabId, 'page.trace.clear'));
+        if (action === 'poll') {
+          return ok(await page<WriteTraceStatus>(tabId, 'page.trace.hits', { limit }));
+        }
+        return ok(await page<WriteTraceStatus>(tabId, 'page.trace.status'));
       } catch (error) {
         return fail(error);
       }

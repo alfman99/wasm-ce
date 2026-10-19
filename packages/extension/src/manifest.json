@@ -20,14 +20,14 @@
       "js": ["relay.js"],
       "run_at": "document_start",
       "world": "ISOLATED",
-      "all_frames": false
+      "all_frames": true
     },
     {
       "matches": ["http://*/*", "https://*/*"],
       "js": ["page-agent.js"],
       "run_at": "document_start",
       "world": "MAIN",
-      "all_frames": false
+      "all_frames": true
     }
   ]
 }

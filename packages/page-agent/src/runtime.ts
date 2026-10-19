@@ -5,10 +5,15 @@ import {
   type HookEntry,
   type HookSpec,
   type InstanceInfo,
+  type PageDiagnostics,
   type PageAgentInfo,
   type ReadResult,
   type ScanMode,
   type ScanOptions,
+  type TextScanOptions,
+  type TextScanResult,
+  type TraceArmOptions,
+  type WriteTraceStatus,
   type ValueType,
   type WatchEntry,
   type WatchEvent,
@@ -16,9 +21,11 @@ import {
   VALUE_TYPE_BYTES,
 } from '@wasmcheat/protocol';
 import { MemoryAccess } from './memory.js';
-import { WasmRegistry, type TrackedInstance } from './registry.js';
-import { ScanStore } from './scanner.js';
+import { WasmRegistry, patchStats, type TrackedInstance } from './registry.js';
+import { ScanStore, scanText } from './scanner.js';
 import { HookStore, detectEvalAllowed } from './hooks.js';
+import { TraceStore } from './trace.js';
+import { instrumentModule } from '@wasmcheat/wasm-instrument';
 
 const AGENT_VERSION = '0.1.0';
 const FREEZE_INTERVAL_MS = 16;
@@ -41,6 +48,7 @@ export class PageRuntime {
   readonly registry: WasmRegistry;
   readonly scans = new ScanStore();
   readonly hooks: HookStore;
+  readonly trace: TraceStore;
   readonly channelId = randomId();
 
   private readonly freezes = new Map<string, FreezeRecord>();
@@ -51,8 +59,11 @@ export class PageRuntime {
   private disposed = false;
 
   constructor() {
-    this.registry = new WasmRegistry();
+    this.registry = new WasmRegistry({
+      onInstrumented: (tracked) => this.trace.onInstrumented(tracked),
+    });
     this.hooks = new HookStore(this.registry, detectEvalAllowed());
+    this.trace = new TraceStore(this.registry, (bytes) => instrumentModule(bytes));
   }
 
   install(): void {
@@ -72,6 +83,50 @@ export class PageRuntime {
 
   info(): PageAgentInfo {
     return { version: AGENT_VERSION, url: location.href, evalAllowed: this.hooks.evalAllowed };
+  }
+
+  /**
+   * "Why does this tab show no instances?" — every real cause is observable from here:
+   * the app never called a patched entry point, it lives in a frame we are not in, or it
+   * simply is not a wasm app (JS/canvas).
+   */
+  diagnose(): PageDiagnostics {
+    const stats = patchStats();
+    const calls = stats.calls;
+    const instances = this.registry.list().length;
+    const iframes = readIframes();
+    const canvases = document.querySelectorAll('canvas').length;
+    const attempts = calls.instantiate + calls.instantiateStreaming + calls.newInstance;
+    const crossOrigin = iframes.find((frame) => frame.crossOrigin);
+
+    let hint: string;
+    if (instances > 0) {
+      hint = `${instances} instance(s) captured; use wasmcheat_list_instances, then scan.`;
+    } else if (crossOrigin) {
+      hint =
+        `This document has a cross-origin frame (${crossOrigin.src}) and no wasm of its own. ` +
+        'The game is probably inside that frame; subframe injection is not enabled in this build.';
+    } else if (attempts === 0) {
+      hint =
+        'The agent is installed but the page never called WebAssembly.instantiate. Either the app is ' +
+        'not a wasm app, or it instantiates inside a worker/iframe, or it loaded before the agent and ' +
+        'needs a reload (attach with reload=true).';
+    } else {
+      hint = `${attempts} instantiation(s) observed but none captured; the app may use WebAssembly in a way this build does not track.`;
+    }
+
+    return {
+      ...this.info(),
+      title: document.title,
+      readyState: document.readyState,
+      calls,
+      agentAgeMs: Date.now() - stats.installedAt,
+      instances,
+      iframes,
+      canvases,
+      wasmReferences: wasmReferences(),
+      hint,
+    };
   }
 
   listInstances(): InstanceInfo[] {
@@ -138,10 +193,22 @@ export class PageRuntime {
     return this.scans.pass(access, options);
   }
 
-  scanNext(params: { scanId: string; mode: ScanMode; value?: number; tolerance?: number }): ReturnType<ScanStore['narrow']> {
+  scanText(params: TextScanOptions): TextScanResult {
+    const { access } = this.access(params.instanceId);
+    return scanText(access, params);
+  }
+
+  scanNext(params: {
+    scanId: string;
+    mode: ScanMode;
+    value?: number;
+    value2?: number;
+    tolerance?: number;
+  }): ReturnType<ScanStore['narrow']> {
     const session = this.scans.get(params.scanId);
     const { access } = this.access(session.instanceId);
     return this.scans.narrow(access, params.scanId, params.mode, {
+      value2: params.value2,
       value: params.value,
       tolerance: params.tolerance,
     });
@@ -309,6 +376,8 @@ export class PageRuntime {
         return this.info();
       case 'page.listInstances':
         return this.listInstances();
+      case 'page.diagnose':
+        return this.diagnose();
       case 'page.read':
         return this.read(p);
       case 'page.write':
@@ -317,6 +386,8 @@ export class PageRuntime {
         return this.scanBegin(p);
       case 'page.scan.next':
         return this.scanNext(p);
+      case 'page.scan.text':
+        return this.scanText(p as unknown as TextScanOptions);
       case 'page.scan.results':
         return this.scanResults(p);
       case 'page.scan.drop':
@@ -343,6 +414,16 @@ export class PageRuntime {
         return this.hookSetEnabled(p);
       case 'page.hook.remove':
         return this.hookRemove(p);
+      case 'page.trace.arm':
+        return this.trace.arm(p as unknown as TraceArmOptions);
+      case 'page.trace.stop':
+        return this.trace.stop();
+      case 'page.trace.status':
+        return this.trace.status();
+      case 'page.trace.clear':
+        return this.trace.clear();
+      case 'page.trace.hits':
+        return this.trace.hits((p as { limit?: number }).limit);
       default:
         throw new BridgeError('BAD_PARAMS', `unknown page method "${method}"`);
     }
@@ -387,4 +468,32 @@ function toBase64(bytes: Uint8Array): string {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
+}
+
+/**
+ * A cross-origin iframe is the usual reason a tab "has no wasm": the game runs in its own
+ * document, which this agent (top frame only) is not inside. `src` is readable even when the
+ * frame's contents are not.
+ */
+function readIframes(): { src: string; crossOrigin: boolean; width: number; height: number }[] {
+  const frames: { src: string; crossOrigin: boolean; width: number; height: number }[] = [];
+  for (const frame of Array.from(document.querySelectorAll('iframe'))) {
+    const src = frame.getAttribute('src') ?? '';
+    let crossOrigin = false;
+    try {
+      crossOrigin = src !== '' && new URL(src, location.href).origin !== location.origin;
+    } catch {
+      crossOrigin = src !== '';
+    }
+    const rect = frame.getBoundingClientRect();
+    frames.push({ src, crossOrigin, width: Math.round(rect.width), height: Math.round(rect.height) });
+  }
+  return frames.slice(0, 10);
+}
+
+/** `.wasm` URLs that appear in the markup — a cheap way to see whether wasm lives here at all. */
+function wasmReferences(): string[] {
+  const html = document.documentElement?.outerHTML ?? '';
+  const found = html.match(/[^"'\s>]*\.wasm(?:\?[^"'\s>]*)?/g) ?? [];
+  return Array.from(new Set(found)).slice(0, 5);
 }

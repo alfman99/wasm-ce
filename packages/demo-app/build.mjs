@@ -101,7 +101,7 @@ await build({
   legalComments: 'none',
 });
 
-for (const file of ['index.html', 'styles.css']) {
+for (const file of ['index.html', 'framed.html', 'styles.css']) {
   await copyFile(join(HERE, file), join(OUT, file));
 }
 

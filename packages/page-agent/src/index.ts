@@ -1,5 +1,6 @@
 import { BridgeError, isBridgeError, jsonSafe } from '@wasmcheat/protocol';
 import { PageRuntime } from './runtime.js';
+import { restoreTrace } from './trace.js';
 
 /**
  * Entry point injected into the page's MAIN world.
@@ -38,6 +39,8 @@ function main(): void {
 
   const runtime = new PageRuntime();
   runtime.install();
+  // A watchpoint armed before the reload is re-armed here, before the app's scripts run.
+  restoreTrace(runtime.trace);
 
   const agent: AgentGlobal = {
     version: AGENT_VERSION,

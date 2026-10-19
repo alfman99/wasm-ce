@@ -1,4 +1,14 @@
-import { BridgeError, type ScanHit, type ScanMode, type ScanOptions, type ScanSummary, type ValueType, VALUE_TYPE_BYTES } from '@wasmcheat/protocol';
+import {
+  BridgeError,
+  type ScanHit,
+  type ScanMode,
+  type ScanOptions,
+  type ScanSummary,
+  type TextScanOptions,
+  type TextScanResult,
+  type ValueType,
+  VALUE_TYPE_BYTES,
+} from '@wasmcheat/protocol';
 import { MemoryAccess, defaultTolerance } from './memory.js';
 
 export interface ScanSession {
@@ -19,6 +29,82 @@ export interface ScanSession {
 }
 
 const DEFAULT_MAX_RESULTS = 250_000;
+
+/** Modes that compare the current value against the value seen in the previous pass. */
+const DELTA_MODES: ScanMode[] = ['changed', 'unchanged', 'increased', 'decreased', 'increased-by', 'decreased-by'];
+
+export function isDeltaMode(mode: ScanMode): boolean {
+  return DELTA_MODES.includes(mode);
+}
+
+/** Modes that need a target value from the caller. Delta modes never do. */
+export function needsValue(mode: ScanMode): boolean {
+  return !isDeltaMode(mode);
+}
+
+interface CompareOptions {
+  value?: number;
+  value2?: number;
+  tolerance: number;
+  isFloat: boolean;
+}
+
+function matchesTarget(current: number, options: CompareOptions): boolean {
+  return options.value === undefined || close(current, options.value, options);
+}
+
+function close(a: number, b: number, options: CompareOptions): boolean {
+  return options.isFloat ? Math.abs(a - b) <= options.tolerance : a === b;
+}
+
+/**
+ * One predicate for every comparison mode, so a first pass and a narrowing pass can never
+ * disagree about what "greater than" means.
+ */
+export function satisfies(mode: ScanMode, current: number, previous: number | undefined, options: CompareOptions): boolean {
+  const target = options.value;
+  switch (mode) {
+    case 'exact':
+      return target === undefined ? true : close(current, target, options);
+    case 'not-equal':
+      return target === undefined ? true : !close(current, target, options);
+    case 'less':
+      return target === undefined ? true : current < target;
+    case 'greater':
+      return target === undefined ? true : current > target;
+    case 'less-or-equal':
+      return target === undefined ? true : current < target || close(current, target, options);
+    case 'greater-or-equal':
+      return target === undefined ? true : current > target || close(current, target, options);
+    case 'between': {
+      const low = target;
+      const high = options.value2 ?? target;
+      if (low === undefined || high === undefined) return true;
+      const [bottom, top] = low <= high ? [low, high] : [high, low];
+      return (current > bottom || close(current, bottom, options)) && (current < top || close(current, top, options));
+    }
+    // Delta modes can also carry a value: "changed AND now equals N" is how a Cheat Engine
+    // user pins a movement down in one pass.
+    case 'changed':
+      return (previous === undefined || !close(current, previous, options)) && matchesTarget(current, options);
+    case 'unchanged':
+      return (previous === undefined || close(current, previous, options)) && matchesTarget(current, options);
+    case 'increased':
+      return (previous === undefined || current > previous) && matchesTarget(current, options);
+    case 'decreased':
+      return (previous === undefined || current < previous) && matchesTarget(current, options);
+    case 'increased-by': {
+      if (previous === undefined || target === undefined) return true;
+      return current > previous && close(current - previous, Math.abs(target), options);
+    }
+    case 'decreased-by': {
+      if (previous === undefined || target === undefined) return true;
+      return current < previous && close(previous - current, Math.abs(target), options);
+    }
+    default:
+      return true;
+  }
+}
 
 export class ScanStore {
   private readonly sessions = new Map<string, ScanSession>();
@@ -51,8 +137,11 @@ export class ScanStore {
     if (!Number.isInteger(alignment) || alignment < 1 || alignment > 16) {
       throw new BridgeError('BAD_PARAMS', `alignment must be an integer between 1 and 16, got ${String(options.alignment)}`);
     }
-    if (options.mode === 'exact' && options.value === undefined) {
-      throw new BridgeError('BAD_PARAMS', 'mode "exact" requires a value');
+    if (needsValue(options.mode) && options.value === undefined) {
+      throw new BridgeError('BAD_PARAMS', `mode "${options.mode}" requires a value`);
+    }
+    if (options.mode === 'between' && options.value2 === undefined) {
+      throw new BridgeError('BAD_PARAMS', 'mode "between" requires value and value2');
     }
 
     const byteLength = access.byteLength;
@@ -64,12 +153,9 @@ export class ScanStore {
     const maxResults = options.maxResults ?? DEFAULT_MAX_RESULTS;
 
     const isFloat = options.type === 'f32' || options.type === 'f64';
-    const target = options.value;
-    const matchesExact = (value: number): boolean => {
-      if (target === undefined) return true;
-      if (isFloat) return Math.abs(value - target) <= tolerance;
-      return value === target;
-    };
+    // A first pass has no previous value, so delta modes degrade to "keep everything".
+    const compare: CompareOptions = { value: options.value, value2: options.value2, tolerance, isFloat };
+    const matches = (value: number): boolean => satisfies(options.mode, value, undefined, compare);
 
     const addresses = new Uint32Array(Math.min(maxResults, Math.ceil((end - start) / alignment) + 1));
     const values = new Float64Array(addresses.length);
@@ -89,7 +175,7 @@ export class ScanStore {
       } else {
         value = access.read(offset, options.type);
       }
-      if (!matchesExact(value)) continue;
+      if (!matches(value)) continue;
       if (count >= addresses.length) {
         truncated = true;
         break;
@@ -118,11 +204,21 @@ export class ScanStore {
   }
 
   /** Narrows an existing session against its previous snapshot. */
-  narrow(access: MemoryAccess, scanId: string, mode: ScanMode, options: Pick<ScanOptions, 'value' | 'tolerance'>): ScanSummary {
+  narrow(
+    access: MemoryAccess,
+    scanId: string,
+    mode: ScanMode,
+    options: Pick<ScanOptions, 'value' | 'value2' | 'tolerance'>,
+  ): ScanSummary {
     const session = this.get(scanId);
+    if (needsValue(mode) && options.value === undefined) {
+      throw new BridgeError('BAD_PARAMS', `mode "${mode}" requires a value`);
+    }
+    if (mode === 'between' && options.value2 === undefined) {
+      throw new BridgeError('BAD_PARAMS', 'mode "between" requires value and value2');
+    }
     const isFloat = session.type === 'f32' || session.type === 'f64';
     const tolerance = options.tolerance ?? (options.value !== undefined ? defaultTolerance(session.type, options.value) : 0);
-    const target = options.value;
     const byteLength = access.byteLength;
     const grew = byteLength > session.memoryByteLength;
 
@@ -130,29 +226,14 @@ export class ScanStore {
     const values = new Float64Array(Math.max(session.count, 1));
     let count = 0;
 
-    const sameValue = (a: number, b: number): boolean => (isFloat ? Math.abs(a - b) <= tolerance : a === b);
-    const matchesTarget = (value: number): boolean => {
-      if (target === undefined) return true;
-      if (isFloat) return Math.abs(value - target) <= tolerance;
-      return value === target;
-    };
+    const compare: CompareOptions = { value: options.value, value2: options.value2, tolerance, isFloat };
 
     for (let i = 0; i < session.count; i++) {
       const offset = session.addresses[i]!;
       if (offset + VALUE_TYPE_BYTES[session.type] > byteLength) continue;
       const current = access.read(offset, session.type);
       const previous = session.values[i]!;
-      const keep =
-        mode === 'exact'
-          ? matchesTarget(current)
-          : mode === 'changed'
-            ? !sameValue(current, previous) && matchesTarget(current)
-            : mode === 'unchanged'
-              ? sameValue(current, previous) && matchesTarget(current)
-              : mode === 'increased'
-                ? current > previous && matchesTarget(current)
-                : current < previous && matchesTarget(current);
-      if (!keep) continue;
+      if (!satisfies(mode, current, previous, compare)) continue;
       addresses[count] = offset;
       values[count] = current;
       count++;
@@ -189,6 +270,76 @@ export class ScanStore {
     }
     return { hits, total };
   }
+}
+
+/**
+ * Byte search for ascii/utf8/hex needles. Games keep names, ids and prices as strings, and a
+ * numeric scan can never find those.
+ */
+export function scanText(access: MemoryAccess, options: TextScanOptions): TextScanResult {
+  const encoding = options.encoding ?? 'ascii';
+  const needle = encodeNeedle(options.text, encoding);
+  if (needle.length === 0) throw new BridgeError('BAD_PARAMS', 'text to search for is empty');
+
+  const byteLength = access.byteLength;
+  const start = options.range?.start ?? 0;
+  const end = Math.min(options.range?.end ?? byteLength, byteLength);
+  if (start < 0 || end <= start) throw new BridgeError('BAD_PARAMS', `invalid scan range [${start}, ${end})`);
+  if (needle.length > end - start) {
+    return { encoding, matches: [], total: 0, truncated: false, memoryByteLength: byteLength };
+  }
+
+  const haystack = access.readBytes(start, end - start);
+  const folded = options.caseSensitive === false && encoding !== 'bytes';
+  if (folded) asciiLowerInPlace(haystack);
+
+  const maxResults = options.maxResults ?? DEFAULT_MAX_RESULTS;
+  const matches: number[] = [];
+  let total = 0;
+  for (let at = indexOfBytes(haystack, needle, 0); at !== -1; at = indexOfBytes(haystack, needle, at + 1)) {
+    total++;
+    if (matches.length < maxResults) matches.push(start + at);
+  }
+  return { encoding, matches, total, truncated: total > matches.length, memoryByteLength: byteLength };
+}
+
+function encodeNeedle(text: string, encoding: TextScanOptions['encoding']): Uint8Array {
+  if (encoding === 'bytes') {
+    const hex = text.replace(/[^0-9a-fA-F]/g, '');
+    if (hex.length === 0 || hex.length % 2 !== 0) {
+      throw new BridgeError('BAD_PARAMS', 'encoding "bytes" expects an even-length hex string like "deadbeef"');
+    }
+    const out = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < out.length; i++) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    return out;
+  }
+  if (encoding === 'utf8') return new TextEncoder().encode(text);
+  const out = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code > 0x7f) throw new BridgeError('BAD_PARAMS', 'encoding "ascii" cannot encode characters above 0x7f; use utf8');
+    out[i] = code;
+  }
+  return out;
+}
+
+function asciiLowerInPlace(bytes: Uint8Array): void {
+  for (let i = 0; i < bytes.length; i++) {
+    const byte = bytes[i]!;
+    if (byte >= 0x41 && byte <= 0x5a) bytes[i] = byte + 0x20;
+  }
+}
+
+function indexOfBytes(haystack: Uint8Array, needle: Uint8Array, from: number): number {
+  const last = haystack.length - needle.length;
+  const first = needle[0]!;
+  for (let i = from; i <= last; i++) {
+    if (haystack[i] !== first) continue;
+    let j = 1;
+    while (j < needle.length && haystack[i + j] === needle[j]) j++;
+    if (j === needle.length) return i;
+  }
+  return -1;
 }
 
 function summarise(session: ScanSession, instanceId: string, mode: ScanMode, access: MemoryAccess): ScanSummary {

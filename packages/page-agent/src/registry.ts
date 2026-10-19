@@ -1,4 +1,5 @@
 import { BridgeError, type ExportInfo, type InstanceInfo, type MemoryInfo } from '@wasmcheat/protocol';
+import { readFunctionExports } from './wasm-exports.js';
 
 export type ImportObject = Record<string, Record<string, unknown>>;
 
@@ -18,6 +19,30 @@ export interface TrackedInstance {
   /** Set when the instance's `exports` getter was shadowed with a live, hookable view. */
   exportViewInstalled?: boolean;
   exportViewRestore?: () => void;
+  /** Set when the binary was rewritten so every store calls back into the host. */
+  instrumented?: boolean;
+  /** wasm function index → export name, for attributing instrumented stores. */
+  functionNames?: Record<number, string>;
+}
+
+/** What a rewrite added to the module, so the runtime can finish wiring it up. */
+export interface InstrumentedBinary {
+  bytes: Uint8Array;
+  importModule: string;
+  importField: string;
+  /** Exported function that flips the store checks on. */
+  armExport: string;
+}
+
+/**
+ * Rewrites binaries before the engine sees them, which is the only moment a write watchpoint
+ * can be added: a compiled module cannot be changed, and instances cannot observe stores.
+ */
+export interface Instrumenter {
+  /** Returns null when this binary cannot be rewritten (the trace then explains why). */
+  rewrite(bytes: Uint8Array): InstrumentedBinary | null;
+  /** One store ran inside an armed instance. */
+  onStore(funcIndex: number): void;
 }
 
 /** A rule registered before an instance is created; applied as imports flow through. */
@@ -36,6 +61,8 @@ export type ExportResolver = (instanceId: string, name: string, original: AnyFun
 
 export interface RegistryEvents {
   onInstance?: (instance: TrackedInstance) => void;
+  /** Called once an instrumented instance is created and the store checks are on. */
+  onInstrumented?: (instance: TrackedInstance) => void;
 }
 
 const MEMORY_EXPORT_NAMES = ['memory', '__linear_memory', '__memory', 'mem'];
@@ -47,13 +74,27 @@ const MEMORY_EXPORT_NAMES = ['memory', '__linear_memory', '__memory', 'mem'];
 interface InstallState {
   patched: boolean;
   registries: WasmRegistry[];
+  /** How many times the app tried to create an instance through each patched entry point. */
+  calls: { instantiate: number; instantiateStreaming: number; newInstance: number; compile: number };
+  installedAt: number;
 }
 
 function installState(): InstallState {
   const key = Symbol.for('wasmcheat.install');
   const holder = globalThis as unknown as Record<symbol, InstallState | undefined>;
-  holder[key] ??= { patched: false, registries: [] };
+  holder[key] ??= {
+    patched: false,
+    registries: [],
+    calls: { instantiate: 0, instantiateStreaming: 0, newInstance: 0, compile: 0 },
+    installedAt: Date.now(),
+  };
   return holder[key]!;
+}
+
+/** Diagnostics: was anything even passed through our patches? */
+export function patchStats(): { patched: boolean; installedAt: number; calls: InstallState['calls'] } {
+  const state = installState();
+  return { patched: state.patched, installedAt: state.installedAt, calls: { ...state.calls } };
 }
 
 /** FNV-1a over a sample of the bytes. Enough to tell modules apart, cheap on 20 MB files. */
@@ -74,8 +115,58 @@ export class WasmRegistry {
   private readonly importRules = new Map<string, ImportRule>();
   private nextId = 1;
   private resolver: ExportResolver | null = null;
+  private instrumenter: Instrumenter | null = null;
 
   constructor(private readonly events: RegistryEvents = {}) {}
+
+  /** Arms write tracing for the next instantiation; pass null to stop rewriting. */
+  setInstrumenter(instrumenter: Instrumenter | null): void {
+    this.instrumenter = instrumenter;
+  }
+
+  get hasInstrumenter(): boolean {
+    return this.instrumenter !== null;
+  }
+
+  bytesFor(module: WebAssembly.Module): Uint8Array | null {
+    return this.moduleBytes.get(module)?.bytes ?? null;
+  }
+
+  /**
+   * Rewrites the bytes for the pending instantiation, or null when nothing should change.
+   * Called from the patched entry points, which own both the source and the imports object.
+   */
+  planInstrumentation(bytes: Uint8Array): { plan: InstrumentedBinary; importsAdd: ImportObject } | null {
+    const instrumenter = this.instrumenter;
+    if (!instrumenter) return null;
+    let plan: InstrumentedBinary | null = null;
+    try {
+      plan = instrumenter.rewrite(bytes);
+    } catch {
+      return null;
+    }
+    if (!plan) return null;
+    // The rewritten module calls this on every store: the only channel an engine gives us.
+    const importsAdd: ImportObject = {
+      [plan.importModule]: {
+        [plan.importField]: (funcIndex: number) => instrumenter.onStore(funcIndex),
+      },
+    };
+    return { plan, importsAdd };
+  }
+
+  /** Flips the store checks on inside an instance we just instrumented. */
+  private armInstrumented(tracked: TrackedInstance, plan: InstrumentedBinary): void {
+    const arm = (tracked.instance.exports as Record<string, unknown>)[plan.armExport];
+    if (typeof arm !== 'function') return;
+    try {
+      (arm as (flags: number) => void)(1);
+      tracked.instrumented = true;
+      this.events.onInstrumented?.(tracked);
+    } catch {
+      // An engine that refuses the call leaves the checks off, which is a no-op, not damage.
+    }
+  }
 
   /** HookStore registers itself here; the export view calls back through it on every read. */
   setExportResolver(resolver: ExportResolver): void {
@@ -172,9 +263,51 @@ export class WasmRegistry {
       module: WebAssembly.Module | null,
       imports: ImportObject | null,
       createdBy: CreatedBy,
+      plans?: Map<WasmRegistry, InstrumentedBinary>,
     ) => {
-      for (const registry of registries) registry.register(instance, module, imports, createdBy);
+      for (const registry of registries) registry.register(instance, module, imports, createdBy, plans);
     };
+
+    const mergeImports = (base: ImportObject | undefined, add: ImportObject): ImportObject => {
+      const merged: ImportObject = { ...(base ?? {}) };
+      for (const [namespace, values] of Object.entries(add)) {
+        merged[namespace] = { ...(merged[namespace] ?? {}), ...values };
+      }
+      return merged;
+    };
+
+    /** Bytes of the module the app is about to hand to the engine, when we can get them. */
+    function bytesFrom(source: BufferSource | WebAssembly.Module): Uint8Array | null {
+      if (isBufferSource(source)) return toBytes(source);
+      for (const registry of registries) {
+        const bytes = registry.bytesFor(source);
+        if (bytes) return bytes;
+      }
+      return null;
+    }
+
+    /**
+     * Rewrites the binary for every registry that wants a write watchpoint and layers the
+     * callback import in. Rewriting happens here, in the patched entry point, because that is
+     * the only moment the module is still bytes we control.
+     */
+    function instrumentForAll(
+      bytes: Uint8Array | null,
+      imports: ImportObject | undefined,
+    ): { imports: ImportObject | undefined; plans: Map<WasmRegistry, InstrumentedBinary>; bytes: Uint8Array | null } {
+      const plans = new Map<WasmRegistry, InstrumentedBinary>();
+      if (!bytes) return { imports, plans, bytes: null };
+      let applied = imports;
+      let rewritten: Uint8Array | null = null;
+      for (const registry of registries) {
+        const planned = registry.planInstrumentation(bytes);
+        if (!planned) continue;
+        plans.set(registry, planned.plan);
+        rewritten = planned.plan.bytes;
+        applied = mergeImports(applied, planned.importsAdd);
+      }
+      return { imports: applied, plans, bytes: rewritten };
+    }
 
     const Real = {
       instantiate: WebAssembly.instantiate.bind(WebAssembly),
@@ -189,20 +322,23 @@ export class WasmRegistry {
       source: BufferSource | WebAssembly.Module,
       imports?: ImportObject,
     ): Promise<WebAssembly.Instance | WebAssembly.WebAssemblyInstantiatedSource> {
+      const state = installState();
+      state.calls.instantiate += 1;
       const prepared = { applied: prepareImportsForAll(imports) };
+      const instrumented = instrumentForAll(bytesFrom(source), prepared.applied);
       const result = await (Real.instantiate as unknown as (
         s: unknown,
         i: unknown,
-      ) => Promise<unknown>)(source, prepared.applied);
+      ) => Promise<unknown>)(instrumented.bytes ?? source, instrumented.imports);
       if (result instanceof Real.Instance) {
         const module = source instanceof Real.Module ? source : null;
-        registerInAll(result, module, prepared.applied ?? null, 'instantiate');
+        registerInAll(result, module, instrumented.imports ?? null, 'instantiate', instrumented.plans);
         return result as WebAssembly.Instance;
       }
       const typed = result as WebAssembly.WebAssemblyInstantiatedSource;
       const module = typed.module;
       if (isBufferSource(source)) rememberModuleBytesSafe(module, toBytes(source));
-      registerInAll(typed.instance, module, prepared.applied ?? null, 'instantiate');
+      registerInAll(typed.instance, module, instrumented.imports ?? null, 'instantiate', instrumented.plans);
       return typed;
     }
 
@@ -210,25 +346,41 @@ export class WasmRegistry {
       source: Response | PromiseLike<Response>,
       imports?: ImportObject,
     ): Promise<WebAssembly.WebAssemblyInstantiatedSource> {
+      const state = installState();
+      state.calls.instantiateStreaming += 1;
       const prepared = { applied: prepareImportsForAll(imports) };
       const response = await source;
       // Clone before the engine consumes the body so we can hash the module later.
       const clone = typeof response?.clone === 'function' ? response.clone() : null;
-      const typed = await (Real.instantiateStreaming as unknown as (
-        s: unknown,
-        i: unknown,
-      ) => Promise<WebAssembly.WebAssemblyInstantiatedSource>)(response, prepared.applied);
-      if (clone) {
+      // A watchpoint needs the bytes before they compile, so a tracing tab trades streaming
+      // compilation for a buffer read. Every other time the response streams untouched.
+      let body: Uint8Array | null = null;
+      if (clone && registries.some((registry) => registry.hasInstrumenter)) {
+        body = new Uint8Array(await clone.arrayBuffer());
+      }
+      const instrumented = instrumentForAll(body, prepared.applied);
+      const typed = instrumented.bytes
+        ? ((await (Real.instantiate as unknown as (
+            s: unknown,
+            i: unknown,
+          ) => Promise<WebAssembly.WebAssemblyInstantiatedSource>)(instrumented.bytes, instrumented.imports)) as WebAssembly.WebAssemblyInstantiatedSource)
+        : await (Real.instantiateStreaming as unknown as (
+            s: unknown,
+            i: unknown,
+          ) => Promise<WebAssembly.WebAssemblyInstantiatedSource>)(response, instrumented.imports);
+      if (instrumented.bytes) rememberModuleBytesSafe(typed.module, instrumented.bytes);
+      else if (clone) {
         clone
           .arrayBuffer()
           .then((buffer) => rememberModuleBytesSafe(typed.module, new Uint8Array(buffer)))
           .catch(() => undefined);
       }
-      registerInAll(typed.instance, typed.module, prepared.applied ?? null, 'instantiateStreaming');
+      registerInAll(typed.instance, typed.module, instrumented.imports ?? null, 'instantiateStreaming', instrumented.plans);
       return typed;
     }
 
     async function patchedCompile(source: BufferSource): Promise<WebAssembly.Module> {
+      installState().calls.compile += 1;
       const module = await (Real.compile as unknown as (s: unknown) => Promise<WebAssembly.Module>)(source);
       if (isBufferSource(source)) rememberModuleBytesSafe(module, toBytes(source));
       return module;
@@ -257,6 +409,7 @@ export class WasmRegistry {
       if (new.target === undefined) {
         throw new TypeError("Constructor WebAssembly.Instance requires 'new'");
       }
+      installState().calls.newInstance += 1;
       const applied = prepareImportsForAll(imports) ?? undefined;
       const instance = Reflect.construct(Real.Instance, [module, applied], Real.Instance) as WebAssembly.Instance;
       registerInAll(instance, module, applied ?? null, 'new Instance');
@@ -317,6 +470,7 @@ export class WasmRegistry {
     module: WebAssembly.Module | null,
     imports: ImportObject | null,
     createdBy: CreatedBy,
+    plans?: Map<WasmRegistry, InstrumentedBinary>,
   ): TrackedInstance {
     const existing = this.instances.find((entry) => entry.instance === instance);
     if (existing) return existing;
@@ -381,6 +535,15 @@ export class WasmRegistry {
     }
 
     this.events.onInstance?.(tracked);
+
+    const plan = plans?.get(this);
+    if (plan) {
+      // Names come from the instrumented module's own export section, so they match the
+      // indices the store callbacks report.
+      tracked.functionNames = readFunctionExports(plan.bytes);
+      this.armInstrumented(tracked, plan);
+    }
+
     return tracked;
   }
 

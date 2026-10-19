@@ -7,6 +7,7 @@
     "build": "node build.mjs"
   },
   "dependencies": {
-    "@wasmcheat/protocol": "0.1.0"
+    "@wasmcheat/protocol": "0.1.0",
+    "@wasmcheat/wasm-instrument": "0.1.0"
   }
 }
