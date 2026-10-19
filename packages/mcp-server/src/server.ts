@@ -93,8 +93,35 @@ export function createServer(bridge: Bridge): McpServer {
   const server = new McpServer({ name: 'wasmcheat', version: '0.1.0' });
 
   /** Forward a page-level method through the extension's approval gate. */
+  /**
+   * `instanceId: "latest"` means "whatever was instantiated last", resolved at call time.
+   *
+   * Real apps reload and re-instantiate their module, which mints new ids; an agent script that
+   * hardcoded `w1` then fails for a reason it cannot see. Resolving late keeps a session usable
+   * across the reloads that games and SPAs do all the time.
+   */
   async function page<T>(tabId: number, method: string, params: unknown = {}, timeoutMs?: number): Promise<T> {
-    return bridge.request<T>('ext.call', { tabId, method, params, timeoutMs }, (timeoutMs ?? 30_000) + 5_000);
+    const resolved = await resolveInstance(tabId, params, timeoutMs);
+    return bridge.request<T>('ext.call', { tabId, method, params: resolved, timeoutMs }, (timeoutMs ?? 30_000) + 5_000);
+  }
+
+  async function resolveInstance(tabId: number, params: unknown, timeoutMs?: number): Promise<unknown> {
+    if (!params || typeof params !== 'object') return params;
+    const record = params as Record<string, unknown>;
+    if (record.instanceId !== 'latest') return record;
+    const instances = await bridge.request<InstanceInfo[]>(
+      'ext.call',
+      { tabId, method: 'page.listInstances', params: {}, timeoutMs },
+      (timeoutMs ?? 30_000) + 5_000,
+    );
+    const newest = instances[instances.length - 1];
+    if (!newest) {
+      throw new BridgeError(
+        'NO_INSTANCE',
+        'this tab has no wasm instance yet: attach with reload=true so the agent is in place before the module is compiled',
+      );
+    }
+    return { ...record, instanceId: newest.id };
   }
 
   server.registerTool(
@@ -103,7 +130,8 @@ export function createServer(bridge: Bridge): McpServer {
       title: 'List browser tabs',
       description:
         'List the http(s) tabs the WasmCheat extension can see, with each tab\'s approval state and whether the page agent is already running. ' +
-        'Start here: you need a tabId for every other tool.',
+        'Start here: you need a tabId for every other tool. Everywhere a tool asks for instanceId you may pass "latest" to mean whatever was ' +
+        'instantiated last, which survives page reloads.',
       inputSchema: {},
     },
     async () => {

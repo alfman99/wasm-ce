@@ -77,6 +77,54 @@ const keepApprovalOnReload = new Map<number, ApprovalEntry>();
  */
 const pendingTraces = new Map<number, { address: string; type?: string; maxHits?: number; kind?: string }>();
 
+/**
+ * Everything above is in memory, which an MV3 worker loses whenever Chrome suspends it — and a
+ * suspension costs the human a re-attach and the agent a scan session. So the routing state
+ * (which frames exist, which one owns the wasm, what watchpoint is pending) is mirrored into
+ * `chrome.storage.session`: same trust level as the grant table, gone when the browser closes.
+ */
+const SESSION_KEY = 'wasmcheat.session';
+interface SessionState {
+  attached: number[];
+  frames: Record<string, Record<string, string>>;
+  activeFrame: Record<string, number>;
+  traces: Record<string, { address: string; type?: string; maxHits?: number; kind?: string }>;
+}
+
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+function persistSession(): void {
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    const state: SessionState = {
+      attached: [...attachedTabs],
+      frames: Object.fromEntries(
+        [...tabFrames].map(([tabId, frames]) => [String(tabId), Object.fromEntries(frames)]),
+      ),
+      activeFrame: Object.fromEntries(activeFrame),
+      traces: Object.fromEntries(pendingTraces),
+    };
+    void chrome.storage.session.set({ [SESSION_KEY]: state }).catch(() => undefined);
+  }, 100);
+}
+
+async function restoreSession(): Promise<void> {
+  try {
+    const stored = (await chrome.storage.session.get(SESSION_KEY))[SESSION_KEY] as SessionState | undefined;
+    if (!stored) return;
+    for (const tabId of stored.attached ?? []) attachedTabs.add(tabId);
+    for (const [tabId, frames] of Object.entries(stored.frames ?? {})) {
+      tabFrames.set(Number(tabId), new Map(Object.entries(frames).map(([id, url]) => [Number(id), url])));
+    }
+    for (const [tabId, frameId] of Object.entries(stored.activeFrame ?? {})) activeFrame.set(Number(tabId), frameId);
+    for (const [tabId, trace] of Object.entries(stored.traces ?? {})) pendingTraces.set(Number(tabId), trace);
+  } catch {
+    // A fresh window has no session state; nothing to restore.
+  }
+}
+void restoreSession();
+
 // ---------------------------------------------------------------- storage
 
 async function readApprovals(): Promise<Approvals> {
@@ -349,6 +397,7 @@ async function traceArm(params: {
     ...(params.kind ? { kind: params.kind } : {}),
   };
   pendingTraces.set(params.tabId, options);
+  persistSession();
   const frameId = await resolveFrame(params.tabId);
   return sendToTab(params.tabId, 'page.trace.arm', options, 8_000, frameId);
 }
@@ -367,7 +416,10 @@ async function ensureAgent(params: { tabId: number; reload?: boolean; frameId?: 
 
   // Re-resolve every attach: a reloaded page may instantiate its wasm somewhere else.
   activeFrame.delete(params.tabId);
-  if (params.frameId !== undefined) activeFrame.set(params.tabId, params.frameId);
+  if (params.frameId !== undefined) {
+    activeFrame.set(params.tabId, params.frameId);
+    persistSession();
+  }
   const frameId = params.frameId ?? (await resolveFrame(params.tabId));
   const info = await sendToTab<PageAgentInfo>(params.tabId, 'page.hello', {}, 8_000, frameId);
   return frameId === undefined ? info : { ...info, frameId };
@@ -540,6 +592,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse: (v
       const url = (msg as { url?: string }).url ?? sender.url ?? '';
       if (!frames.has(frameId) || frames.get(frameId) !== url) {
         frames.set(frameId, url);
+        persistSession();
         emit(Events.tabsChanged, { tabId, attached: true, frameId });
       }
       const trace = pendingTraces.get(tabId);
@@ -608,6 +661,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   attachedTabs.delete(tabId);
   tabFrames.delete(tabId);
   activeFrame.delete(tabId);
+  pendingTraces.delete(tabId);
+  persistSession();
   void (async () => {
     const approvals = await readApprovals();
     if (approvals[String(tabId)]) {
@@ -625,6 +680,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     attachedTabs.delete(tabId);
     tabFrames.delete(tabId);
     activeFrame.delete(tabId);
+    persistSession();
     // A grant is scoped to the tab and the site, not to one URL: games navigate (a level select, a
     // hash route, a reload we caused ourselves) and re-prompting for every step would train the
     // human to approve without reading. Leaving the site still revokes.
