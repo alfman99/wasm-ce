@@ -15,11 +15,32 @@ const rewriter: BinaryRewriter = (bytes, modes) => {
   };
 };
 
+/**
+ * The runtime composes one instrumenter from the watchpoint and the patch store, because both
+ * share a single rewrite pass. Tests wire the same thing for a trace-only setup.
+ */
+function makeTrace(registry: WasmRegistry): TraceStore {
+  const trace: TraceStore = new TraceStore(registry, rewriter, () => {
+    const modes = trace.modes();
+    if (!modes) {
+      registry.setInstrumenter(null);
+      return;
+    }
+    registry.setInstrumenter({
+      modes,
+      rewrite: (bytes, requested) => rewriter(bytes, requested),
+      onStore: (funcIndex) => trace.handleStore(funcIndex),
+      onRead: (address, funcIndex) => trace.handleRead(address, funcIndex),
+    });
+  });
+  return trace;
+}
+
 describe('TraceStore', () => {
   it('arms the registry instrumenter and disarms it again on stop', () => {
     const registry = new WasmRegistry();
     registry.install();
-    const trace = new TraceStore(registry, rewriter);
+    const trace = makeTrace(registry);
     expect(registry.hasInstrumenter).toBe(false);
 
     trace.arm({ address: 'w1:0x100', type: 'i32' });
@@ -37,7 +58,7 @@ describe('TraceStore', () => {
     await WebAssembly.instantiate(buildStoreModule(), { env: {} });
     expect(registry.list()).toHaveLength(1);
 
-    const trace = new TraceStore(registry, rewriter);
+    const trace = makeTrace(registry);
     const status = trace.arm({ address: 'w1:0x100', type: 'i32' });
     expect(status.installed).toBe(false);
     expect(status.note).toMatch(/reload/);
@@ -48,7 +69,7 @@ describe('TraceStore', () => {
       onInstrumented: (tracked) => trace.onInstrumented(tracked),
     });
     registry.install();
-    const trace = new TraceStore(registry, rewriter);
+    const trace = makeTrace(registry);
     trace.arm({ address: 'w1:0x100', type: 'i32' });
 
     const bytes = buildStoreModule();
@@ -69,7 +90,7 @@ describe('TraceStore', () => {
       onInstrumented: (tracked) => trace.onInstrumented(tracked),
     });
     registry.install();
-    const trace = new TraceStore(registry, rewriter);
+    const trace = makeTrace(registry);
     const armed = trace.arm({ address: 'w1:0x20', type: 'i32', kind: 'read' });
     expect(armed.kind).toBe('read');
     expect(registry.hasInstrumenter).toBe(true);

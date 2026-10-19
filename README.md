@@ -223,6 +223,7 @@ Addresses are `"<instanceId>:<offset>"`, e.g. `w1:0x408` or `w1:1032`. `instance
 | `wasmcheat_find_writes` | Which function writes to an address? Reloads with an instrumented module. |
 | `wasmcheat_find_reads` | Which function reads an address? Same mechanism, load probes instead of store hooks. |
 | `wasmcheat_trace` | `arm` / `status` / `poll` / `clear` / `stop` for a watchpoint (`kind`: `read` or `write`). |
+| `wasmcheat_patch` | `add` / `list` / `remove` / `clear` function-body patches: stub a function with a constant return. |
 | `wasmcheat_diagnose` | Why is the instance list empty? Counts, frames, wasm URLs, one-line hint. |
 | `wasmcheat_audit` | The most recent audit entries. |
 
@@ -385,6 +386,36 @@ Honest limits:
   rewritten half-way. Everything Emscripten, Unity and clang emit today (element segments,
   start functions, indirect calls) is handled.
 
+## Patching a function body
+
+Hooks can only reach the surface a module exposes: imports and exports. Everything a module keeps to
+itself — the damage routine, a cooldown, a check — has no seam to wrap, so the only way to switch it
+off is to change the code. `wasmcheat_patch` does exactly that, in the same rewrite pass the
+watchpoints use:
+
+```jsonc
+{ "tabId": …, "action": "add", "target": "take_damage", "mode": "stub", "value": 0 }
+// → {"patch": {"id": "p1", "target": "take_damage", "mode": "stub", "value": 0,
+//              "applied": true, "funcIndex": 5, "applications": 1}, …}
+```
+
+- `mode: "stub"` replaces the body with `const value` (default 0) of the function's result type, so
+  `take_damage` still returns, and no longer does anything. Every caller is affected, because the
+  stub is the function.
+- `mode: "empty"` is for void functions: the body becomes a bare `return`.
+- `target` is an export name, or `wasm-function[N]` for a function the module does not export —
+  `wasmcheat_list_instances` shows both spellings next to each function it reports.
+- The stub lives in the binary, so it also reaches callers that cached an export reference, which is
+  the one thing a JS hook can never do.
+- Patches persist across reloads (`sessionStorage`, per origin, exactly like arming a watchpoint) and
+  stay until `remove` / `clear`, which reload the tab so the original body comes back.
+- `applied` is false until a module has been instantiated with the patch: a compiled module can never
+  be edited. The tool waits for the instantiation the reload triggers, so `applied: true` means the
+  code you are talking to is the code you patched.
+
+The rewriter refuses to guess: SIMD, atomic, and multi-value result functions are reported as
+unsupported instead of being stubbed into a module that no longer validates.
+
 ## Demo walkthrough
 
 The demo is a small C clicker (`packages/demo-app/src/game.c`) whose state lives in linear memory:
@@ -428,7 +459,7 @@ that is not moving — the automated test does exactly that.
 ## Tests
 
 ```bash
-npm test           # build → vitest (37 unit) → playwright (9 end-to-end)
+npm test           # build → vitest (79 unit) → playwright (13 end-to-end)
 npm run test:unit  # page agent: memory, registry, scanner, hooks — no browser
 npm run test:e2e   # real Chromium, real extension, real MCP stdio client
 ```
@@ -446,7 +477,12 @@ serves the demo, connects a real MCP client to `dist/bin.js`, and then, in order
 7. adds a `get_score` hook, asserts the painted score grows by 1 000 000, disables it, re-enables
    it, removes it, and asserts the app returns to its original behaviour at each step;
 8. asserts the audit log contains every one of those actions;
-9. detaches and asserts access is refused again.
+9. arms a write watchpoint, reloads, mines, and asserts `mine` is named as the writer of `0x408`;
+10. arms a read watchpoint and asserts `get_score` is named as the reader;
+11. stubs `get_score` with `wasmcheat_patch`, reloads, asserts the page paints 777 while a
+   neighbouring export still works, then removes the patch and asserts the original value is back;
+12. detaches and asserts access is refused again;
+13. opens the demo inside a genuinely cross-origin iframe and drives it there.
 
 Costs and gotchas: one browser and one bridge port, so the suite runs with a single worker and
 fails fast if port 7331 is already taken.
@@ -458,7 +494,7 @@ packages/protocol/src/index.ts      shared contract
 packages/page-agent/src/            registry (capture), memory, scanner, hooks, trace, runtime
 packages/extension/src/             sw.ts (approval + bridge), relay.ts, popup, manifest
 packages/extension/dist/            loadable unpacked extension (built)
-packages/wasm-instrument/src/       wasm binary rewriter behind read/write watchpoints
+packages/wasm-instrument/src/       wasm binary rewriter: watchpoint instrumentation + function stubs
 packages/mcp-server/src/            bridge.ts (WebSocket), server.ts (tools), audit.ts, bin.ts
 packages/demo-app/src/game.c        demo target, compiled to prebuilt/game.wasm
 packages/demo-app/framed.html       the demo inside a cross-origin iframe (subframe test)

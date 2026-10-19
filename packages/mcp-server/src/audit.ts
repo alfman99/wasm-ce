@@ -7,7 +7,7 @@ import { join } from 'node:path';
  * it succeeded, so the human has a record of what touched their page.
  */
 
-export type AuditKind = 'attach' | 'detach' | 'write' | 'freeze' | 'hook' | 'scan' | 'trace' | 'approval';
+export type AuditKind = 'attach' | 'detach' | 'write' | 'freeze' | 'hook' | 'scan' | 'trace' | 'patch' | 'approval';
 
 export interface AuditEntry {
   kind: AuditKind;

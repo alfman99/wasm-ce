@@ -57,6 +57,11 @@ export class TraceStore {
   constructor(
     private readonly registry: WasmRegistry,
     private readonly rewrite: BinaryRewriter,
+    /**
+     * Watchpoints and function patches share one rewrite pass, so neither store may install the
+     * instrumenter itself: both ask the runtime to compose the current plan instead.
+     */
+    private readonly onWiringChange: () => void,
   ) {}
 
   status(): WriteTraceStatus {
@@ -105,13 +110,7 @@ export class TraceStore {
     this.watch = { offset: address.offset, type, last: 0 };
     this.armedInstanceId = address.instanceId;
     this.current = null;
-    const modes: InstrumentModes = { reads: kind === 'read', writes: kind === 'write' };
-    this.registry.setInstrumenter({
-      modes,
-      rewrite: (bytes, requested) => this.rewrite(bytes, requested),
-      onStore: (funcIndex) => this.record(funcIndex),
-      onRead: (address, funcIndex) => this.onRead(address, funcIndex),
-    });
+    this.onWiringChange();
 
     // An instance compiled before arming can never report stores: say so once, plainly.
     const live = this.registry.list();
@@ -130,7 +129,7 @@ export class TraceStore {
     this.watch = null;
     this.current = null;
     this.counts.clear();
-    this.registry.setInstrumenter(null);
+    this.onWiringChange();
     return this.status();
   }
 
@@ -173,6 +172,21 @@ export class TraceStore {
    * A load of `address` about to happen. Every load in the module reports here, so the watched
    * address is the only thing worth doing work for.
    */
+  /** What the rewriter has to do for the current watchpoint, or null when disarmed. */
+  modes(): InstrumentModes | null {
+    if (!this.armed) return null;
+    return { reads: this.kind === 'read', writes: this.kind === 'write' };
+  }
+
+  /** Called by the instrumenter the runtime composed (see `refreshInstrumenter`). */
+  handleStore(funcIndex: number): void {
+    this.record(funcIndex);
+  }
+
+  handleRead(address: number, funcIndex: number): void {
+    this.onRead(address, funcIndex);
+  }
+
   private onRead(address: number, funcIndex: number): void {
     if (!this.watch || address !== this.watch.offset) return;
     this.record(funcIndex);

@@ -3,6 +3,7 @@ import { BridgeError } from '@wasmcheat/protocol';
 import { instrumentModule, type InstrumentedModule } from '../../packages/wasm-instrument/src/index';
 import {
   buildLoadModule,
+  buildPatchModule,
   buildSimdModule,
   buildStartModule,
   buildStoreModule,
@@ -37,6 +38,16 @@ interface TableExports {
   write_via_table(addr: number): void;
   write_direct(addr: number, value: number): void;
   peek(addr: number): number;
+  memory: WebAssembly.Memory;
+  __wc_arm(flags: number): void;
+}
+
+interface PatchExports {
+  add(left: number, right: number): number;
+  score(): number;
+  flag(): number;
+  noop(): void;
+  big(): bigint;
   memory: WebAssembly.Memory;
   __wc_arm(flags: number): void;
 }
@@ -421,5 +432,115 @@ describe('instrumentModule', () => {
     expect(typeof value).toBe('bigint');
     expect(value).toBe(0x0807060504030201n);
     expect(reads).toEqual([{ addr: 0x28, func: functionIndex(instrumented, 'read64_at') }]);
+  });
+
+  it('stubs an exported function by name and leaves the rest of the module working', () => {
+    const instrumented = instrumentModule(buildPatchModule(), {
+      patches: [{ byName: 'score', mode: 'stub', value: 999 }],
+    });
+    const exports = exportsOf<PatchExports>(instantiateModule(instrumented).instance);
+
+    expect(exports.score()).toBe(999);
+    // `score` is defined function 2: helper, add, score. Indices of the input module's functions,
+    // not of the instrumented one, which the callback imports shift.
+    expect(instrumented.patchedFunctions).toEqual([2]);
+    expect(instrumented.functionCount).toBe(6);
+
+    // The neighbours keep their bodies and, with them, their behaviour.
+    expect(exports.add(2, 3)).toBe(5);
+    expect(exports.flag()).toBe(1.5);
+  });
+
+  it('stubs a private function by index, which shows up through the export that calls it', () => {
+    const plain = exportsOf<PatchExports>(instantiateModule(instrumentModule(buildPatchModule())).instance);
+    expect(plain.add(2, 3)).toBe(5);
+
+    // `helper` is defined function 0 and has no export, so an index is the only way to reach it.
+    const instrumented = instrumentModule(buildPatchModule(), {
+      patches: [{ function: 0, mode: 'stub', value: 999 }],
+    });
+    const exports = exportsOf<PatchExports>(instantiateModule(instrumented).instance);
+
+    expect(instrumented.patchedFunctions).toEqual([0]);
+    // `add` computes a + b + helper() - 10, so the stubbed constant arrives through an export that
+    // was not patched itself.
+    expect(exports.add(2, 3)).toBe(2 + 3 + 999 - 10);
+  });
+
+  it('accepts an empty body only where the function returns nothing', () => {
+    const instrumented = instrumentModule(buildPatchModule(), {
+      patches: [{ byName: 'noop', mode: 'empty' }],
+    });
+    const exports = exportsOf<PatchExports>(instantiateModule(instrumented).instance);
+
+    expect(instrumented.patchedFunctions).toEqual([4]);
+    expect(exports.noop()).toBeUndefined();
+
+    const error = captureRejection(() =>
+      instrumentModule(buildPatchModule(), { patches: [{ byName: 'score', mode: 'empty' }] }),
+    );
+    expect(error.code).toBe('UNSUPPORTED');
+    expect(error.message).toMatch(/UNSUPPORTED|unsupported|no results|result/);
+    expect(error.message).toContain('score');
+  });
+
+  it('rejects a patch naming an export the module does not have', () => {
+    const error = captureRejection(() =>
+      instrumentModule(buildPatchModule(), { patches: [{ byName: 'missing_function', mode: 'stub' }] }),
+    );
+
+    expect(error.code).toBe('UNSUPPORTED');
+    expect(error.message).toContain('missing_function');
+  });
+
+  it('leaves a stubbed body out of the read instrumentation', () => {
+    const unpatched = instrumentModule(buildPatchModule(), { reads: true, writes: false });
+    // `helper` and `score` hold one load each.
+    expect(unpatched.readCount).toBe(2);
+    expect(unpatched.probeCount).toBe(2);
+
+    const instrumented = instrumentModule(buildPatchModule(), {
+      reads: true,
+      writes: false,
+      patches: [{ byName: 'score', mode: 'stub', value: 999 }],
+    });
+    expect(instrumented.readCount).toBe(1);
+    expect(instrumented.probeCount).toBe(1);
+
+    const { instance, reads } = instantiateModule(instrumented);
+    const exports = exportsOf<PatchExports>(instance);
+    exports.__wc_arm(1);
+
+    // The stubbed export cannot hit a probe because its load left with the body it replaced.
+    expect(exports.score()).toBe(999);
+    expect(reads).toEqual([]);
+
+    // The probe that survived still reports, under the private helper's own index — one slot below
+    // its only caller `add`.
+    expect(exports.add(2, 3)).toBe(5);
+    expect(reads).toEqual([{ addr: 0x04, func: functionIndex(instrumented, 'add') - 1 }]);
+  });
+
+  it('encodes float and i64 stubs at their own width and sign', () => {
+    const plain = exportsOf<PatchExports>(
+      instantiateModule(instrumentModule(buildPatchModule(), { reads: false, writes: false })).instance,
+    );
+    expect(plain.flag()).toBe(1.5);
+    expect(plain.big()).toBe(7n);
+
+    const instrumented = instrumentModule(buildPatchModule(), {
+      reads: false,
+      writes: false,
+      patches: [
+        { byName: 'flag', mode: 'stub', value: 2.5 },
+        { byName: 'big', mode: 'stub', value: -9000000000n },
+      ],
+    });
+    const exports = exportsOf<PatchExports>(instantiateModule(instrumented).instance);
+
+    // A wrong width stops the module validating; a wrong LEB128 sign returns another number.
+    expect(exports.flag()).toBe(2.5);
+    expect(exports.big()).toBe(-9000000000n);
+    expect(instrumented.patchedFunctions).toEqual([3, 5]);
   });
 });

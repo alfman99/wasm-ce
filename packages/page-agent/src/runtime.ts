@@ -7,6 +7,7 @@ import {
   type InstanceInfo,
   type PageDiagnostics,
   type PageAgentInfo,
+  type PatchSpec,
   type ReadResult,
   type ScanMode,
   type ScanOptions,
@@ -21,10 +22,17 @@ import {
   VALUE_TYPE_BYTES,
 } from '@wasmcheat/protocol';
 import { MemoryAccess } from './memory.js';
-import { WasmRegistry, patchStats, type TrackedInstance } from './registry.js';
+import {
+  WasmRegistry,
+  patchStats,
+  type InstrumentedBinary,
+  type InstrumentModes,
+  type TrackedInstance,
+} from './registry.js';
 import { ScanStore, scanText } from './scanner.js';
 import { HookStore, detectEvalAllowed } from './hooks.js';
 import { TraceStore } from './trace.js';
+import { PatchStore } from './patch.js';
 import { instrumentModule } from '@wasmcheat/wasm-instrument';
 
 const AGENT_VERSION = '0.1.0';
@@ -53,6 +61,7 @@ export class PageRuntime {
 
   private readonly freezes = new Map<string, FreezeRecord>();
   private readonly watches = new Map<string, WatchRecord>();
+  private readonly patches: PatchStore;
   private freezeTimer: ReturnType<typeof setInterval> | null = null;
   private watchTimer: ReturnType<typeof setInterval> | null = null;
   private nextId = 1;
@@ -63,16 +72,43 @@ export class PageRuntime {
       onInstrumented: (tracked) => this.trace.onInstrumented(tracked),
     });
     this.hooks = new HookStore(this.registry, detectEvalAllowed());
-    this.trace = new TraceStore(this.registry, (bytes, modes) => {
-      const instrumented = instrumentModule(bytes, modes);
-      return {
-        bytes: instrumented.bytes,
-        importModule: instrumented.importModule,
-        importField: instrumented.importField,
-        readField: 'on_read',
-        armExport: instrumented.armExport,
-      };
+    this.trace = new TraceStore(
+      this.registry,
+      (bytes, modes) => this.rewriteBinary(bytes, modes),
+      () => this.refreshInstrumenter(),
+    );
+    this.patches = new PatchStore(() => this.refreshInstrumenter());
+  }
+
+  /**
+   * One rewrite pass serves watchpoints and function patches, because a second pass would shift
+   * function indices a second time and add a duplicate `__wc_arm` export. Whoever changes the plan
+   * (arming, stopping, adding a patch) rebuilds the instrumenter from both stores.
+   */
+  private refreshInstrumenter(): void {
+    const modes = this.trace.modes();
+    if (!modes && !this.patches.active) {
+      this.registry.setInstrumenter(null);
+      return;
+    }
+    this.registry.setInstrumenter({
+      modes: modes ?? { reads: false, writes: false },
+      rewrite: (bytes, requested) => this.rewriteBinary(bytes, requested),
+      onStore: (funcIndex) => this.trace.handleStore(funcIndex),
+      onRead: (address, funcIndex) => this.trace.handleRead(address, funcIndex),
     });
+  }
+
+  private rewriteBinary(bytes: Uint8Array, modes: InstrumentModes): InstrumentedBinary {
+    const instrumented = instrumentModule(bytes, { ...modes, patches: this.patches.activePatches() });
+    if (instrumented.patchedFunctions) this.patches.markApplied(instrumented.patchedFunctions);
+    return {
+      bytes: instrumented.bytes,
+      importModule: instrumented.importModule,
+      importField: instrumented.importField,
+      readField: 'on_read',
+      armExport: instrumented.armExport,
+    };
   }
 
   install(): void {
@@ -433,6 +469,14 @@ export class PageRuntime {
         return this.trace.clear();
       case 'page.trace.hits':
         return this.trace.hits((p as { limit?: number }).limit);
+      case 'page.patch.add':
+        return this.patches.add(p as unknown as PatchSpec);
+      case 'page.patch.list':
+        return this.patches.list();
+      case 'page.patch.remove':
+        return this.patches.remove((p as { patchId: string }).patchId);
+      case 'page.patch.clear':
+        return this.patches.clear();
       default:
         throw new BridgeError('BAD_PARAMS', `unknown page method "${method}"`);
     }

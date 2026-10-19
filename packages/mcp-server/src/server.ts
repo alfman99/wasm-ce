@@ -3,6 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import {
   BridgeError,
+  PATCH_MODES,
   TRACE_KINDS,
   VALUE_TYPES,
   formatAddress,
@@ -10,6 +11,7 @@ import {
   type Address,
   type ApprovalState,
   type FreezeEntry,
+  type PatchEntry,
   type HookEntry,
   type InstanceInfo,
   type PageDiagnostics,
@@ -675,6 +677,90 @@ export function createServer(bridge: Bridge): McpServer {
       },
     },
     (args) => findAccess('read', args),
+  );
+
+  /**
+   * A patch is applied when a module is instantiated with it. The reload returns as soon as the
+   * page agent is alive, which is before the app has fetched and compiled its wasm, so give the
+   * instantiation a moment before claiming the patch is still pending.
+   */
+  async function waitForPatches(tabId: number, patchId: string, waitMs = 10_000): Promise<PatchEntry[]> {
+    const deadline = Date.now() + waitMs;
+    let list = await page<PatchEntry[]>(tabId, 'page.patch.list');
+    while (Date.now() < deadline && !list.some((item) => item.id === patchId && item.applied)) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      list = await page<PatchEntry[]>(tabId, 'page.patch.list');
+    }
+    return list;
+  }
+
+  server.registerTool(
+    'wasmcheat_patch',
+    {
+      title: 'Patch a wasm function body',
+      description:
+        "Switches off behaviour the module keeps to itself — a damage routine, a cooldown, a check — which no hook can reach " +
+        "because it is neither exported nor imported. `add` stubs a function out (`mode: 'stub'` returns `value`, default 0; " +
+        "`mode: 'empty'` is for void functions) and reloads the tab so the module is rewritten as it loads: the stub is in the " +
+        "binary itself, so every caller is affected and no JS object is involved. `target` is an export name or " +
+        "'wasm-function[N]' from list_instances. Patches stay until removed and survive reloads via sessionStorage. A compiled " +
+        "module can never be patched in place, so `applied` is false until the reload that installs it.",
+      inputSchema: {
+        tabId: z.number().int(),
+        action: z.enum(['add', 'list', 'remove', 'clear']),
+        target: z.string().optional(),
+        mode: z.enum([...PATCH_MODES]).optional(),
+        value: z.number().optional(),
+        note: z.string().optional(),
+        patchId: z.string().optional(),
+        reload: z.boolean().optional(),
+      },
+    },
+    async ({ tabId, action, target, mode, value, note, patchId, reload }) => {
+      try {
+        if (action === 'list') return ok(await page<PatchEntry[]>(tabId, 'page.patch.list'));
+        if (action === 'clear') {
+          const list = await page<PatchEntry[]>(tabId, 'page.patch.clear');
+          if (reload !== false) await bridge.request('ext.reload', { tabId }, 60_000);
+          record({ kind: 'patch', tabId, ok: true, summary: 'cleared all function patches' });
+          return ok(list, 'every patch removed; the reload put the original functions back');
+        }
+        if (action === 'remove') {
+          if (!patchId) return fail(new BridgeError('BAD_PARAMS', 'patchId is required for remove'));
+          const list = await page<PatchEntry[]>(tabId, 'page.patch.remove', { patchId });
+          if (reload !== false) await bridge.request('ext.reload', { tabId }, 60_000);
+          record({ kind: 'patch', tabId, ok: true, summary: `removed patch ${patchId}` });
+          return ok(list, 'removed; the reload put the original function back');
+        }
+        if (!target) return fail(new BridgeError('BAD_PARAMS', 'target is required for add'));
+        const entry = await page<PatchEntry>(tabId, 'page.patch.add', {
+          target,
+          mode: mode ?? 'stub',
+          ...(value !== undefined ? { value } : {}),
+          ...(note ? { note } : {}),
+        });
+        if (reload !== false) await bridge.request('ext.reload', { tabId }, 60_000);
+        // The agent is injected at document_start, before the app fetches its module, so wait for
+        // the instantiation that actually applies the patch instead of reporting "pending" always.
+        const list = await waitForPatches(tabId, entry.id);
+        // The entry from `add` predates the reload; the list is what the page agent re-applied.
+        const fresh = list.find((item) => item.id === entry.id) ?? entry;
+        const applied = fresh.applied;
+        record({
+          kind: 'patch',
+          tabId,
+          ok: true,
+          summary: `patched ${target} (${entry.mode}${entry.mode === 'stub' ? ` = ${entry.value ?? 0}` : ''})`,
+          detail: entry,
+        });
+        const installed = applied
+          ? `${target} now returns ${entry.value ?? 0} to every caller`
+          : `${target} is patched for the next instantiation${reload === false ? ' (reload the tab to install it)' : ' — no instance has been created since'}`;
+        return ok({ patch: fresh, patches: list }, installed);
+      } catch (error) {
+        return fail(error);
+      }
+    },
   );
 
   server.registerTool(

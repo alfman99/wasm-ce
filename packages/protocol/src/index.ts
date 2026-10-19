@@ -342,6 +342,39 @@ export interface WriteTraceStatus {
   note?: string;
 }
 
+/**
+ * Function patches. A wasm function body can only be replaced before the module is compiled, so a
+ * patch is stored, applied to the module as it is instantiated, and reported as pending until the
+ * reload that installs it.
+ *
+ * `stub` replaces the body with a constant return, which is how you switch off a behaviour the
+ * module never exposes as an import or export (damage, a timer, an anti-cheat check). Callers keep
+ * calling it; it just stops doing anything.
+ */
+export interface PatchSpec {
+  /** Export name of the function, or `wasm-function[12]` for a function the module does not export. */
+  target: string;
+  /** `stub` returns `value` (default 0); `empty` is for void functions only. */
+  mode: PatchMode;
+  /** Constant returned by a stub. Ignored by `empty`. */
+  value?: number;
+  note?: string;
+}
+
+export const PATCH_MODES = ['stub', 'empty'] as const;
+export type PatchMode = (typeof PATCH_MODES)[number];
+
+export interface PatchEntry extends PatchSpec {
+  id: string;
+  /** Defined-function index the target resolved to when the module was rewritten. */
+  funcIndex?: number;
+  /** True once a module was actually instantiated with this patch applied. */
+  applied: boolean;
+  /** How many instantiations the patch has been applied to. */
+  applications: number;
+  createdAt: number;
+}
+
 export interface PageDiagnostics extends PageAgentInfo {
   title: string;
   readyState: string;
@@ -475,6 +508,10 @@ export const Methods = {
   pageTraceStop: 'page.trace.stop',
   pageTraceStatus: 'page.trace.status',
   pageTraceHits: 'page.trace.hits',
+  pagePatchAdd: 'page.patch.add',
+  pagePatchList: 'page.patch.list',
+  pagePatchRemove: 'page.patch.remove',
+  pagePatchClear: 'page.patch.clear',
 } as const;
 
 /** Events the service worker pushes to the MCP server. */

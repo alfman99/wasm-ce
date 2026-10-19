@@ -336,6 +336,72 @@ export function buildTableModule(): Uint8Array<ArrayBuffer> {
   return Uint8Array.from(module.bytes);
 }
 
+/**
+ * A module built to be patched, with one function of every shape a stub has to encode:
+ *   exports: add(i32,i32)->i32, score()->i32, flag()->f64, noop()->(), big()->i64, memory
+ *   private: helper()->i32, called by `add`
+ * The data segment holds 25 at 0 and 10 at 4, so `score` and `helper` load their answers instead of
+ * pushing a constant: a stubbed body must therefore lose the load probe it used to attract.
+ * `add` returns `a + b + helper() - 10`, i.e. `a + b`, so stubbing the private helper is visible
+ * through an export that was never patched itself.
+ */
+export function buildPatchModule(): Uint8Array<ArrayBuffer> {
+  const module = new Writer();
+  module.raw([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+
+  // Types: 0 = ()->i32, 1 = (i32,i32)->i32, 2 = ()->f64, 3 = ()->(), 4 = ()->i64
+  const types = new Writer().u32(5);
+  types.u8(0x60).u32(0).u32(1).u8(0x7f);
+  types.u8(0x60).u32(2).u8(0x7f).u8(0x7f).u32(1).u8(0x7f);
+  types.u8(0x60).u32(0).u32(1).u8(0x7c);
+  types.u8(0x60).u32(0).u32(0);
+  types.u8(0x60).u32(0).u32(1).u8(0x7e);
+  module.section(1, types);
+
+  // Functions: 0 helper, 1 add, 2 score, 3 flag, 4 noop, 5 big. No imports and no globals, so the
+  // rewriter has to create both sections itself.
+  module.section(3, new Writer().u32(6).u32(0).u32(1).u32(0).u32(2).u32(3).u32(4));
+  module.section(5, new Writer().u32(1).u8(0x00).u32(1));
+
+  const exports = new Writer().u32(6);
+  exports.str('add').u8(0x00).u32(1);
+  exports.str('score').u8(0x00).u32(2);
+  exports.str('flag').u8(0x00).u32(3);
+  exports.str('noop').u8(0x00).u32(4);
+  exports.str('big').u8(0x00).u32(5);
+  exports.str('memory').u8(0x02).u32(0);
+  module.section(7, exports);
+
+  module.section(
+    10,
+    codeSection([
+      [0x41, 0x04, 0x28, 0x02, 0x00], // i32.const 4; i32.load -> 10
+      [
+        0x20, 0x00, 0x20, 0x01, 0x6a, // local.get 0; local.get 1; i32.add
+        0x10, 0x00, 0x6a, // call 0 (helper); i32.add
+        0x41, 0x0a, 0x6b, // i32.const 10; i32.sub
+      ],
+      [0x41, 0x00, 0x28, 0x02, 0x00], // i32.const 0; i32.load -> 25
+      [0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x3f], // f64.const 1.5
+      [], // noop
+      [0x42, 0x07], // i64.const 7
+    ]),
+  );
+
+  // One active segment at 0: the two i32 values the loaders read, little endian.
+  module.section(
+    11,
+    new Writer()
+      .u32(1) // one segment
+      .u32(0) // flags 0: active, memory 0, offset expression
+      .raw([0x41, 0x00, 0x0b]) // i32.const 0; end
+      .u32(8) // byte count
+      .raw([0x19, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00]),
+  );
+
+  return Uint8Array.from(module.bytes);
+}
+
 /** A module whose only body starts with the SIMD prefix, which a rewriter must reject. */
 export function buildSimdModule(): Uint8Array<ArrayBuffer> {
   const module = new Writer();

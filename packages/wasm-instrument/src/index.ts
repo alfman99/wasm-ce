@@ -29,6 +29,14 @@
  * While the flag is 0 the cost is one `global.get`/branch per store and one call per load, and
  * no JavaScript ever runs.
  *
+ * Patching is the same rewrite pointed the other way: instead of observing a function, throw it
+ * away. A patch replaces one body with `const <value>; end`, so a host can neutralise a progress
+ * check or a scoring routine while the rest of the module keeps running. Patches are resolved and
+ * encoded in the same pass as the instrumentation, because both edit the code section and two
+ * passes over one module would have to renumber indices for each other. A patched body is not
+ * instrumented: the callbacks and probes it used to contain left with the body, so nothing inside
+ * it can be reported and nothing inside it counts as a store or a read.
+ *
  * Adding the callback imports moves every defined function up in the function index space, by
  * as many slots as imports were added, so the rewriter repairs every place a function index is
  * encoded: function exports, `call`, `ref.func`, the start section and element segments. The
@@ -52,6 +60,11 @@ const ARM_EXPORT = '__wc_arm';
 
 /** `i32` value type, the only type the callbacks and the probes deal in. */
 const I32 = 0x7f;
+
+/** The remaining numeric value types a stub can return a constant of. */
+const I64 = 0x7e;
+const F32 = 0x7d;
+const F64 = 0x7c;
 
 const HEADER = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
@@ -89,6 +102,8 @@ const SECTION_ORDER: Record<number, number> = {
 
 const UTF8 = new TextEncoder();
 
+const UTF8_DECODE = new TextDecoder();
+
 const IDENTITY = (index: number): number => index;
 
 export interface InstrumentedModule {
@@ -109,6 +124,28 @@ export interface InstrumentedModule {
   probeCount: number;
   /** Defined functions in the input module, i.e. how many code bodies were rewritten. */
   functionCount: number;
+  /**
+   * Defined-function indices whose bodies were replaced by a patch, one entry per patch and in the
+   * order the patches were given, so a caller that keeps its own list can zip the two. They are
+   * indices of the *input* module's defined functions; the callback imports shift every index, so
+   * the slot one of them occupies at runtime is this index plus the imports the rewrite added.
+   */
+  patchedFunctions: number[];
+}
+
+/**
+ * One function to replace with a constant-returning stub, in the same pass that instruments the
+ * rest of the module.
+ */
+export interface FunctionPatch {
+  /** Defined-function index (0 = first function after the imports), or — see `byName` — an export name. */
+  function?: number;
+  /** Export name of the function to stub. Takes precedence over `function` when given. */
+  byName?: string;
+  /** Only `stub` for now: the body becomes `const value; end` (i32/f32/f64/i64 per result type). */
+  mode: 'stub' | 'empty';
+  /** Constant to return. Default 0. Ignored by `empty`. */
+  value?: number | bigint;
 }
 
 /** Which memory accesses to instrument. Both directions default to on. */
@@ -117,6 +154,8 @@ export interface InstrumentOptions {
   reads?: boolean;
   /** Append the guarded callback after every write. `false` leaves writes untouched. */
   writes?: boolean;
+  /** Function bodies to replace before instrumentation, in any order. */
+  patches?: FunctionPatch[];
 }
 
 /**
@@ -131,6 +170,9 @@ export function instrumentModule(bytes: Uint8Array, options: InstrumentOptions =
   const writes = options.writes ?? true;
   const sections = parseSections(bytes);
   const layout = inspectModule(sections);
+  // Every patch is resolved and encoded before any section is touched, so an unusable patch
+  // rejects the whole rewrite instead of leaving half a module behind.
+  const patches = resolvePatches(options.patches ?? [], layout, readFunctionExports(sections));
 
   const importedFunctionCount = layout.importedFunctionCount;
   // The callback imports are appended after the existing imports, so they take the first slots
@@ -217,6 +259,7 @@ export function instrumentModule(bytes: Uint8Array, options: InstrumentOptions =
     shiftFunctionIndex,
     storeInjectionFor,
     probes,
+    stubBodyFor: (definedFunctionIndex) => patches.bodies.get(definedFunctionIndex) ?? null,
     armBody: new Writer()
       .u32(0) // no local declarations
       .u8(0x20)
@@ -293,6 +336,7 @@ export function instrumentModule(bytes: Uint8Array, options: InstrumentOptions =
     readCount: rewrittenCode.readCount,
     probeCount: rewrittenCode.probeCount,
     functionCount: layout.functionCount,
+    patchedFunctions: patches.order,
   };
 }
 
@@ -315,6 +359,8 @@ interface CallbackImport {
 
 interface ModuleLayout {
   types: FunctionType[];
+  /** Type index of each defined function, in function-section order. */
+  functionTypeIndices: number[];
   importedFunctionCount: number;
   functionCount: number;
   globalCount: number;
@@ -325,6 +371,8 @@ interface RewriteContext {
   shiftFunctionIndex(index: number): number;
   /** Guard + callback bytes appended after every write in the given defined function. */
   storeInjectionFor(definedFunctionIndex: number): Uint8Array<ArrayBuffer> | null;
+  /** Replacement body of a stubbed function, or null when the original body must be rewritten. */
+  stubBodyFor(definedFunctionIndex: number): Uint8Array<ArrayBuffer> | null;
   /** Everything needed to wrap loads, or null when reads are off and loads must stay untouched. */
   probes: {
     /** Instrumented-module index the first probe occupies; the probes follow one another. */
@@ -373,6 +421,21 @@ class Writer {
       remaining >>= 7;
       const signSet = (byte & 0x40) !== 0;
       if ((remaining === 0 && !signSet) || (remaining === -1 && signSet)) {
+        this.out.push(byte);
+        return this;
+      }
+      this.out.push(byte | 0x80);
+    }
+  }
+
+  /** Signed LEB128, the encoding `i64.const` expects. */
+  s64(value: bigint): this {
+    let remaining = BigInt.asIntN(64, value);
+    for (;;) {
+      const byte = Number(remaining & 0x7fn);
+      remaining >>= 7n;
+      const signSet = (byte & 0x40) !== 0;
+      if ((remaining === 0n && !signSet) || (remaining === -1n && signSet)) {
         this.out.push(byte);
         return this;
       }
@@ -704,7 +767,8 @@ function inspectModule(sections: Section[]): ModuleLayout {
   const memorySection = sections.find((section) => section.id === 5);
   const declaredMemoryCount = memorySection === undefined ? 0 : countMemories(memorySection.payload);
   if (imports.memoryCount + declaredMemoryCount > 1) throw unsupported('multiple memories are not supported');
-  const functionCount = countFunctions(requireSection(sections, 3).payload);
+  const functionTypeIndices = readFunctionTypeIndices(requireSection(sections, 3).payload);
+  const functionCount = functionTypeIndices.length;
   const bodyCount = new Reader(requireSection(sections, 10).payload).u32();
   if (bodyCount !== functionCount) {
     throw unsupported(`code section holds ${bodyCount} bodies but the function section declares ${functionCount}`);
@@ -712,6 +776,7 @@ function inspectModule(sections: Section[]): ModuleLayout {
   const globalSection = sections.find((section) => section.id === 6);
   return {
     types,
+    functionTypeIndices,
     importedFunctionCount: imports.functionCount,
     functionCount,
     globalCount: globalSection === undefined ? 0 : countGlobals(globalSection.payload),
@@ -800,11 +865,171 @@ function countMemories(payload: Uint8Array): number {
   return count;
 }
 
-function countFunctions(payload: Uint8Array): number {
+/** The type index of every defined function, which is how a function's signature is found. */
+function readFunctionTypeIndices(payload: Uint8Array): number[] {
   const reader = new Reader(payload);
   const count = reader.u32();
-  for (let index = 0; index < count; index += 1) reader.u32(); // type index
-  return count;
+  const indices: number[] = [];
+  for (let index = 0; index < count; index += 1) indices.push(reader.u32());
+  return indices;
+}
+
+/**
+ * Function exports by name, as function indices of the input module. Table, memory and global
+ * exports share the section but not the index space the patches address, so they are ignored.
+ */
+function readFunctionExports(sections: Section[]): Map<string, number> {
+  const names = new Map<string, number>();
+  const section = sections.find((candidate) => candidate.id === 7);
+  if (section === undefined) return names;
+  const reader = new Reader(section.payload);
+  const count = reader.u32();
+  for (let index = 0; index < count; index += 1) {
+    const name = UTF8_DECODE.decode(reader.bytes(reader.u32()));
+    const kind = reader.u8();
+    const target = reader.u32();
+    if (kind === 0x00) names.set(name, target);
+  }
+  return names;
+}
+
+/** The bodies a rewrite substitutes, plus the patch order the caller expects back. */
+interface PatchResolution {
+  /** Replacement body per defined-function index. */
+  bodies: Map<number, Uint8Array<ArrayBuffer>>;
+  /** Defined-function index of each patch, in the order the patches were given. */
+  order: number[];
+}
+
+/**
+ * Turns the caller's patches into replacement bodies, keyed by defined-function index. An empty
+ * patch list produces an empty resolution, so an unpatched module is untouched.
+ */
+function resolvePatches(
+  patches: FunctionPatch[],
+  layout: ModuleLayout,
+  functionExports: Map<string, number>,
+): PatchResolution {
+  const bodies = new Map<number, Uint8Array<ArrayBuffer>>();
+  const order: number[] = [];
+  for (const patch of patches) {
+    const { definedFunctionIndex, label } = resolvePatchTarget(patch, layout, functionExports);
+    bodies.set(definedFunctionIndex, patchBody(patch, layout, definedFunctionIndex, label));
+    order.push(definedFunctionIndex);
+  }
+  return { bodies, order };
+}
+
+/** The defined function a patch names, and a label naming it the way its error messages do. */
+function resolvePatchTarget(
+  patch: FunctionPatch,
+  layout: ModuleLayout,
+  functionExports: Map<string, number>,
+): { definedFunctionIndex: number; label: string } {
+  if (patch.byName !== undefined) {
+    const name = patch.byName;
+    const exported = functionExports.get(name);
+    if (exported === undefined) throw unsupported(`no function is exported as "${name}", so it cannot be patched`);
+    // Exports address the whole function index space, imports included, while patches address
+    // defined functions — the ones that have a body.
+    const definedFunctionIndex = exported - layout.importedFunctionCount;
+    if (definedFunctionIndex < 0 || definedFunctionIndex >= layout.functionCount) {
+      throw unsupported(`the export "${name}" is an import of this module, so it has no body to patch`);
+    }
+    return { definedFunctionIndex, label: `the export "${name}"` };
+  }
+  const definedFunctionIndex = patch.function;
+  if (definedFunctionIndex === undefined) {
+    throw unsupported('a patch needs either `function` or `byName` to say what to patch');
+  }
+  if (
+    !Number.isInteger(definedFunctionIndex) ||
+    definedFunctionIndex < 0 ||
+    definedFunctionIndex >= layout.functionCount
+  ) {
+    throw unsupported(
+      `function ${definedFunctionIndex} does not exist: the module defines ${layout.functionCount} functions`,
+    );
+  }
+  return { definedFunctionIndex, label: `function ${definedFunctionIndex}` };
+}
+
+/**
+ * The complete body that replaces the patched function: locals first, then the constant the
+ * function's result type wants, then `end`. The body keeps the function's own type entry, so nothing
+ * else in the module has to move.
+ */
+function patchBody(
+  patch: FunctionPatch,
+  layout: ModuleLayout,
+  definedFunctionIndex: number,
+  label: string,
+): Uint8Array<ArrayBuffer> {
+  const typeIndex = layout.functionTypeIndices[definedFunctionIndex];
+  const type = typeIndex === undefined ? undefined : layout.types[typeIndex];
+  if (type === undefined) {
+    throw unsupported(`${label} has type index ${String(typeIndex)}, which the type section does not declare`);
+  }
+
+  if (patch.mode === 'empty') {
+    if (type.results.length !== 0) {
+      throw unsupported(`${label} returns a result, so an empty body is unsupported; use mode "stub"`);
+    }
+    return new Writer().u32(0).u8(0x0b).toBytes();
+  }
+  if (patch.mode !== 'stub') {
+    throw unsupported(`${label} asked for patch mode "${String(patch.mode)}", which is unsupported`);
+  }
+
+  if (type.results.length > 1) {
+    throw unsupported(`${label} returns ${type.results.length} results, which one constant cannot produce`);
+  }
+  const [result] = type.results;
+  if (result === undefined) {
+    throw unsupported(`${label} returns no results, so a constant stub is unsupported; use mode "empty"`);
+  }
+
+  const body = new Writer().u32(0); // no locals: a constant needs none
+  switch (result) {
+    case I32:
+      body.u8(0x41).s32(constantAsNumber(patch.value)); // i32.const
+      break;
+    case I64:
+      body.u8(0x42).s64(constantAsI64(patch.value)); // i64.const
+      break;
+    case F32:
+      body.u8(0x43).bytes(floatBytes(4, constantAsNumber(patch.value))); // f32.const
+      break;
+    case F64:
+      body.u8(0x44).bytes(floatBytes(8, constantAsNumber(patch.value))); // f64.const
+      break;
+    default:
+      throw unsupported(
+        `${label} returns value type 0x${result.toString(16)}, which a constant stub cannot produce`,
+      );
+  }
+  return body.u8(0x0b).toBytes();
+}
+
+/** The patch constant as a number, for the integer and float bodies that take one. */
+function constantAsNumber(value: number | bigint | undefined): number {
+  if (value === undefined) return 0;
+  return typeof value === 'bigint' ? Number(value) : value;
+}
+
+/** The patch constant as an i64. A fractional number is truncated, as `i64.const` cannot hold it. */
+function constantAsI64(value: number | bigint | undefined): bigint {
+  if (value === undefined) return 0n;
+  return typeof value === 'bigint' ? value : BigInt(Math.trunc(value));
+}
+
+/** Little-endian IEEE-754 payload of an `f32.const` or `f64.const`. */
+function floatBytes(width: 4 | 8, value: number): Uint8Array<ArrayBuffer> {
+  const buffer = new ArrayBuffer(width);
+  const view = new DataView(buffer);
+  if (width === 4) view.setFloat32(0, value, true);
+  else view.setFloat64(0, value, true);
+  return new Uint8Array(buffer);
 }
 
 function countGlobals(payload: Uint8Array): number {
@@ -1014,6 +1239,14 @@ function rewriteCodeSection(
       throw unsupported(`code body ${definedFunctionIndex} runs past the end of the code section`);
     }
     const body = payload.subarray(bodyStart, bodyEnd);
+    // A patched body is not instrumented: its stores and loads left with the original body, so it
+    // contributes no callback, no probe and no count.
+    const stub = context.stubBodyFor(definedFunctionIndex);
+    if (stub !== null) {
+      bodies.push(stub);
+      reader.seek(bodyEnd);
+      continue;
+    }
     const locals = new Reader(body);
     const localGroups = locals.u32();
     for (let group = 0; group < localGroups; group += 1) {
