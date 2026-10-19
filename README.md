@@ -211,6 +211,11 @@ choice.
 - The grant is scoped to the tab **and the site**: navigating or reloading inside the same site keeps it
   (a game that reloads itself is the normal case), leaving the site revokes it, and closing the tab
   discards it. Revoking (`wasmcheat_detach`, or the popup) takes effect immediately.
+- Every mutation is logged, and the extension reports it rather than each caller doing so: a
+  write, freeze set/clear, watch add/remove, scan begin/narrow/drop (plus text and pointer scans),
+  hook add/enable/disable/remove, patch add/remove/clear and every deliberate reload. That is one
+  funnel (`callTab`), so a human clicking Freeze in the DevTools panel produces the same line an
+  agent's `wasmcheat_freeze` would, with the tab, the address and, for writes, `before -> after`.
 - Every write, freeze, hook add/remove, attach/detach and approval goes to
   `$WASMCHEAT_HOME/audit.jsonl` (append-only JSON lines, timestamped, with the tab, the address
   and the before/after value where relevant). Read it back with `wasmcheat_audit`.

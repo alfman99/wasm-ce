@@ -657,6 +657,11 @@ export const Events = {
    * stays the authoritative record; the extension only keeps a session-scoped ring buffer.
    */
   auditAppended: 'audit.appended',
+  /**
+   * The extension reports a mutation it just performed. Auditing here rather than in the MCP server
+   * is what makes the log cover the DevTools panel too, which never touches the MCP server.
+   */
+  actionAudit: 'action.audit',
 } as const;
 
 /**

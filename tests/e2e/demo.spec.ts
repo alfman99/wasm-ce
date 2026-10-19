@@ -338,16 +338,93 @@ test('a hook rewrites a wasm export live, and disabling and removing it restores
   expect((await call<HookEntry[]>(mcp, 'wasmcheat_hook', { tabId, action: 'list' })).data).toHaveLength(0);
 });
 
-test('every write, freeze and hook is in the audit log', async () => {
-  const entries = await call<{ kind: string; summary: string; ok: boolean }[]>(mcp, 'wasmcheat_audit', { limit: 100 });
+test('every mutation is in the audit log, whoever made it', async () => {
+  // This test performs one mutation of every kind first, so the assertions are causal rather than
+  // a guess about what earlier tests happened to leave behind.
+  const scan = await call<{ scanId: string }>(mcp, 'wasmcheat_scan', {
+    tabId,
+    instanceId,
+    type: 'i32',
+    mode: 'exact',
+    value: 123456,
+  });
+  expect(scan.isError, scan.text).toBe(false);
+  const narrowed = await call(mcp, 'wasmcheat_scan', {
+    tabId,
+    instanceId,
+    type: 'i32',
+    scanId: scan.data.scanId,
+    mode: 'unchanged',
+  });
+  expect(narrowed.isError, narrowed.text).toBe(false);
+  const dropped = await call(mcp, 'wasmcheat_scan_drop', { tabId, scanId: scan.data.scanId });
+  expect(dropped.isError, dropped.text).toBe(false);
+
+  const hook = await call<{ id: string }>(mcp, 'wasmcheat_hook', {
+    tabId,
+    action: 'add',
+    instanceId,
+    target: 'export',
+    name: 'get_score',
+    body: 'return 1;',
+  });
+  expect(hook.isError, hook.text).toBe(false);
+  for (const enabled of [false, true]) {
+    const step = await call(mcp, 'wasmcheat_hook', { tabId, action: 'enable', hookId: hook.data.id, enabled });
+    expect(step.isError, step.text).toBe(false);
+  }
+  const removed = await call(mcp, 'wasmcheat_hook', { tabId, action: 'remove', hookId: hook.data.id });
+  expect(removed.isError, removed.text).toBe(false);
+
+  const watch = await call<{ id: string }>(mcp, 'wasmcheat_watch', {
+    tabId,
+    action: 'add',
+    address: 'w1:0x408',
+    type: 'i32',
+  });
+  expect(watch.isError, watch.text).toBe(false);
+  const unwatched = await call(mcp, 'wasmcheat_watch', { tabId, action: 'remove', watchId: watch.data.id });
+  expect(unwatched.isError, unwatched.text).toBe(false);
+
+  const patch = await call<{ patch: { id: string } }>(mcp, 'wasmcheat_patch', {
+    tabId,
+    action: 'add',
+    target: 'get_score',
+    mode: 'stub',
+    value: 4242,
+    reload: false,
+  });
+  expect(patch.isError, patch.text).toBe(false);
+  const unpatched = await call(mcp, 'wasmcheat_patch', {
+    tabId,
+    action: 'remove',
+    patchId: patch.data.patch.id,
+    reload: false,
+  });
+  expect(unpatched.isError, unpatched.text).toBe(false);
+
+  const entries = await call<{ kind: string; summary: string; ok: boolean; tabId?: number }[]>(mcp, 'wasmcheat_audit', {
+    limit: 200,
+  });
   expect(entries.isError, entries.text).toBe(false);
   const kinds = new Set(entries.data.map((entry) => entry.kind));
-  expect(kinds).toContain('write');
-  expect(kinds).toContain('freeze');
-  expect(kinds).toContain('hook');
-  expect(kinds).toContain('attach');
+  for (const kind of ['write', 'freeze', 'hook', 'scan', 'watch', 'patch', 'attach']) {
+    expect([...kinds], `audit kinds: ${[...kinds].join(', ')}`).toContain(kind);
+  }
+  // Attribution: every line that names a mutation also names the tab it happened on.
+  const mutations = entries.data.filter((entry) => entry.kind !== 'trace' && entry.kind !== 'approval');
+  expect(mutations.length, 'audit should have lines').toBeGreaterThan(0);
+  expect(mutations.every((entry) => typeof entry.tabId === 'number')).toBe(true);
   expect(entries.data.some((entry) => entry.summary.includes('w1:0x408'))).toBe(true);
-  expect(entries.data.filter((entry) => entry.kind === 'write').every((entry) => entry.ok)).toBe(true);
+  // Writes are now reported by the extension, failures included, so assert the successful ones
+  // rather than "no failures": a refused write is exactly what a log is for.
+  expect(
+    entries.data.some((entry) => entry.kind === 'write' && entry.ok && entry.summary.includes('w1:0x408')),
+  ).toBe(true);
+  // A hook toggle is a real change of behaviour, so both directions are recorded with its id.
+  const hookLines = entries.data.filter((entry) => entry.kind === 'hook');
+  expect(hookLines.some((entry) => entry.summary.includes('disabled'))).toBe(true);
+  expect(hookLines.some((entry) => entry.summary.includes('enabled'))).toBe(true);
 });
 
 test('a write watchpoint names the function that changed the score', async () => {

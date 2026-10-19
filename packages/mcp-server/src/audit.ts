@@ -7,7 +7,20 @@ import { join } from 'node:path';
  * it succeeded, so the human has a record of what touched their page.
  */
 
-export type AuditKind = 'attach' | 'detach' | 'write' | 'freeze' | 'hook' | 'scan' | 'trace' | 'patch' | 'approval';
+export type AuditKind =
+  | 'attach'
+  | 'detach'
+  | 'write'
+  | 'freeze'
+  | 'hook'
+  | 'scan'
+  | 'trace'
+  | 'patch'
+  | 'approval'
+  /** Emitted by the extension for watch add/remove. */
+  | 'watch'
+  /** A tab reloaded on purpose, so the next instantiation picks up hooks or patches. */
+  | 'reload';
 
 export interface AuditEntry {
   kind: AuditKind;

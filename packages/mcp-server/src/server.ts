@@ -34,7 +34,7 @@ import {
 } from '@wasmcheat/protocol';
 import { Bridge } from './bridge.js';
 import { waitForApproval, waitForPageEvent } from './events.js';
-import { onRecord, record, tail } from './audit.js';
+import { onRecord, record, tail, type AuditLine } from './audit.js';
 
 export type ToolResult = CallToolResult;
 
@@ -98,6 +98,22 @@ export function createServer(bridge: Bridge): McpServer {
   // Mirror every appended audit line to the extension so the DevTools panel can show it: a
   // browser cannot read $WASMCHEAT_HOME/audit.jsonl, and this keeps `record` the one producer.
   onRecord((line) => bridge.send(Events.auditAppended, line));
+
+  /**
+   * The extension reports what it did, so the log covers the DevTools panel too — a human clicking
+   * Freeze must appear exactly like an agent calling wasmcheat_freeze.
+   */
+  bridge.on(Events.actionAudit, (data) => {
+    const line = data as Partial<AuditLine> | null;
+    if (!line || typeof line.kind !== 'string' || typeof line.summary !== 'string') return;
+    void record({
+      kind: line.kind,
+      ...(typeof line.tabId === 'number' ? { tabId: line.tabId } : {}),
+      ok: line.ok !== false,
+      summary: line.summary,
+      ...(line.detail === undefined ? {} : { detail: line.detail }),
+    });
+  });
 
   /** Forward a page-level method through the extension's approval gate. */
   /**
@@ -401,16 +417,6 @@ export function createServer(bridge: Bridge): McpServer {
               maxResults,
             });
 
-        if (!scanId) {
-          await record({
-            kind: 'scan',
-            tabId,
-            ok: true,
-            summary: `scan ${summary.scanId} ${effectiveMode} ${type}${parsedValue === undefined ? '' : ` = ${parsedValue}`}`,
-            detail: { instanceId, matchCount: summary.matchCount, truncated: summary.truncated },
-          });
-        }
-
         const formatted = {
           ...summary,
           sample: summary.sample.map((hit: ScanHit) => ({ address: formatAddress(hit.address), value: hit.value })),
@@ -456,13 +462,6 @@ export function createServer(bridge: Bridge): McpServer {
           caseSensitive,
           range: from === undefined && to === undefined ? undefined : { start: from ?? 0, end: to ?? Number.MAX_SAFE_INTEGER },
           maxResults,
-        });
-        await record({
-          kind: 'scan',
-          tabId,
-          ok: true,
-          summary: `text scan ${encoding ?? 'ascii'} "${text}" -> ${result.total} match(es)`,
-          detail: { instanceId },
         });
         return ok(
           {
@@ -573,16 +572,8 @@ export function createServer(bridge: Bridge): McpServer {
       try {
         const target = addr(address);
         const result = await page<WriteResult>(tabId, 'page.write', { address: target, type, value: parsed });
-        await record({
-          kind: 'write',
-          tabId,
-          ok: true,
-          summary: `write ${formatAddress(target)} ${type} ${result.before} -> ${result.after}`,
-          detail: { requested: parsed },
-        });
         return ok({ ...result, address });
       } catch (error) {
-        await record({ kind: 'write', tabId, ok: false, summary: `write failed: ${(error as Error).message}` });
         return fail(error);
       }
     },
@@ -610,20 +601,12 @@ export function createServer(bridge: Bridge): McpServer {
         if (action === 'clear') {
           if (!freezeId) return fail(new BridgeError('BAD_PARAMS', 'freezeId is required for clear'));
           const cleared = await page<boolean>(tabId, 'page.freeze.clear', { freezeId });
-          await record({ kind: 'freeze', tabId, ok: true, summary: `freeze cleared ${freezeId}` });
           return ok({ cleared });
         }
         if (!address || !type) return fail(new BridgeError('BAD_PARAMS', 'address and type are required for set'));
         const target = addr(address);
         const parsed = numeric(value) ?? 0;
         const entry = await page<FreezeEntry>(tabId, 'page.freeze.set', { address: target, type, value: parsed });
-        await record({
-          kind: 'freeze',
-          tabId,
-          ok: true,
-          summary: `freeze ${formatAddress(target)} ${type} = ${parsed}`,
-          detail: { freezeId: entry.id },
-        });
         return ok(entry);
       } catch (error) {
         return fail(error);
@@ -809,13 +792,6 @@ export function createServer(bridge: Bridge): McpServer {
           ...(maxOffset !== undefined ? { maxOffset } : {}),
           ...(maxResults !== undefined ? { maxResults } : {}),
         });
-        record({
-          kind: 'scan',
-          tabId,
-          ok: true,
-          summary: `pointer scan for ${formatAddress(target)} -> ${paths.length} path(s)`,
-          detail: paths.slice(0, 5),
-        });
         const chains = paths.map((path) => ({
           base: formatAddress(path.base),
           offsets: path.offsets,
@@ -893,14 +869,12 @@ export function createServer(bridge: Bridge): McpServer {
         if (action === 'clear') {
           const list = await page<PatchEntry[]>(tabId, 'page.patch.clear');
           if (reload !== false) await bridge.request('ext.reload', { tabId }, 60_000);
-          record({ kind: 'patch', tabId, ok: true, summary: 'cleared all function patches' });
           return ok(list, 'every patch removed; the reload put the original functions back');
         }
         if (action === 'remove') {
           if (!patchId) return fail(new BridgeError('BAD_PARAMS', 'patchId is required for remove'));
           const list = await page<PatchEntry[]>(tabId, 'page.patch.remove', { patchId });
           if (reload !== false) await bridge.request('ext.reload', { tabId }, 60_000);
-          record({ kind: 'patch', tabId, ok: true, summary: `removed patch ${patchId}` });
           return ok(list, 'removed; the reload put the original function back');
         }
         if (!target) return fail(new BridgeError('BAD_PARAMS', 'target is required for add'));
@@ -917,13 +891,6 @@ export function createServer(bridge: Bridge): McpServer {
         // The entry from `add` predates the reload; the list is what the page agent re-applied.
         const fresh = list.find((item) => item.id === entry.id) ?? entry;
         const applied = fresh.applied;
-        record({
-          kind: 'patch',
-          tabId,
-          ok: true,
-          summary: `patched ${target} (${entry.mode}${entry.mode === 'stub' ? ` = ${entry.value ?? 0}` : ''})`,
-          detail: entry,
-        });
         const installed = applied
           ? `${target} now returns ${entry.value ?? 0} to every caller`
           : `${target} is patched for the next instantiation${reload === false ? ' (reload the tab to install it)' : ' — no instance has been created since'}`;
@@ -1019,7 +986,6 @@ export function createServer(bridge: Bridge): McpServer {
         if (action === 'remove') {
           if (!hookId) return fail(new BridgeError('BAD_PARAMS', 'hookId is required for remove'));
           const removed = await page<boolean>(tabId, 'page.hook.remove', { hookId });
-          await record({ kind: 'hook', tabId, ok: true, summary: `hook removed ${hookId}` });
           return ok({ removed });
         }
 
@@ -1034,13 +1000,6 @@ export function createServer(bridge: Bridge): McpServer {
           fallback,
           note,
         });
-        await record({
-          kind: 'hook',
-          tabId,
-          ok: true,
-          summary: `hook ${target} ${name} on ${instanceId}`,
-          detail: { body, note, pending: entry.pending },
-        });
         return ok(
           entry,
           entry.target === 'import' && entry.pending
@@ -1048,7 +1007,6 @@ export function createServer(bridge: Bridge): McpServer {
             : undefined,
         );
       } catch (error) {
-        await record({ kind: 'hook', tabId, ok: false, summary: `hook failed: ${(error as Error).message}` });
         return fail(error);
       }
     },

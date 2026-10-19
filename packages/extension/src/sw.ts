@@ -11,6 +11,8 @@ import {
   type PageAgentInfo,
   type PageDiagnostics,
   type TabInfo,
+  formatAddress,
+  type ValueType,
 } from '@wasmcheat/protocol';
 
 /**
@@ -506,6 +508,7 @@ async function reloadTab(params: { tabId: number }): Promise<{ reloaded: true }>
     throw new BridgeError('NO_AGENT', `tab ${params.tabId} did not re-attach after reload`);
   }
   activeFrame.delete(params.tabId);
+  await reportAction(params.tabId, 'ext.reload', params, { reloaded: true }, undefined);
   return { reloaded: true };
 }
 
@@ -607,6 +610,159 @@ async function injectAgent(tabId: number): Promise<void> {
   }
 }
 
+/** Audit kinds the host understands; the extension only ever picks from this list. */
+type ActionKind = 'write' | 'freeze' | 'watch' | 'scan' | 'hook' | 'patch' | 'reload';
+
+interface ActionLine {
+  kind: ActionKind;
+  tabId: number;
+  ok: boolean;
+  summary: string;
+  detail?: unknown;
+}
+
+/**
+ * The page methods that mutate something. Every one of them is reported to the host for the audit
+ * log, whether it was an agent or a human in the panel that triggered it: `callTab` is the single
+ * funnel, so the log cannot miss a path.
+ */
+async function reportAction(tabId: number, method: string, params: unknown, result: unknown, error: unknown): Promise<void> {
+  const line = describeAction(tabId, method, params, result, error);
+  if (!line) return;
+  send({ v: PROTOCOL_VERSION, kind: 'evt', event: Events.actionAudit, data: line });
+}
+
+function describeAction(
+  tabId: number,
+  method: string,
+  params: unknown,
+  result: unknown,
+  error: unknown,
+): ActionLine | null {
+  const p = params as Record<string, unknown> | null;
+  const r = (result ?? null) as Record<string, unknown> | null;
+  const ok = !error;
+  const failure = error instanceof Error ? error.message : error === undefined ? undefined : String(error);
+  // The page receives a parsed `{instanceId, offset}` when the caller is an MCP tool and a string
+  // like `w1:0x408` when it is the panel or the raw console. The log should read the same either way.
+  const addressOf = (value: unknown): string | undefined => {
+    if (typeof value === 'string') return value;
+    if (value && typeof value === 'object' && 'instanceId' in value && 'offset' in value) {
+      const target = value as { instanceId: string; offset: number };
+      return formatAddress(target);
+    }
+    return undefined;
+  };
+  const address = addressOf(p?.address);
+  const valueOf = (key: string): unknown => (r && key in r ? r[key] : p?.[key]);
+
+  switch (method) {
+    case 'page.write':
+      return {
+        kind: 'write',
+        tabId,
+        ok,
+        summary: ok
+          ? `write ${address ?? '?'} ${String(p?.type ?? '')} ${String(r?.before)} -> ${String(r?.after)}`
+          : `write ${address ?? '?'} failed: ${failure}`,
+        detail: { requested: p?.value },
+      };
+    case 'page.freeze.set':
+      return {
+        kind: 'freeze',
+        tabId,
+        ok,
+        summary: ok
+          ? `freeze ${address ?? '?'} ${String(p?.type ?? '')} = ${String(p?.value)}`
+          : `freeze ${address ?? '?'} failed: ${failure}`,
+        detail: { freezeId: r?.id },
+      };
+    case 'page.freeze.clear':
+      return { kind: 'freeze', tabId, ok, summary: ok ? `freeze cleared ${String(p?.freezeId)}` : `freeze clear failed: ${failure}` };
+    case 'page.watch.add':
+      return {
+        kind: 'watch',
+        tabId,
+        ok,
+        summary: ok ? `watch added ${address ?? '?'} ${String(p?.type ?? '')}` : `watch add failed: ${failure}`,
+        detail: { watchId: r?.id },
+      };
+    case 'page.watch.remove':
+      return { kind: 'watch', tabId, ok, summary: ok ? `watch removed ${String(p?.watchId)}` : `watch remove failed: ${failure}` };
+    case 'page.scan.begin':
+      return {
+        kind: 'scan',
+        tabId,
+        ok,
+        summary: ok
+          ? `scan ${String(r?.scanId)} ${String(r?.mode ?? p?.mode)} ${String(p?.type)}${p?.value === undefined ? '' : ` = ${String(p.value)}`} -> ${String(r?.matchCount)} match(es)`
+          : `scan failed: ${failure}`,
+        detail: { instanceId: p?.instanceId, truncated: r?.truncated },
+      };
+    case 'page.scan.next':
+      return {
+        kind: 'scan',
+        tabId,
+        ok,
+        summary: ok
+          ? `scan ${String(p?.scanId)} narrowed by ${String(p?.mode)} -> ${String(r?.matchCount)} match(es)`
+          : `scan narrowing failed: ${failure}`,
+        detail: { mode: p?.mode, value: p?.value },
+      };
+    case 'page.scan.drop':
+      return { kind: 'scan', tabId, ok, summary: ok ? `scan ${String(p?.scanId)} dropped` : `scan drop failed: ${failure}` };
+    case 'page.scan.text':
+      return {
+        kind: 'scan',
+        tabId,
+        ok,
+        summary: ok
+          ? `text scan ${String(p?.encoding ?? 'ascii')} "${String(p?.text)}" -> ${String(r?.total)} match(es)`
+          : `text scan failed: ${failure}`,
+      };
+    case 'page.hook.add':
+      return {
+        kind: 'hook',
+        tabId,
+        ok,
+        summary: ok
+          ? `hook added on ${String(p?.target)} ${String(p?.name)}${r?.pending === true ? ' (applies at the next instantiation)' : ''}`
+          : `hook add failed: ${failure}`,
+        detail: { hookId: r?.id, body: p?.body },
+      };
+    case 'page.hook.setEnabled':
+      return {
+        kind: 'hook',
+        tabId,
+        ok,
+        summary: ok ? `hook ${String(p?.hookId)} ${p?.enabled === true ? 'enabled' : 'disabled'}` : `hook toggle failed: ${failure}`,
+      };
+    case 'page.hook.remove':
+      return { kind: 'hook', tabId, ok, summary: ok ? `hook removed ${String(p?.hookId)}` : `hook remove failed: ${failure}` };
+    case 'page.patch.add':
+      return {
+        kind: 'patch',
+        tabId,
+        ok,
+        summary: ok ? `patch added on ${String(p?.target)} (${String(p?.mode ?? 'stub')})` : `patch add failed: ${failure}`,
+        detail: { mode: p?.mode, value: p?.value },
+      };
+    case 'page.patch.remove':
+      return { kind: 'patch', tabId, ok, summary: ok ? `patch removed ${String(p?.patchId)}` : `patch remove failed: ${failure}` };
+    case 'page.patch.clear':
+      return { kind: 'patch', tabId, ok, summary: ok ? 'all patches cleared' : `patch clear failed: ${failure}` };
+    case 'ext.reload':
+      return {
+        kind: 'reload',
+        tabId,
+        ok,
+        summary: ok ? `reloaded tab ${tabId} so the next instantiation picks up hooks and patches` : `reload failed: ${failure}`,
+      };
+    default:
+      return null;
+  }
+}
+
 async function callTab(params: {
   tabId: number;
   method: string;
@@ -631,13 +787,25 @@ async function callTab(params: {
   const timeoutMs = Math.max(1_000, Math.min(params.timeoutMs ?? RPC_TIMEOUT_MS, 120_000));
   const frameId = await resolveFrame(params.tabId);
   try {
-    return await sendToTab(params.tabId, params.method, params.params ?? {}, timeoutMs, frameId);
+    const result = await sendToTab(params.tabId, params.method, params.params ?? {}, timeoutMs, frameId);
+    await reportAction(params.tabId, params.method, params.params, result, undefined);
+    return result;
   } catch (error) {
-    if (!(error instanceof BridgeError) || error.code !== 'NO_AGENT') throw error;
+    if (!(error instanceof BridgeError) || error.code !== 'NO_AGENT') {
+      await reportAction(params.tabId, params.method, params.params, undefined, error);
+      throw error;
+    }
     await injectAgent(params.tabId);
     attachedTabs.add(params.tabId);
     const retryId = frameId ?? (await resolveFrame(params.tabId));
-    return sendToTab(params.tabId, params.method, params.params ?? {}, timeoutMs, retryId);
+    try {
+      const result = await sendToTab(params.tabId, params.method, params.params ?? {}, timeoutMs, retryId);
+      await reportAction(params.tabId, params.method, params.params, result, undefined);
+      return result;
+    } catch (retryError) {
+      await reportAction(params.tabId, params.method, params.params, undefined, retryError);
+      throw retryError;
+    }
   }
 }
 
