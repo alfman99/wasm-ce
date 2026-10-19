@@ -26,6 +26,21 @@
  * analysis at all: the load is never moved, only preceded. One probe exists per reading
  * function, with that function's index baked in as a constant.
  *
+ * Prefixed opcodes are walked for the same reason the plain ones are: real modules use them.
+ * Emscripten's `-pthread` output is full of 0xFE atomic loads and stores, and Unity's player leans
+ * on 0xFD vectors, so refusing either prefix would leave watchpoints unavailable exactly where
+ * games are biggest. The atomic loads and stores and the vector memory accesses carry the same
+ * memarg as `i32.load`, so they are probed exactly like it. The rest of the atomic space is
+ * refused, because its immediates are not decoded here; the rest of the vector space is copied
+ * through after its immediates are skipped, since only memory accesses need a probe.
+ *
+ * One vector form cannot be probed at all. `v128.load*_lane` takes its address *under* a vector
+ * operand — `[address, v128] -> [v128]` — so the address is not on top of the stack where a
+ * `(i32)->(i32)` probe needs it, and moving the vector out of the way would take a new local and a
+ * re-encoding of the body's locals. Those four subopcodes are walked and then reported through
+ * `InstrumentedModule.unprobed`, so a host can say which read it is not seeing instead of claiming
+ * a complete trace.
+ *
  * While the flag is 0 the cost is one `global.get`/branch per store and one call per load, and
  * no JavaScript ever runs.
  *
@@ -60,6 +75,73 @@ const ARM_EXPORT = '__wc_arm';
 
 /** `i32` value type, the only type the callbacks and the probes deal in. */
 const I32 = 0x7f;
+
+/**
+ * The immediates one 0xFD (SIMD) subopcode carries, and whether it touches memory. A vector
+ * instruction is the 0xFD prefix, a LEB128 subopcode, then whatever that subopcode's layout says;
+ * the walk has to know every layout to stay in step with the instruction stream.
+ *
+ * The assignments below are the WebAssembly 2.0 core specification, binary format appendix,
+ * "Vector Instructions" (subopcodes 0x00-0xFF). The 0x100-0x113 block is the relaxed-SIMD proposal
+ * (merged into the in-progress 3.0 draft), whose subopcodes take no immediates either. A subopcode
+ * that no range below covers is unassigned in the specification, so the rewriter refuses the
+ * module rather than guess how many bytes follow it.
+ *
+ * - `none`: no immediates, no memory access.
+ * - `lane`: one lane-index byte, no memory access (`i8x16.extract_lane_s` and friends).
+ * - `bytes16`: sixteen immediate bytes (`v128.const`, `i8x16.shuffle`).
+ * - `load` / `store`: a memarg, reading or writing memory.
+ * - `lane-load` / `lane-store`: a memarg then a lane-index byte, reading or writing one lane.
+ */
+type SimdLayout = 'none' | 'lane' | 'bytes16' | 'load' | 'store' | 'lane-load' | 'lane-store';
+
+interface SimdLayoutRange {
+  /** First subopcode of the range. */
+  first: number;
+  /** Last subopcode of the range, inclusive. */
+  last: number;
+  layout: SimdLayout;
+}
+
+/** Every assigned 0xFD subopcode as a range; the gaps are the subopcodes the specification leaves open. */
+const SIMD_LAYOUT_RANGES: readonly SimdLayoutRange[] = [
+  { first: 0x00, last: 0x0a, layout: 'load' }, // v128.load, load8x8/16x4/32x2 _s/_u, load*_splat
+  { first: 0x0b, last: 0x0b, layout: 'store' }, // v128.store
+  { first: 0x0c, last: 0x0d, layout: 'bytes16' }, // v128.const, i8x16.shuffle
+  { first: 0x0e, last: 0x14, layout: 'none' }, // i8x16.swizzle and the six splats
+  { first: 0x15, last: 0x22, layout: 'lane' }, // extract_lane and replace_lane of every shape
+  { first: 0x23, last: 0x53, layout: 'none' }, // comparisons, v128 bitwise ops, v128.any_true
+  { first: 0x54, last: 0x57, layout: 'lane-load' }, // v128.load8/16/32/64_lane
+  { first: 0x58, last: 0x5b, layout: 'lane-store' }, // v128.store8/16/32/64_lane
+  { first: 0x5c, last: 0x5d, layout: 'load' }, // v128.load32_zero, v128.load64_zero
+  { first: 0x5e, last: 0x99, layout: 'none' }, // conversions, then lane-wise integer arithmetic
+  { first: 0x9b, last: 0xa1, layout: 'none' }, // 0x9a is unassigned
+  { first: 0xa3, last: 0xa4, layout: 'none' }, // 0xa2 is unassigned
+  { first: 0xa7, last: 0xae, layout: 'none' }, // 0xa5 and 0xa6 are unassigned
+  { first: 0xb1, last: 0xb1, layout: 'none' }, // 0xaf and 0xb0 are unassigned
+  { first: 0xb5, last: 0xba, layout: 'none' }, // 0xb2-0xb4 are unassigned
+  { first: 0xbc, last: 0xc1, layout: 'none' }, // 0xbb is unassigned
+  { first: 0xc3, last: 0xc4, layout: 'none' }, // 0xc2 is unassigned
+  { first: 0xc7, last: 0xce, layout: 'none' }, // 0xc5 and 0xc6 are unassigned
+  { first: 0xd1, last: 0xd1, layout: 'none' }, // 0xcf and 0xd0 are unassigned
+  { first: 0xd5, last: 0xe1, layout: 'none' }, // 0xd2-0xd4 are unassigned
+  { first: 0xe3, last: 0xed, layout: 'none' }, // 0xe2 is unassigned
+  { first: 0xef, last: 0x113, layout: 'none' }, // 0xee is unassigned; 0x100-0x113 are relaxed SIMD
+];
+
+/** Subopcode to layout. The ranges are flattened once, so the walk is a lookup per opcode. */
+const SIMD_LAYOUTS: ReadonlyMap<number, SimdLayout> = new Map(
+  SIMD_LAYOUT_RANGES.flatMap(({ first, last, layout }) =>
+    Array.from({ length: last - first + 1 }, (_, index): [number, SimdLayout] => [first + index, layout]),
+  ),
+);
+
+/**
+ * Why the lane loads in `SIMD_LAYOUTS` are walked without a probe, reported to callers through
+ * `InstrumentedModule.unprobed`.
+ */
+const LANE_LOAD_UNPROBED_REASON =
+  'address is below the vector operand, so a stack-neutral probe is not possible without a new local';
 
 /** The remaining numeric value types a stub can return a constant of. */
 const I64 = 0x7e;
@@ -118,7 +200,7 @@ export interface InstrumentedModule {
   armExport: '__wc_arm';
   /** Injected call sites: every store instruction plus the bulk-memory writes. */
   storeCount: number;
-  /** Load instructions that were wrapped by a probe call. */
+  /** Load instructions that were wrapped by a probe call; lane loads are not among them. */
   readCount: number;
   /** Probe functions appended, one per defined function that reads memory. */
   probeCount: number;
@@ -131,6 +213,27 @@ export interface InstrumentedModule {
    * the slot one of them occupies at runtime is this index plus the imports the rewrite added.
    */
   patchedFunctions: number[];
+  /**
+   * Memory accesses the rewriter walked but did not instrument, one entry per (function, subopcode)
+   * pair. Empty when everything was covered, and empty with `reads: false`, which asked for no
+   * probes in the first place. A caller that reports what is here tells a user what is *not*
+   * traced, instead of leaving them to assume every access is.
+   */
+  unprobed: UnprobedAccess[];
+}
+
+/** A memory access the rewriter walked but could not instrument. */
+export interface UnprobedAccess {
+  /** 0xFD subopcode of the access, e.g. 0x54 for `v128.load8_lane`. */
+  opcode: number;
+  /**
+   * Defined-function index of the *input* module that holds the access, numbered the way
+   * `patchedFunctions` is. The callback imports shift every defined function, so this is not the
+   * index the callbacks report at runtime.
+   */
+  functionIndex: number;
+  /** Why no probe was emitted, in words a host can show a user. */
+  reason: string;
 }
 
 /**
@@ -337,6 +440,7 @@ export function instrumentModule(bytes: Uint8Array, options: InstrumentOptions =
     probeCount: rewrittenCode.probeCount,
     functionCount: layout.functionCount,
     patchedFunctions: patches.order,
+    unprobed: rewrittenCode.unprobed,
   };
 }
 
@@ -522,6 +626,8 @@ interface SequenceRewrite {
   end: number;
   storeCount: number;
   readCount: number;
+  /** 0xFD subopcodes of the reads left unprobed, in the order met, one entry per occurrence. */
+  unprobed: number[];
 }
 
 interface SequenceOptions {
@@ -531,6 +637,8 @@ interface SequenceOptions {
   storeInjection: Uint8Array | null;
   /** Builds the `call <probe>` bytes emitted before every load; null leaves loads untouched. */
   probeCall: ((offset: number) => Uint8Array<ArrayBuffer>) | null;
+  /** Names where these instructions live in a rejected-opcode message, e.g. `function 3`. */
+  site: string;
 }
 
 /**
@@ -548,6 +656,7 @@ function rewriteInstructionSequence(
   let depth = 0;
   let storeCount = 0;
   let readCount = 0;
+  const unprobed: number[] = [];
   let terminated = false;
 
   while (!terminated) {
@@ -556,9 +665,9 @@ function rewriteInstructionSequence(
     const opcode = reader.u8();
     let shiftedIndex: number | null = null;
     let memoryOffset: number | null = null;
-    // 0x28-0x35 are the i32/i64/f32/f64 loads, 0x36-0x3e the stores; the 0xFC cases below add
-    // the bulk-memory writes.
-    const loads = opcode >= 0x28 && opcode <= 0x35;
+    // 0x28-0x35 are the i32/i64/f32/f64 loads, 0x36-0x3e the stores; the 0xFC, 0xFD and 0xFE
+    // cases below add the bulk-memory, vector and atomic accesses.
+    let loads = opcode >= 0x28 && opcode <= 0x35;
     let writes = opcode >= 0x36 && opcode <= 0x3e;
 
     switch (opcode) {
@@ -692,10 +801,78 @@ function rewriteInstructionSequence(
         }
         break;
       }
-      case 0xfd:
-        throw unsupported('SIMD opcode 0xFD is not supported');
-      case 0xfe:
-        throw unsupported('atomic opcode 0xFE is not supported');
+      case 0xfd: {
+        // Vector instructions: the prefix, a LEB128 subopcode, then that subopcode's immediates.
+        // The memory accesses take the probe path; everything else is re-emitted after its
+        // immediates are skipped, which is what keeps the walk in step with the stream.
+        const subopcode = reader.u32();
+        const layout = SIMD_LAYOUTS.get(subopcode);
+        if (layout === undefined) {
+          throw unsupported(
+            `0xFD subopcode 0x${subopcode.toString(16)} in ${options.site} is not one this rewriter can decode`,
+          );
+        }
+        switch (layout) {
+          case 'none':
+            break;
+          case 'lane':
+            reader.u8(); // lane index
+            break;
+          case 'bytes16':
+            reader.skip(16); // `v128.const` payload, or the sixteen lane indices of `i8x16.shuffle`
+            break;
+          case 'load':
+          case 'store':
+          case 'lane-load':
+          case 'lane-store': {
+            reader.u32(); // alignment
+            const offset = reader.u32();
+            // The lane forms carry a lane index after the memarg whether or not they are probed.
+            if (layout === 'lane-load' || layout === 'lane-store') reader.u8();
+            if (layout === 'load') {
+              loads = true;
+              memoryOffset = offset;
+            } else if (layout === 'lane-load') {
+              // `[address, v128] -> [v128]`: the vector is on top of the stack, so the probe would
+              // read the vector as the address. Reaching the address would take a local holding
+              // the vector, and a body's locals are copied through untouched, so the access is
+              // walked and reported instead of probed. See `LANE_LOAD_UNPROBED_REASON`.
+              if (options.probeCall !== null) unprobed.push(subopcode);
+            } else {
+              // `v128.store` and the lane stores consume their operands, so the stack is empty
+              // again once the instruction has run: the callback can be appended after it.
+              writes = true;
+            }
+            break;
+          }
+        }
+        break;
+      }
+      case 0xfe: {
+        // Atomic (threads) instructions: the prefix, a LEB128 subopcode, then a memarg exactly like
+        // the non-atomic form. Per the threads proposal's opcode table, 0x10-0x16 are the loads
+        // (i32.atomic.load, i64.atomic.load, i32.atomic.load8_u, i32.atomic.load16_u,
+        // i64.atomic.load8/16/32_u) and 0x17-0x1D the stores in the same widths, so the two ranges
+        // are all this rewriter needs. The read-modify-write, notify and fence forms are refused
+        // rather than re-emitted, so a module whose atomics this rewriter cannot account for fails
+        // loudly instead of being half-instrumented.
+        const subopcode = reader.u32();
+        if (subopcode >= 0x10 && subopcode <= 0x16) {
+          reader.u32(); // alignment
+          const offset = reader.u32();
+          loads = true;
+          memoryOffset = offset;
+        } else if (subopcode >= 0x17 && subopcode <= 0x1d) {
+          reader.u32(); // alignment
+          reader.u32(); // offset
+          writes = true;
+        } else {
+          throw unsupported(
+            `0xFE subopcode 0x${subopcode.toString(16)} in ${options.site} is not an atomic load or store this rewriter instruments`,
+          );
+        }
+        break;
+      }
       default:
         if (opcode >= 0x28 && opcode <= 0x3e) {
           // Loads and stores: alignment then offset. The offset is part of the effective
@@ -727,7 +904,7 @@ function rewriteInstructionSequence(
     }
   }
 
-  return { bytes: out.toBytes(), end: reader.offset, storeCount, readCount };
+  return { bytes: out.toBytes(), end: reader.offset, storeCount, readCount, unprobed };
 }
 
 function parseSections(bytes: Uint8Array): Section[] {
@@ -1042,6 +1219,7 @@ function countGlobals(payload: Uint8Array): number {
       shiftFunctionIndex: IDENTITY,
       storeInjection: null,
       probeCall: null,
+      site: `the initializer of global ${index}`,
     });
     reader.seek(expression.end);
   }
@@ -1096,7 +1274,8 @@ function appendFlagsGlobal(payload: Uint8Array | null, context: RewriteContext):
       const expression = rewriteInstructionSequence(payload, reader.offset, {
         shiftFunctionIndex: context.shiftFunctionIndex,
         storeInjection: null,
-      probeCall: null,
+        probeCall: null,
+        site: `the initializer of global ${index}`,
       });
       globals.u8(valueType).u8(mutability).bytes(expression.bytes);
       reader.seek(expression.end);
@@ -1149,6 +1328,7 @@ function shiftElementFunctions(payload: Uint8Array, context: RewriteContext): Ui
       shiftFunctionIndex: context.shiftFunctionIndex,
       storeInjection: null,
       probeCall: null,
+      site: 'an element segment expression',
     });
     elements.bytes(expression.bytes);
     reader.seek(expression.end);
@@ -1218,16 +1398,25 @@ function shiftElementFunctions(payload: Uint8Array, context: RewriteContext): Ui
   return elements.toBytes();
 }
 
-function rewriteCodeSection(
-  payload: Uint8Array,
-  context: RewriteContext,
-): { payload: Uint8Array<ArrayBuffer>; storeCount: number; readCount: number; probeCount: number } {
+/** What one pass over the code section produced, plus the accesses it could not instrument. */
+interface CodeRewrite {
+  payload: Uint8Array<ArrayBuffer>;
+  storeCount: number;
+  readCount: number;
+  probeCount: number;
+  /** One entry per (function, subopcode) pair the pass walked without instrumenting. */
+  unprobed: UnprobedAccess[];
+}
+
+function rewriteCodeSection(payload: Uint8Array, context: RewriteContext): CodeRewrite {
   const reader = new Reader(payload);
   const count = reader.u32();
   const bodies: Uint8Array<ArrayBuffer>[] = [];
   // A probe is allocated on the first load a body contains, which is why a body without loads
   // costs nothing. One probe covers one (function, memory offset) pair.
   const probeIndices = new Map<string, number>();
+  const unprobed: UnprobedAccess[] = [];
+  const unprobedSeen = new Set<string>();
   let storeCount = 0;
   let readCount = 0;
 
@@ -1272,6 +1461,7 @@ function rewriteCodeSection(
               }
               return new Writer().u8(0x10).u32(probeIndex).toBytes(); // call <probe>
             },
+      site: `function ${definedFunctionIndex}`,
     });
     if (sequence.end !== bodyEnd) {
       throw unsupported(`code body ${definedFunctionIndex} does not end where its declared size says it does`);
@@ -1281,6 +1471,14 @@ function rewriteCodeSection(
     );
     storeCount += sequence.storeCount;
     readCount += sequence.readCount;
+    for (const opcode of sequence.unprobed) {
+      // One entry per (function, subopcode): a body with several lane loads of the same form has
+      // the same gap, and repeating it per access would say nothing new.
+      const key = `${definedFunctionIndex}:${opcode}`;
+      if (unprobedSeen.has(key)) continue;
+      unprobedSeen.add(key);
+      unprobed.push({ opcode, functionIndex: definedFunctionIndex, reason: LANE_LOAD_UNPROBED_REASON });
+    }
     reader.seek(bodyEnd);
   }
 
@@ -1299,7 +1497,7 @@ function rewriteCodeSection(
   for (const body of bodies) code.u32(body.length).bytes(body);
   code.u32(context.armBody.length).bytes(context.armBody);
   for (const body of probeBodies) code.u32(body.length).bytes(body);
-  return { payload: code.toBytes(), storeCount, readCount, probeCount: probeBodies.length };
+  return { payload: code.toBytes(), storeCount, readCount, probeCount: probeBodies.length, unprobed };
 }
 
 function insertSection(sections: Section[], section: Section): void {

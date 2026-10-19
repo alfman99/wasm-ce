@@ -402,8 +402,164 @@ export function buildPatchModule(): Uint8Array<ArrayBuffer> {
   return Uint8Array.from(module.bytes);
 }
 
-/** A module whose only body starts with the SIMD prefix, which a rewriter must reject. */
+/**
+ * A module that moves and adds 16-byte vectors, the shape a compiler emits for a vectorised loop:
+ *   exports: copy_v128(i32,i32)->(), add_vec(i32)->i32, memory
+ * The data segment puts the i32 lanes 1,2,3,4 at 0x00 and 10,20,30,40 at 0x10, so `add_vec(0)`
+ * answers 1 + 10: two `v128.load`s with different memarg offsets, added lane-wise and reduced with
+ * `i32x4.extract_lane`. `i32x4.add` is subopcode 0xAE, whose LEB128 encoding is two bytes, so the
+ * module also pins down that the rewriter reads subopcodes as LEB128 instead of as one byte.
+ */
 export function buildSimdModule(): Uint8Array<ArrayBuffer> {
+  const module = new Writer();
+  module.raw([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+
+  // Types: 0 = (i32,i32)->(), 1 = (i32)->i32
+  const types = new Writer().u32(2);
+  types.u8(0x60).u32(2).u8(0x7f).u8(0x7f).u32(0);
+  types.u8(0x60).u32(1).u8(0x7f).u32(1).u8(0x7f);
+  module.section(1, types);
+
+  // Functions: copy_v128, add_vec. No imports and no globals, so a rewriter creates both sections.
+  module.section(3, new Writer().u32(2).u32(0).u32(1));
+  module.section(5, new Writer().u32(1).u8(0x00).u32(1));
+
+  const exports = new Writer().u32(3);
+  exports.str('copy_v128').u8(0x00).u32(0);
+  exports.str('add_vec').u8(0x00).u32(1);
+  exports.str('memory').u8(0x02).u32(0);
+  module.section(7, exports);
+
+  module.section(
+    10,
+    codeSection([
+      [
+        0x20, 0x01, // local.get 1: destination address, below the value `v128.store` takes
+        0x20, 0x00, // local.get 0: source address
+        0xfd, 0x00, 0x04, 0x00, // v128.load align=16 offset=0
+        0xfd, 0x0b, 0x04, 0x00, // v128.store align=16 offset=0
+      ],
+      [
+        0x20, 0x00, // local.get 0
+        0xfd, 0x00, 0x04, 0x00, // v128.load align=16 offset=0
+        0x20, 0x00, // local.get 0
+        0xfd, 0x00, 0x04, 0x10, // v128.load align=16 offset=16
+        0xfd, 0xae, 0x01, // i32x4.add: subopcode 0xAE, two LEB128 bytes
+        0xfd, 0x1b, 0x00, // i32x4.extract_lane 0
+      ],
+    ]),
+  );
+
+  // One active segment at 0: the eight i32 lanes the two loads read, little endian.
+  module.section(
+    11,
+    new Writer()
+      .u32(1) // one segment
+      .u32(0) // flags 0: active, memory 0, offset expression
+      .raw([0x41, 0x00, 0x0b]) // i32.const 0; end
+      .u32(32) // byte count
+      .raw([
+        0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, // 0x00: lanes 1, 2
+        0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, // 0x08: lanes 3, 4
+        0x0a, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, // 0x10: lanes 10, 20
+        0x1e, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, // 0x18: lanes 30, 40
+      ]),
+  );
+
+  return Uint8Array.from(module.bytes);
+}
+
+/**
+ * A module that reads one byte of memory into a vector and stores the vector elsewhere:
+ *   exports: copy_lane(i32,i32)->(), memory
+ * `v128.load8_lane` reads memory with its address *under* the vector operand, so it is the one
+ * access a rewriter cannot probe without a scratch local; this module exists to show that the gap
+ * is reported instead of hidden. The data segment holds 0x2a at 0x00.
+ */
+export function buildSimdLaneModule(): Uint8Array<ArrayBuffer> {
+  const module = new Writer();
+  module.raw([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+
+  module.section(1, new Writer().u32(1).u8(0x60).u32(2).u8(0x7f).u8(0x7f).u32(0)); // (i32,i32)->()
+  module.section(3, new Writer().u32(1).u32(0));
+  module.section(5, new Writer().u32(1).u8(0x00).u32(1));
+
+  const exports = new Writer().u32(2);
+  exports.str('copy_lane').u8(0x00).u32(0);
+  exports.str('memory').u8(0x02).u32(0);
+  module.section(7, exports);
+
+  module.section(
+    10,
+    codeSection([
+      [
+        0x20, 0x01, // local.get 1: destination address
+        0x20, 0x00, // local.get 0: source address
+        0xfd, 0x0c, // v128.const, sixteen immediate bytes
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0xfd, 0x54, 0x00, 0x00, 0x00, // v128.load8_lane align=1 offset=0 lane=0
+        0xfd, 0x0b, 0x04, 0x00, // v128.store align=16 offset=0
+      ],
+    ]),
+  );
+
+  module.section(
+    11,
+    new Writer()
+      .u32(1) // one segment
+      .u32(0) // flags 0: active, memory 0, offset expression
+      .raw([0x41, 0x00, 0x0b]) // i32.const 0; end
+      .u32(1) // byte count
+      .raw([0x2a]), // the byte `copy_lane` lifts into lane 0
+  );
+
+  return Uint8Array.from(module.bytes);
+}
+
+/**
+ * A module that touches memory with atomic instructions, the shape Emscripten's `-pthread` output
+ * is full of:
+ *   exports: atomic_store(i32,i32)->(), atomic_load(i32)->i32, atomic_load16(i32)->i32, memory
+ * Atomics are valid on an unshared memory, so the module needs neither the threads feature nor a
+ * maximum; only the opcodes carry the 0xFE prefix. Their subopcodes interleave the widths across
+ * both integer types — 0x10-0x16 are the loads, 0x17-0x1D the stores — and each memarg's alignment
+ * must be its natural one, which is why the 16-bit access declares align=2 and offset=8.
+ */
+export function buildAtomicModule(): Uint8Array<ArrayBuffer> {
+  const module = new Writer();
+  module.raw([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+
+  // Types: 0 = (i32,i32)->(), 1 = (i32)->i32
+  const types = new Writer().u32(2);
+  types.u8(0x60).u32(2).u8(0x7f).u8(0x7f).u32(0);
+  types.u8(0x60).u32(1).u8(0x7f).u32(1).u8(0x7f);
+  module.section(1, types);
+
+  module.section(3, new Writer().u32(3).u32(0).u32(1).u32(1));
+  module.section(5, new Writer().u32(1).u8(0x00).u32(1));
+
+  const exports = new Writer().u32(4);
+  exports.str('atomic_store').u8(0x00).u32(0);
+  exports.str('atomic_load').u8(0x00).u32(1);
+  exports.str('atomic_load16').u8(0x00).u32(2);
+  exports.str('memory').u8(0x02).u32(0);
+  module.section(7, exports);
+
+  module.section(
+    10,
+    codeSection([
+      [0x20, 0x00, 0x20, 0x01, 0xfe, 0x17, 0x02, 0x00], // i32.atomic.store align=4 offset=0
+      [0x20, 0x00, 0xfe, 0x10, 0x02, 0x00], // i32.atomic.load align=4 offset=0
+      [0x20, 0x00, 0xfe, 0x13, 0x01, 0x08], // i32.atomic.load16_u align=2 offset=8
+    ]),
+  );
+
+  return Uint8Array.from(module.bytes);
+}
+
+/** A module whose only export `run()`, of type `()->()`, holds exactly the given instruction bytes. */
+export function buildOpcodeModule(instructions: number[]): Uint8Array<ArrayBuffer> {
   const module = new Writer();
   module.raw([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
 
@@ -411,11 +567,10 @@ export function buildSimdModule(): Uint8Array<ArrayBuffer> {
   module.section(3, new Writer().u32(1).u32(0));
 
   const exports = new Writer().u32(1);
-  exports.str('simd').u8(0x00).u32(0);
+  exports.str('run').u8(0x00).u32(0);
   module.section(7, exports);
 
-  // The prefix alone is enough: the rewriter refuses before reading the subopcode.
-  module.section(10, codeSection([[0xfd, 0x0c]]));
+  module.section(10, codeSection([instructions]));
 
   return Uint8Array.from(module.bytes);
 }

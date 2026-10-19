@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { BridgeError } from '@wasmcheat/protocol';
 import { instrumentModule, type InstrumentedModule } from '../../packages/wasm-instrument/src/index';
 import {
+  buildAtomicModule,
   buildLoadModule,
+  buildOpcodeModule,
   buildPatchModule,
+  buildSimdLaneModule,
   buildSimdModule,
   buildStartModule,
   buildStoreModule,
@@ -32,6 +35,30 @@ interface LoadApi {
 interface StartExports {
   peek(addr: number): number;
   memory: WebAssembly.Memory;
+}
+
+interface SimdApi {
+  copy_v128(src: number, dst: number): void;
+  add_vec(addr: number): number;
+  memory: WebAssembly.Memory;
+}
+
+interface ArmedSimdApi extends SimdApi {
+  __wc_arm(flags: number): void;
+}
+
+interface SimdLaneApi {
+  copy_lane(src: number, dst: number): void;
+  memory: WebAssembly.Memory;
+  __wc_arm(flags: number): void;
+}
+
+interface AtomicApi {
+  atomic_store(addr: number, value: number): void;
+  atomic_load(addr: number): number;
+  atomic_load16(addr: number): number;
+  memory: WebAssembly.Memory;
+  __wc_arm(flags: number): void;
 }
 
 interface TableExports {
@@ -297,11 +324,126 @@ describe('instrumentModule', () => {
     expect(calls).toEqual([writeDirectIndex]);
   });
 
-  it('rejects opcodes it cannot walk instead of emitting a corrupt module', () => {
-    const error = captureRejection(() => instrumentModule(buildSimdModule()));
+  it('instruments atomic loads and stores like their non-atomic forms', () => {
+    const instrumented = instrumentModule(buildAtomicModule());
+    // One store and two loads, each treated the way `i32.store` and `i32.load` would be.
+    expect(instrumented.storeCount).toBe(1);
+    expect(instrumented.readCount).toBe(2);
+    expect(instrumented.probeCount).toBe(2);
+    expect(instrumented.unprobed).toEqual([]);
+
+    const { instance, calls, reads } = instantiateModule(instrumented);
+    const exports = exportsOf<AtomicApi>(instance);
+    const storeIndex = functionIndex(instrumented, 'atomic_store');
+    const loadIndex = functionIndex(instrumented, 'atomic_load');
+    const load16Index = functionIndex(instrumented, 'atomic_load16');
+
+    exports.__wc_arm(1);
+
+    exports.atomic_store(0x40, 0x11223344);
+    // The callback fires after the store, under the storing function's index, and never as a read.
+    expect(calls).toEqual([storeIndex]);
+    expect(reads).toEqual([]);
+
+    // The store went to the address it was given, so a store probe reporting no address costs
+    // nothing: the value is where a load of 0x40 finds it.
+    expect(exports.atomic_load(0x40)).toBe(0x11223344);
+    expect(reads).toEqual([{ addr: 0x40, func: loadIndex }]);
+
+    // The memarg offset is part of the reported address: 0x10 + 8 is where the store put 0x0c0d.
+    reads.length = 0;
+    exports.atomic_store(0x18, 0x0a0b0c0d);
+    expect(exports.atomic_load16(0x10)).toBe(0x0c0d);
+    expect(reads).toEqual([{ addr: 0x18, func: load16Index }]);
+  });
+
+  it('instruments vector loads and stores and leaves the vector math alone', () => {
+    const plain = exportsOf<SimdApi>(new WebAssembly.Instance(new WebAssembly.Module(buildSimdModule())));
+    const instrumented = instrumentModule(buildSimdModule());
+    // `copy_v128` holds one load and one store, `add_vec` two loads.
+    expect(instrumented.readCount).toBe(3);
+    expect(instrumented.storeCount).toBe(1);
+    expect(instrumented.probeCount).toBe(3);
+    expect(instrumented.unprobed).toEqual([]);
+
+    const { instance, calls, reads } = instantiateModule(instrumented);
+    const exports = exportsOf<ArmedSimdApi>(instance);
+    const copyIndex = functionIndex(instrumented, 'copy_v128');
+    const addVecIndex = functionIndex(instrumented, 'add_vec');
+
+    // Unarmed, the instrumented module answers what the plain one answers.
+    expect(plain.add_vec(0)).toBe(11);
+    expect(exports.add_vec(0)).toBe(11);
+    expect(reads).toEqual([]);
+
+    // Armed, each probe reports its own effective address and the answer is unchanged: the vector
+    // math between the loads ran untouched, and `i32x4.add`'s two-byte subopcode was walked rather
+    // than mistaken for two instructions.
+    exports.__wc_arm(1);
+    expect(exports.add_vec(0)).toBe(11);
+    expect(reads).toEqual([
+      { addr: 0x00, func: addVecIndex },
+      { addr: 0x10, func: addVecIndex },
+    ]);
+    reads.length = 0;
+
+    // The v128 store fired its callback and landed at 0x40: the sixteen bytes are the ones the
+    // load read, and `add_vec(0x40)` answers lane 0 of what was stored (1) plus zero.
+    exports.copy_v128(0x00, 0x40);
+    expect(calls).toEqual([copyIndex]);
+    expect(reads).toEqual([{ addr: 0x00, func: copyIndex }]);
+    expect(new Uint8Array(exports.memory.buffer).slice(0x40, 0x50)).toEqual(
+      new Uint8Array(plain.memory.buffer).slice(0x00, 0x10),
+    );
+    expect(exports.add_vec(0x40)).toBe(1);
+  });
+
+  it('walks a vector lane load without pretending it was probed', () => {
+    const instrumented = instrumentModule(buildSimdLaneModule());
+    // The lane load reads memory but cannot be probed: its address sits under the vector operand,
+    // so it is reported instead of counted.
+    expect(instrumented.unprobed).toEqual([
+      { opcode: 0x54, functionIndex: 0, reason: expect.stringContaining('probe is not possible') },
+    ]);
+    expect(instrumented.readCount).toBe(0);
+    expect(instrumented.probeCount).toBe(0);
+    expect(instrumented.storeCount).toBe(1);
+
+    const { instance, calls } = instantiateModule(instrumented);
+    const exports = exportsOf<SimdLaneApi>(instance);
+    exports.__wc_arm(1);
+    exports.copy_lane(0x00, 0x40);
+
+    // The walk stayed in step with the lane immediates: the module validates and copies the byte.
+    expect(calls).toEqual([functionIndex(instrumented, 'copy_lane')]);
+    const memory = new Uint8Array(exports.memory.buffer);
+    expect(memory[0x40]).toBe(0x2a);
+    expect(memory.slice(0x41, 0x50)).toEqual(new Uint8Array(15));
+
+    // With reads off nobody asked for probes, so there is no gap to report.
+    expect(instrumentModule(buildSimdLaneModule(), { reads: false }).unprobed).toEqual([]);
+  });
+
+  it('rejects a 0xFD subopcode the spec does not assign instead of guessing its immediates', () => {
+    // 0x9A is a hole in the vector opcode space: its immediates are unknown, and emitting the bytes
+    // with the wrong length would corrupt every instruction after it.
+    const error = captureRejection(() => instrumentModule(buildOpcodeModule([0xfd, 0x9a, 0x01])));
 
     expect(error.code).toBe('UNSUPPORTED');
-    expect(error.message).toContain('0xFD');
+    expect(error.message).toContain('0xFD subopcode 0x9a');
+    expect(error.message).toContain('function 0');
+  });
+
+  it('rejects an atomic opcode that is neither a load nor a store', () => {
+    // i32.atomic.rmw.add: a memarg form this rewriter does not instrument, so the module is refused
+    // instead of instrumented around an access it never accounted for.
+    const error = captureRejection(() =>
+      instrumentModule(buildOpcodeModule([0x41, 0x00, 0x41, 0x01, 0xfe, 0x1e, 0x02, 0x00, 0x1a])),
+    );
+
+    expect(error.code).toBe('UNSUPPORTED');
+    expect(error.message).toContain('0xFE subopcode 0x1e');
+    expect(error.message).toContain('function 0');
   });
 
   it('wraps every load without changing what the module returns', () => {
