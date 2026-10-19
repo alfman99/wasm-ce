@@ -21,8 +21,8 @@ what is not.
 | Package | Role |
 | --- | --- |
 | `packages/protocol` | The single shared contract: message envelopes, address format, value types, error codes, scan/hook/watch shapes. |
-| `packages/page-agent` | Runs in the page's **MAIN world**. Patches `WebAssembly.instantiate*` / `new WebAssembly.Instance` to capture instances, then does the real work: memory access, scanning, freezing, watches, hooks. |
-| `packages/extension` | MV3 extension. Injects the page agent at `document_start`, relays RPC from the service worker, owns the human approval gate and the WebSocket to the MCP server. |
+| `packages/page-agent` | Runs in the page's **MAIN world** and in every Web Worker. Patches `WebAssembly.instantiate*` / `new WebAssembly.Instance` to capture instances, then does the real work: memory access, scanning, freezing, watches, hooks, watchpoint instrumentation. |
+| `packages/extension` | MV3 extension. Injects the page agent at `document_start`, relays RPC from the service worker, owns the human approval gate and the WebSocket to the MCP server, and ships the DevTools panel. |
 | `packages/mcp-server` | Node 22 stdio MCP server. Exposes the `wasmcheat_*` tools, talks to the extension over a local WebSocket, writes the audit log. |
 | `packages/demo-app` | A tiny C game compiled to a standalone wasm module, plus a hand-written loader. The test target. |
 
@@ -513,8 +513,8 @@ that is not moving — the automated test does exactly that.
 ## Tests
 
 ```bash
-npm test           # build → vitest (79 unit) → playwright (13 end-to-end)
-npm run test:unit  # page agent: memory, registry, scanner, hooks — no browser
+npm test           # build → vitest (113 unit) → playwright (18 end-to-end)
+npm run test:unit  # page agent: memory, registry, scanner, hooks, trace, rewriter — no browser
 npm run test:e2e   # real Chromium, real extension, real MCP stdio client
 ```
 
@@ -523,35 +523,42 @@ serves the demo, connects a real MCP client to `dist/bin.js`, and then, in order
 
 1. lists the tab and proves both `attach` and `read` are refused before approval;
 2. approves through the actual popup and attaches;
-3. pauses, resets, mines three times, scans for 75, narrows `unchanged` then `changed` to
-   `w1:0x408`;
+3. pauses, resets, mines three times, scans for 75, narrows `unchanged` then `changed` to `w1:0x408`;
 4. writes 123456 and asserts the page DOM changes without a reload;
 5. freezes lives at 999 and clicks Hazard;
 6. reads typed values and raw bytes, watches the address, and asserts a `123456 → 4242` event;
-7. adds a `get_score` hook, asserts the painted score grows by 1 000 000, disables it, re-enables
-   it, removes it, and asserts the app returns to its original behaviour at each step;
-8. asserts the audit log contains every one of those actions;
+7. adds a `get_score` hook, asserts the painted score grows by 1 000 000, then disables, re-enables
+   and removes it, asserting the original behaviour at each step;
+8. performs every kind of mutation and asserts each lands in the one audit funnel;
 9. arms a write watchpoint, reloads, mines, and asserts `mine` is named as the writer of `0x408`;
 10. arms a read watchpoint and asserts `get_score` is named as the reader;
 11. stubs `get_score` with `wasmcheat_patch`, reloads, asserts the page paints 777 while a
-   neighbouring export still works, then removes the patch and asserts the original value is back;
-12. detaches and asserts access is refused again;
-13. opens the demo inside a genuinely cross-origin iframe and drives it there.
+    neighbouring export still works, then removes the patch;
+12. scans for a pointer chain and resolves it back to the score address;
+13. drives a worker the page creates, and asserts the worker is listed and its death reported;
+14. detaches and asserts access is refused again;
+15. opens the demo inside a genuinely cross-origin iframe and drives it there;
+16. drives the tab from the DevTools panel alone, with no agent and no popup;
+17. saves a scan list, reloads the tab and keeps narrowing the restored list;
+18. attaches to a page whose wasm lives in a Web Worker, writes to the worker's memory, scans and
+    narrows there, and sees the worker's own published state change.
 
 Costs and gotchas: one browser and one bridge port, so the suite runs with a single worker and
-fails fast if port 7331 is already taken.
+fails fast if the port is already taken (it picks `7399` by default so it does not collide with a
+server you have running).
 
 ## Layout
 
 ```
 packages/protocol/src/index.ts      shared contract
 packages/page-agent/src/            registry (capture), memory, scanner, hooks, trace, runtime
-packages/extension/src/             sw.ts (approval + bridge), relay.ts, popup, manifest
+packages/extension/src/             sw.ts (approval + bridge), relay.ts, popup, panel.ts, devtools.ts, manifest
 packages/extension/dist/            loadable unpacked extension (built)
 packages/wasm-instrument/src/       wasm binary rewriter: watchpoint instrumentation + function stubs
 packages/mcp-server/src/            bridge.ts (WebSocket), server.ts (tools), audit.ts, bin.ts
 packages/demo-app/src/game.c        demo target, compiled to prebuilt/game.wasm
 packages/demo-app/framed.html       the demo inside a cross-origin iframe (subframe test)
+packages/demo-app/worker.html       the demo instantiated inside a Web Worker (worker test)
 tests/unit/                         vitest: memory, registry, scanner, hooks, wasm exports
 tests/e2e/                          playwright: harness.ts + demo.spec.ts
 ```
@@ -565,6 +572,8 @@ tests/e2e/                          playwright: harness.ts + demo.spec.ts
 - The page-agent runs in the MAIN world, so a hostile page can talk to (or lie to) the relay. The
   approval gate protects you from the agent, not from the site you loaded.
 - Strict-CSP pages block hook bodies; declarative fallbacks still work.
+- Not implemented yet: a scrolling hex memory viewer, a Cetus-style speed hack, and named-address
+  bookmarks (saved *scan lists* do exist). `docs/STATUS.md` keeps the current list.
 
 ## Policy
 

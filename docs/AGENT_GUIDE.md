@@ -24,12 +24,20 @@ npm install && npm run build      # builds protocol, wasm-instrument, page agent
 The extension dials the server on `ws://127.0.0.1:7331/extension`, so start the MCP client *after* the
 extension is loaded (or wait a second — it reconnects on its own).
 
+The bridge is authenticated: the server mints a token into `$WASMCHEAT_HOME/token` on first run. Paste it
+once into **Save token** in the DevTools panel (or the token box in the popup); it survives restarts. A
+wrong token shows `token refused`, and saving the right one reconnects immediately.
+
+The human also has a front-end: DevTools → **WasmCheat** exposes every tool as a form, plus a raw RPC
+console and a live event and audit log. It talks to the same dispatcher as the agent, so it cannot bypass
+the approval gate — it is the fastest way to check what the agent sees.
+
 ## 2. What the agent may and may not do
 
 Every tab needs a human grant before any memory read. That grant is per tab and per site, it survives
 navigation inside the site, and it is revoked when the tab leaves the site or closes. There is no way
 around it from the agent side, and the agent should not pretend otherwise: if a call returns
-`NEED_APPROVAL`, ask the human to click **Approve** in the toolbar popup.
+`NEED_APPROVAL`, ask the human to click **Approve** in the toolbar popup or the DevTools panel.
 
 Approval is **event-based**: `wasmcheat_attach` blocks on a decision event rather than re-reading state on
 a timer, so the moment the human clicks, the call returns. Do not poll `wasmcheat_approval_status` in a
