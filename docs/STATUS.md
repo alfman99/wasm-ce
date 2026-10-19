@@ -2,7 +2,7 @@
 
 Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`):
 
-- `npm run build` 0 errors, `npm run typecheck` 0 errors
+- `npm ci` clean, `npm run build` 0 errors, `npm run typecheck` 0 errors
 - `npx vitest run` **122 passed** (13 files)
 - `npx playwright test` **21 passed, 0 skipped** (21 s, real Chromium, real extension, no mocks)
 
