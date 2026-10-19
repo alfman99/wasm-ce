@@ -1,12 +1,15 @@
 import {
   BridgeError,
+  workerIdOf,
   type Address,
   type FreezeEntry,
   type HookEntry,
   type HookSpec,
+  type InstanceHost,
   type InstanceInfo,
   type PageDiagnostics,
   type PageAgentInfo,
+  type PatchEntry,
   type PatchSpec,
   type PointerPath,
   type PointerResolution,
@@ -17,10 +20,13 @@ import {
   type TextScanOptions,
   type TextScanResult,
   type TraceArmOptions,
-  type WriteTraceStatus,
-  type ValueType,
   type WatchEntry,
   type WatchEvent,
+  type WorkerInfo,
+  type WorkerMessage,
+  type WorkerType,
+  type WriteTraceStatus,
+  type ValueType,
   type WriteResult,
   VALUE_TYPE_BYTES,
 } from '@wasmcheat/protocol';
@@ -43,6 +49,44 @@ const AGENT_VERSION = '0.1.0';
 const FREEZE_INTERVAL_MS = 16;
 const WATCH_INTERVAL_MS = 50;
 const MAX_EVENTS_PER_WATCH = 200;
+/** How long a forwarded call waits for a worker's answer before the caller is told it timed out. */
+const WORKER_CALL_TIMEOUT_MS = 30_000;
+/** Probing a worker (hello, list) must not hang a listing because one worker never started. */
+const WORKER_PROBE_TIMEOUT_MS = 2_000;
+
+interface PendingCall {
+  resolve: (value: unknown) => void;
+  reject: (error: unknown) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+/** One bootstrapped worker, as the page realm knows it. */
+interface WorkerChannel {
+  readonly id: string;
+  readonly url: string;
+  readonly type: WorkerType;
+  readonly post: (message: WorkerMessage) => void;
+  instances: number;
+  /** Set by `removeWorker`; ids keep routing here so callers get a precise error. */
+  terminated: boolean;
+  readonly pending: Map<string, PendingCall>;
+  nextCallId: number;
+}
+
+/** What the Worker wrapper in the page realm hands over for each worker it bootstraps. */
+export interface WorkerLink {
+  readonly id: string;
+  readonly url: string;
+  readonly type: WorkerType;
+  post(message: WorkerMessage): void;
+}
+
+export interface PageRuntimeOptions {
+  /** Realm this runtime answers for. A worker-scope runtime names everything it mints. */
+  realm?: InstanceHost;
+  /** Prefix a worker realm must put on its ids, e.g. `k1`. Absent in the page realm. */
+  workerId?: string;
+}
 
 interface FreezeRecord extends FreezeEntry {
   instanceId: string;
@@ -66,12 +110,20 @@ export class PageRuntime {
   private readonly freezes = new Map<string, FreezeRecord>();
   private readonly watches = new Map<string, WatchRecord>();
   private readonly patches: PatchStore;
+  private readonly workers = new Map<string, WorkerChannel>();
   private freezeTimer: ReturnType<typeof setInterval> | null = null;
   private watchTimer: ReturnType<typeof setInterval> | null = null;
   private nextId = 1;
   private disposed = false;
 
-  constructor() {
+  /** Realm this runtime answers for, which is what instance ids get tagged with. */
+  readonly realm: InstanceHost;
+  /** Prefix this realm puts on the ids it mints; null in the page realm. */
+  private readonly workerId: string | null;
+
+  constructor(options: PageRuntimeOptions = {}) {
+    this.realm = options.realm ?? 'page';
+    this.workerId = options.workerId ?? null;
     this.registry = new WasmRegistry({
       onInstrumented: (tracked) => this.trace.onInstrumented(tracked),
     });
@@ -141,7 +193,7 @@ export class PageRuntime {
   }
 
   info(): PageAgentInfo {
-    return { version: AGENT_VERSION, url: location.href, evalAllowed: this.hooks.evalAllowed };
+    return { version: AGENT_VERSION, url: pageUrl(), evalAllowed: this.hooks.evalAllowed };
   }
 
   /**
@@ -150,11 +202,12 @@ export class PageRuntime {
    * simply is not a wasm app (JS/canvas).
    */
   diagnose(): PageDiagnostics {
+    const hasDocument = typeof document !== 'undefined';
     const stats = patchStats();
     const calls = stats.calls;
     const instances = this.registry.list().length;
     const iframes = readIframes();
-    const canvases = document.querySelectorAll('canvas').length;
+    const canvases = hasDocument ? document.querySelectorAll('canvas').length : 0;
     const attempts = calls.instantiate + calls.instantiateStreaming + calls.newInstance;
     const crossOrigin = iframes.find((frame) => frame.crossOrigin);
 
@@ -176,8 +229,8 @@ export class PageRuntime {
 
     return {
       ...this.info(),
-      title: document.title,
-      readyState: document.readyState,
+      title: hasDocument ? document.title : '',
+      readyState: hasDocument ? document.readyState : 'worker',
       calls,
       agentAgeMs: Date.now() - stats.installedAt,
       instances,
@@ -188,8 +241,163 @@ export class PageRuntime {
     };
   }
 
-  listInstances(): InstanceInfo[] {
-    return this.registry.list().map((tracked) => this.registry.describe(tracked));
+  /**
+   * Every instance this agent can see, this realm's and its workers' merged. Worker instances keep
+   * the ids the worker minted (`k1-1`), so a later call routes back on the id alone.
+   */
+  async listInstances(): Promise<InstanceInfo[]> {
+    const merged = this.localInstances();
+    for (const channel of this.workers.values()) {
+      if (channel.terminated) continue;
+      try {
+        const instances = (await this.workerCall(
+          channel.id,
+          'page.listInstances',
+          {},
+          WORKER_PROBE_TIMEOUT_MS,
+        )) as InstanceInfo[];
+        channel.instances = instances.length;
+        merged.push(...instances);
+      } catch {
+        // One unreachable worker must not blank the listing for the realm that does answer.
+      }
+    }
+    // `latest` means newest by creation time, and workers are visited after the page realm.
+    return merged.sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  private localInstances(): InstanceInfo[] {
+    return this.registry.list().map((tracked) => {
+      const info = this.registry.describe(tracked);
+      return this.workerId === null
+        ? { ...info, host: this.realm }
+        : { ...info, host: this.realm, workerId: this.workerId };
+    });
+  }
+
+  // ---------------------------------------------------------------- workers
+
+  /** Workers this agent bootstrapped, with a freshly probed instance count. */
+  async listWorkers(): Promise<WorkerInfo[]> {
+    const infos: WorkerInfo[] = [];
+    for (const channel of this.workers.values()) {
+      if (channel.terminated) continue;
+      try {
+        const instances = await this.workerCall(
+          channel.id,
+          'page.listInstances',
+          {},
+          WORKER_PROBE_TIMEOUT_MS,
+        );
+        if (Array.isArray(instances)) channel.instances = instances.length;
+      } catch {
+        // A worker that never ran the agent keeps its last known count and stays listed.
+      }
+      infos.push({ id: channel.id, url: channel.url, type: channel.type, instances: channel.instances });
+    }
+    return infos;
+  }
+
+  /** Called by the Worker wrapper for every worker whose bootstrap it installed. */
+  addWorker(link: WorkerLink): void {
+    this.workers.set(link.id, {
+      id: link.id,
+      url: link.url,
+      type: link.type,
+      post: link.post,
+      instances: 0,
+      terminated: false,
+      pending: new Map(),
+      nextCallId: 1,
+    });
+    // The worker answers the handshake before it holds any instance, so a game that has not
+    // compiled its module yet still shows up in list_workers.
+    try {
+      link.post({ __wasmcheat: 'hello' });
+    } catch {
+      // A worker that died during startup simply never answers; the probe times out.
+    }
+  }
+
+  /** `terminate()` landed: ids keep routing here so a caller learns why instead of hanging. */
+  removeWorker(workerId: string): void {
+    const channel = this.workers.get(workerId);
+    if (!channel || channel.terminated) return;
+    channel.terminated = true;
+    for (const entry of channel.pending.values()) {
+      clearTimeout(entry.timer);
+      entry.reject(this.deadWorker(workerId, channel));
+    }
+    channel.pending.clear();
+  }
+
+  /** Answers arriving from a worker: the hello probe and the replies to forwarded calls. */
+  handleWorkerMessage(workerId: string, message: WorkerMessage): void {
+    const channel = this.workers.get(workerId);
+    if (!channel) return;
+    if (message.__wasmcheat === 'hello') {
+      if ('info' in message) channel.instances = message.info.instances;
+      return;
+    }
+    if (message.__wasmcheat !== 'result') return;
+    const entry = channel.pending.get(message.id);
+    if (!entry) return;
+    channel.pending.delete(message.id);
+    clearTimeout(entry.timer);
+    if (message.error) {
+      // PostMessage flattens the error to its shape; rebuild it so callers keep seeing BridgeError.
+      const shape = message.error;
+      entry.reject(new BridgeError(shape.code, shape.message, shape.detail));
+      return;
+    }
+    entry.resolve(message.result);
+  }
+
+  /** Forward one page method into a worker realm and wait for its answer. */
+  async workerCall(
+    workerId: string,
+    method: string,
+    params: unknown = {},
+    timeoutMs = WORKER_CALL_TIMEOUT_MS,
+  ): Promise<unknown> {
+    const channel = this.workers.get(workerId);
+    if (!channel) {
+      throw new BridgeError('NO_INSTANCE', `no worker "${workerId}" is instrumented in this page`, {
+        workers: [...this.workers.keys()],
+      });
+    }
+    if (channel.terminated) throw this.deadWorker(workerId, channel);
+
+    const id = String(channel.nextCallId++);
+    return new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        channel.pending.delete(id);
+        reject(
+          new BridgeError(
+            'TIMEOUT',
+            `worker ${workerId} did not answer ${method} within ${timeoutMs}ms: it may be busy, blocked, or never ran the agent`,
+            { workerId },
+          ),
+        );
+      }, timeoutMs);
+      channel.pending.set(id, { resolve, reject, timer });
+      try {
+        channel.post({ __wasmcheat: 'call', id, method, params });
+      } catch (error) {
+        channel.pending.delete(id);
+        clearTimeout(timer);
+        reject(this.deadWorker(workerId, channel, error instanceof Error ? error.message : String(error)));
+      }
+    });
+  }
+
+  private deadWorker(workerId: string, channel: WorkerChannel, reason?: string): BridgeError {
+    const why = reason ? `cannot reach it: ${reason}` : '';
+    return new BridgeError(
+      'NO_INSTANCE',
+      `worker ${workerId} (${channel.url}) is gone${why ? ` (${why})` : ''}; its instances no longer exist — reload the tab`,
+      { workerId, url: channel.url },
+    );
   }
 
   // ---------------------------------------------------------------- memory
@@ -432,13 +640,78 @@ export class PageRuntime {
 
   // ---------------------------------------------------------------- dispatch
 
-  handle(method: string, params: unknown): unknown {
+  /**
+   * A call whose id belongs to a worker goes there; everything else runs here. Ids carry their
+   * owner (`k1-1`, `k1-s1`), so routing is a decode rather than a table that could go stale.
+   */
+  private routeOwner(params: unknown): string | null {
+    if (!params || typeof params !== 'object') return null;
+    const record = params as Record<string, unknown>;
+    const candidates: unknown[] = [
+      record.instanceId,
+      record.scanId,
+      record.freezeId,
+      record.watchId,
+      record.hookId,
+      record.patchId,
+    ];
+    const address = record.address;
+    if (typeof address === 'string') candidates.push(address);
+    else if (address && typeof address === 'object') candidates.push((address as Address).instanceId);
+    for (const candidate of candidates) {
+      if (typeof candidate !== 'string') continue;
+      const owner = workerIdOf(candidate);
+      if (owner && this.workers.has(owner)) return owner;
+    }
+    return null;
+  }
+
+  async handle(method: string, params: unknown): Promise<unknown> {
+    const owner = this.routeOwner(params);
+    if (owner) return this.workerCall(owner, method, params);
+    switch (method) {
+      case 'page.listInstances':
+        return this.listInstances();
+      case 'page.listWorkers':
+        return this.listWorkers();
+      case 'page.freeze.list':
+        return this.mergeWorkers('page.freeze.list', params);
+      case 'page.watch.list':
+        return this.mergeWorkers('page.watch.list', params);
+      case 'page.watch.poll':
+        return this.mergeWorkers('page.watch.poll', params);
+      case 'page.hook.list':
+        return this.mergeWorkers('page.hook.list', params);
+      case 'page.patch.list':
+        return this.mergeWorkers('page.patch.list', params);
+      default:
+        return this.local(method, params);
+    }
+  }
+
+  /** Session objects live in the realm that minted them; the list output is the merged view. */
+  private async mergeWorkers(method: string, params: unknown): Promise<unknown[]> {
+    const merged = this.local(method, params) as unknown[];
+    for (const channel of this.workers.values()) {
+      if (channel.terminated) continue;
+      try {
+        const fromWorker = await this.workerCall(channel.id, method, params, WORKER_PROBE_TIMEOUT_MS);
+        if (Array.isArray(fromWorker)) merged.push(...fromWorker);
+      } catch {
+        // One unreachable worker must not hide the entries this realm owns.
+      }
+    }
+    return merged;
+  }
+
+  /** Methods answered by this realm alone. */
+  private local(method: string, params: unknown): unknown {
     const p = (params ?? {}) as never;
     switch (method) {
       case 'page.hello':
         return this.info();
       case 'page.listInstances':
-        return this.listInstances();
+        return this.localInstances();
       case 'page.diagnose':
         return this.diagnose();
       case 'page.read':
@@ -525,6 +798,11 @@ function stripWatch(record: WatchRecord): WatchEntry {
   };
 }
 
+/** `location` exists in a worker too, but not in the realm the unit tests run in. */
+function pageUrl(): string {
+  return typeof location === 'undefined' ? '' : location.href;
+}
+
 function randomId(): string {
   try {
     return crypto.randomUUID();
@@ -551,6 +829,7 @@ function toBase64(bytes: Uint8Array): string {
  * frame's contents are not.
  */
 function readIframes(): { src: string; crossOrigin: boolean; width: number; height: number }[] {
+  if (typeof document === 'undefined') return [];
   const frames: { src: string; crossOrigin: boolean; width: number; height: number }[] = [];
   for (const frame of Array.from(document.querySelectorAll('iframe'))) {
     const src = frame.getAttribute('src') ?? '';
@@ -568,6 +847,7 @@ function readIframes(): { src: string; crossOrigin: boolean; width: number; heig
 
 /** `.wasm` URLs that appear in the markup — a cheap way to see whether wasm lives here at all. */
 function wasmReferences(): string[] {
+  if (typeof document === 'undefined') return [];
   const html = document.documentElement?.outerHTML ?? '';
   const found = html.match(/[^"'\s>]*\.wasm(?:\?[^"'\s>]*)?/g) ?? [];
   return Array.from(new Set(found)).slice(0, 5);

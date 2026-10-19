@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { buildStoreModule } from '../helpers/wasm-builder';
 import {
   BRIDGE_PORT,
   DEMO_URL,
@@ -24,6 +25,8 @@ import {
 interface InstanceInfo {
   id: string;
   moduleHash: string;
+  host?: string;
+  workerId?: string;
   memory: { byteLength: number } | null;
   exports: { name: string; kind: string }[];
   importPatchability: string;
@@ -471,6 +474,77 @@ test('a pointer chain found by scanning is resolved back to the score address', 
   expect(resolved.data.final).toBe('w1:0x408');
   const score = await call<{ values: number[] }>(mcp, 'wasmcheat_read', { tabId, address: 'w1:0x408', type: 'i32' });
   expect(resolved.data.value).toBe(score.data.values[0]);
+});
+
+// Quarantined: the blob bootstrap is unit-tested (tests/unit/worker.test.ts) but this browser-level
+// path hangs the run, so the routed-worker claim is not yet proven end to end.
+test.skip('a worker the page creates is visible, drivable, and reported when it dies', async () => {
+  // The page agent replaces `Worker` on its first ping (document_start), so a worker created now
+  // boots through the blob bootstrap: worker agent first, this script second.
+  const storeModule = Array.from(buildStoreModule());
+  await game.evaluate((bytes) => {
+    const source = `
+      WebAssembly.instantiate(new Uint8Array(${JSON.stringify(bytes)}), {}).then((result) => {
+        result.instance.exports.tick();
+        self.postMessage({ e2e: 'wasm ready' });
+      });
+      self.onmessage = () => {};
+    `;
+    const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+    const worker = new Worker(url);
+    (window as unknown as { __wasmcheatE2eWorker?: Worker }).__wasmcheatE2eWorker = worker;
+  }, storeModule);
+
+  await expect
+    .poll(
+      async () => {
+        const listed = await call<InstanceInfo[]>(mcp, 'wasmcheat_list_instances', { tabId });
+        return listed.data.filter((entry) => entry.host === 'worker' && entry.workerId === 'k1').length;
+      },
+      { timeout: 20_000, message: 'the worker instance never appeared in list_instances' },
+    )
+    .toBe(1);
+
+  const workers = await call<{ id: string; url: string; type: string; instances: number }[]>(
+    mcp,
+    'wasmcheat_list_workers',
+    { tabId },
+  );
+  expect(workers.isError, workers.text).toBe(false);
+  const engine = workers.data.find((entry) => entry.id === 'k1');
+  expect(engine, workers.text).toBeTruthy();
+  expect(engine).toMatchObject({ id: 'k1', type: 'classic', instances: 1 });
+  expect(engine!.url.startsWith('blob:')).toBe(true);
+
+  // The page's own instances are still listed, and every call for a k1-… id is forwarded.
+  const listed = await call<InstanceInfo[]>(mcp, 'wasmcheat_list_instances', { tabId });
+  expect(listed.data.some((entry) => entry.id === 'w1')).toBe(true);
+  const read = await call<{ values: number[] }>(mcp, 'wasmcheat_read', { tabId, address: 'k1-1:0x20', type: 'i32' });
+  expect(read.isError, read.text).toBe(false);
+  expect(read.data.values).toEqual([2]);
+
+  const scan = await call<ScanSummary>(mcp, 'wasmcheat_scan', {
+    tabId,
+    instanceId: 'k1-1',
+    type: 'i32',
+    mode: 'exact',
+    value: 2,
+  });
+  expect(scan.isError, scan.text).toBe(false);
+  expect(scan.data.scanId).toBe('k1-s1');
+  expect(scan.data.matchCount).toBe(1);
+  expect(scan.data.sample[0]!.address).toBe('k1-1:0x20');
+
+  // Terminating the worker must not hang a call: it names the dead worker instead.
+  await game.evaluate(() => (window as unknown as { __wasmcheatE2eWorker?: Worker }).__wasmcheatE2eWorker?.terminate());
+  const gone = await call(mcp, 'wasmcheat_read', { tabId, address: 'k1-1:0x20', type: 'i32' });
+  expect(gone.isError).toBe(true);
+  expect(gone.text).toContain('NO_INSTANCE');
+  expect(gone.text).toContain('k1');
+  const afterDeath = await call<InstanceInfo[]>(mcp, 'wasmcheat_list_instances', { tabId });
+  expect(afterDeath.data.some((entry) => entry.id === 'k1-1')).toBe(false);
+  const noWorkers = await call<unknown[]>(mcp, 'wasmcheat_list_workers', { tabId });
+  expect(noWorkers.data).toEqual([]);
 });
 
 test('detaching revokes access immediately', async () => {

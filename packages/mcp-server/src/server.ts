@@ -27,6 +27,7 @@ import {
   type ValueType,
   type WatchEntry,
   type WatchEvent,
+  type WorkerInfo,
   type WriteTraceStatus,
   type WriteResult,
 } from '@wasmcheat/protocol';
@@ -289,12 +290,34 @@ export function createServer(bridge: Bridge): McpServer {
       title: 'List WebAssembly instances',
       description:
         'List the WebAssembly instances captured in a tab, with their id (w1, w2…), module hash, memory size and exports. ' +
-        'Only function exports can be hooked.',
+        'Instances hosted by a Web Worker are included: they carry an id like k1-1, host "worker" and a workerId, and every ' +
+        'tool that takes an instance id accepts them unchanged. Only function exports can be hooked.',
       inputSchema: { tabId: z.number().int() },
     },
     async ({ tabId }) => {
       try {
         return ok(await page<InstanceInfo[]>(tabId, 'page.listInstances'));
+      } catch (error) {
+        return fail(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'wasmcheat_list_workers',
+    {
+      title: 'List Web Workers',
+      description:
+        'List the Web Workers the page agent bootstrapped in a tab: id (k1, k2…), the script URL the page asked for, ' +
+        'classic or module, and how many WebAssembly instances each has captured. Engines that compile in a worker ' +
+        '(Unity, Godot 4, many itch.io builds) show up here; their instances appear in list_instances as k1-1, k1-2… ' +
+        'An empty list on a tab that clearly runs wasm means the worker was created before the agent loaded or is nested ' +
+        'inside another worker — neither can be instrumented.',
+      inputSchema: { tabId: z.number().int() },
+    },
+    async ({ tabId }) => {
+      try {
+        return ok(await page<WorkerInfo[]>(tabId, 'page.listWorkers'));
       } catch (error) {
         return fail(error);
       }

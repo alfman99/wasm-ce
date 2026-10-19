@@ -6,6 +6,12 @@
   "minimum_chrome_version": "116",
   "permissions": ["scripting", "tabs", "storage", "activeTab"],
   "host_permissions": ["http://*/*", "https://*/*"],
+  "web_accessible_resources": [
+    {
+      "resources": ["worker-agent.js"],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "background": {
     "service_worker": "sw.js",
     "type": "module"

@@ -72,6 +72,9 @@ export interface ExportInfo {
   arity: number | null;
 }
 
+/** Which JS realm captured an instance: the document itself, or a Worker the document created. */
+export type InstanceHost = 'page' | 'worker';
+
 export interface InstanceInfo {
   id: string;
   /** Stable hash of the module bytes, when we could capture them. */
@@ -86,6 +89,10 @@ export interface InstanceInfo {
   createdAt: number;
   /** Whether an import hook can still take effect on this instance. */
   importPatchability: 'live' | 'next-instantiation' | 'none';
+  /** Realm that captured it. A game whose engine runs in a Worker reports `worker` here. */
+  host?: InstanceHost;
+  /** Worker the instance lives in, when `host` is `worker`. */
+  workerId?: string;
 }
 
 /** A frame inside a tab. Games are often served from a cross-origin subframe. */
@@ -287,6 +294,83 @@ export interface PageAgentInfo {
   frameId?: number;
   /** True when the page realm allows `new Function`, i.e. free-form hook scripts work. */
   evalAllowed: boolean;
+}
+
+export type WorkerType = 'classic' | 'module';
+
+/**
+ * A worker the page agent bootstrapped, as reported by `page.listWorkers`.
+ *
+ * Ids are namespaced by realm so a document and its workers cannot mint the same id: the page
+ * agent gives every wrapped Worker an id (`k1`, `k2`, …) and a worker names everything it mints
+ * `<workerId>-<local>` — instances `k1-1`, `k1-2`, scans `k1-s1`, freezes `k1-f1`, watches
+ * `k1-v1`, hooks `k1-h1`. An id with no `-` belongs to the page realm, so routing is exactly
+ * "everything before the first dash".
+ *
+ * Limits: a Worker created before the agent learned where `worker-agent.js` lives stays
+ * un-instrumented, a worker created inside a worker (nested) bypasses this wrapper, and a
+ * cross-origin worker URL cannot be constructed at all — none of those are visible here.
+ */
+export interface WorkerInfo {
+  /** Worker id assigned at construction, e.g. `k1`. */
+  id: string;
+  /** The script URL the page asked for, not the blob bootstrap that actually runs. */
+  url: string;
+  type: WorkerType;
+  /** Instances this worker has captured as of the last probe. */
+  instances: number;
+}
+
+/** A worker agent's answer to `{__wasmcheat: 'hello'}`; answerable before any instance exists. */
+export interface WorkerAgentInfo extends PageAgentInfo {
+  instances: number;
+}
+
+/** Every message crossing the page <-> worker boundary carries this tag. */
+export const WORKER_CHANNEL_KEY = '__wasmcheat';
+
+export interface WorkerCallMessage {
+  __wasmcheat: 'call';
+  id: string;
+  method: string;
+  params: unknown;
+}
+
+export interface WorkerResultMessage {
+  __wasmcheat: 'result';
+  id: string;
+  result?: unknown;
+  error?: BridgeErrorShape;
+}
+
+export interface WorkerHelloMessage {
+  __wasmcheat: 'hello';
+}
+
+export interface WorkerHelloReplyMessage {
+  __wasmcheat: 'hello';
+  info: WorkerAgentInfo;
+}
+
+export type WorkerMessage =
+  | WorkerCallMessage
+  | WorkerResultMessage
+  | WorkerHelloMessage
+  | WorkerHelloReplyMessage;
+
+export function isWorkerMessage(value: unknown): value is WorkerMessage {
+  const m = value as { __wasmcheat?: unknown } | null;
+  return (
+    !!m &&
+    typeof m === 'object' &&
+    (m.__wasmcheat === 'call' || m.__wasmcheat === 'result' || m.__wasmcheat === 'hello')
+  );
+}
+
+/** `k1-1` -> `k1`. An id without a dash belongs to the page realm, so it has no worker owner. */
+export function workerIdOf(id: string): string | null {
+  const dash = id.indexOf('-');
+  return dash > 0 ? id.slice(0, dash) : null;
 }
 
 /** Why a tab shows no instances: the answer is almost always one of these fields. */
@@ -526,6 +610,7 @@ export const Methods = {
   // extension service worker -> page agent
   pageHello: 'page.hello',
   pageListInstances: 'page.listInstances',
+  pageListWorkers: 'page.listWorkers',
   pageRead: 'page.read',
   pageWrite: 'page.write',
   pageScanBegin: 'page.scan.begin',

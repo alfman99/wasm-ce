@@ -22,6 +22,20 @@ interface Pending {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/**
+ * The page agent cannot build an extension URL itself, so every message it receives names the
+ * worker-scope agent bundle; that is what lets it bootstrap workers created after this point.
+ */
+function resolveWorkerAgentUrl(): string {
+  try {
+    return chrome.runtime.getURL('worker-agent.js');
+  } catch {
+    return '';
+  }
+}
+
+const WORKER_AGENT_URL = resolveWorkerAgentUrl();
+
 if (!(window as unknown as PageAgentGlobal)[RELAY_FLAG]) {
   (window as unknown as PageAgentGlobal)[RELAY_FLAG] = true;
 
@@ -31,7 +45,7 @@ if (!(window as unknown as PageAgentGlobal)[RELAY_FLAG]) {
   const channelWaiters: Array<() => void> = [];
 
   function post(payload: Record<string, unknown>): void {
-    window.postMessage({ source: 'wasmcheat-sw', ...payload }, '*');
+    window.postMessage({ source: 'wasmcheat-sw', ...payload, workerAgentUrl: WORKER_AGENT_URL }, '*');
   }
 
   window.addEventListener('message', (event: MessageEvent) => {
