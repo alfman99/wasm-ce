@@ -91,7 +91,6 @@ if (!(window as unknown as PageAgentGlobal)[RELAY_FLAG]) {
    * before it is passed on: a bare object would lose its code and be reported as INTERNAL.
    */
   function asBridgeError(error: unknown): BridgeError {
-    if (isBridgeError(error)) return error;
     const shape = error as { code?: string; message?: string; detail?: unknown } | null;
     return new BridgeError(
       (shape?.code as ErrorCode | undefined) ?? 'INTERNAL',

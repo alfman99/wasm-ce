@@ -14,6 +14,8 @@ export interface TrackedInstance {
   imports: ImportObject | null;
   memory: WebAssembly.Memory | null;
   memorySource: 'export' | 'import' | 'none';
+  /** Resolved once from the module bytes; `undefined` means "not parsed yet". */
+  maxByteLength?: number | null;
   createdAt: number;
   createdBy: CreatedBy;
   /** Set when the instance's `exports` getter was shadowed with a live, hookable view. */
@@ -583,11 +585,20 @@ export class WasmRegistry {
       moduleHash: (tracked.module && this.moduleBytes.get(tracked.module)?.hash) ?? tracked.moduleHash,
       createdBy: tracked.createdBy,
       memoryResolved: tracked.memory !== null,
-      memory: tracked.memory ? describeMemory(tracked.memory) : null,
+      memory: tracked.memory ? describeMemory(tracked.memory, this.memoryMax(tracked)) : null,
       exports: describeExports(tracked.instance),
       createdAt: tracked.createdAt,
       importPatchability: this.importPatchabilityOf(tracked),
     };
+  }
+
+  /** Declared memory maximum for this instance, crossing a worker boundary as plain data. */
+  private memoryMax(tracked: TrackedInstance): number | null {
+    if (tracked.maxByteLength !== undefined) return tracked.maxByteLength;
+    const bytes = tracked.module ? this.moduleBytes.get(tracked.module)?.bytes ?? null : null;
+    const max = declaredMemoryMax(bytes);
+    tracked.maxByteLength = max;
+    return max;
   }
 
   importPatchabilityOf(tracked: TrackedInstance): 'live' | 'next-instantiation' | 'none' {
@@ -627,12 +638,62 @@ export function describeExports(instance: WebAssembly.Instance): ExportInfo[] {
   });
 }
 
-export function describeMemory(memory: WebAssembly.Memory): MemoryInfo {
+export function describeMemory(memory: WebAssembly.Memory, maxByteLength: number | null = null): MemoryInfo {
   return {
     byteLength: memory.buffer.byteLength,
-    maxByteLength: null,
-    growable: true,
+    maxByteLength,
+    // WebAssembly memory can always grow until its declared maximum, so this is only false when
+    // the declaration caps it at the size it already has.
+    growable: maxByteLength === null || maxByteLength > memory.buffer.byteLength,
   };
+}
+
+const WASM_PAGE_BYTES = 65_536;
+const SECTION_MEMORY = 5;
+
+/**
+ * The maximum a module declares for its memory, from the memory section (flags bit 0 means "a max
+ * follows"). `WebAssembly.Memory` exposes no maximum, so without this the field would always be a
+ * guess; with it, `null` honestly means "no declared cap" rather than "unknown".
+ */
+export function declaredMemoryMax(bytes: Uint8Array | null): number | null {
+  if (!bytes || bytes.byteLength < 8) return null;
+  let cursor = 8; // magic + version
+  const u32 = (): number | null => {
+    let result = 0;
+    let shift = 0;
+    while (cursor < bytes.byteLength) {
+      const byte = bytes[cursor++]!;
+      result |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) return result >>> 0;
+      shift += 7;
+      if (shift > 28) return null;
+    }
+    return null;
+  };
+  try {
+    while (cursor < bytes.byteLength) {
+      const id = bytes[cursor++]!;
+      const size = u32();
+      if (size === null) return null;
+      const end = cursor + size;
+      if (id === SECTION_MEMORY) {
+        const count = u32();
+        if (count === null || count === 0) return null;
+        const flags = u32();
+        if (flags === null) return null;
+        const min = u32();
+        if (min === null) return null;
+        if ((flags & 0x01) === 0) return null;
+        const max = u32();
+        return max === null ? null : max * WASM_PAGE_BYTES;
+      }
+      cursor = end;
+    }
+  } catch {
+    // A truncated or unusual module simply reports no declared maximum.
+  }
+  return null;
 }
 
 function toBytes(source: BufferSource): Uint8Array {

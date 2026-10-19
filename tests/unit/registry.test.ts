@@ -106,3 +106,26 @@ describe('WasmRegistry', () => {
     expect(registry.list().length).toBe(before);
   });
 });
+
+describe('declared memory maximum', () => {
+  it('reads the max a module declares, and null when it declares none', async () => {
+    const { instance } = await WebAssembly.instantiate(buildMemoryModule(2)) as unknown as {
+      instance: WebAssembly.Instance;
+    };
+    const memory = instance.exports.memory as WebAssembly.Memory;
+    const { declaredMemoryMax } = await import('../../packages/page-agent/src/registry');
+
+    // A module compiled without a cap: the field stays null, which now means "no declared max".
+    expect(declaredMemoryMax(null)).toBeNull();
+    expect(declaredMemoryMax(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]))).toBeNull();
+
+    // memory section: id 5, payload = count 1, flags 0x01 (a max follows), min, max
+    const section = (...payload: number[]): Uint8Array =>
+      new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 5, payload.length, ...payload]);
+    expect(declaredMemoryMax(section(1, 0x01, 0x04, 0x04))).toBe(4 * 65_536);
+    expect(declaredMemoryMax(section(1, 0x01, 0x04, 0x08))).toBe(8 * 65_536);
+    // flags 0 means "minimum only": no declared cap, so null rather than a guess.
+    expect(declaredMemoryMax(section(1, 0x00, 0x04))).toBeNull();
+    expect(memory.buffer.byteLength).toBeGreaterThan(0);
+  });
+});
