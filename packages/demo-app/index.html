@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Foundry — WasmCheat demo target</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="board">
+      <header class="board__head">
+        <h1>Foundry</h1>
+        <p class="board__sub">A tiny clicker whose state lives in WebAssembly linear memory.</p>
+      </header>
+
+      <section class="readout" aria-live="polite">
+        <div class="stat">
+          <span class="stat__label">Score</span>
+          <strong class="stat__value" id="score">0</strong>
+        </div>
+        <div class="stat">
+          <span class="stat__label">Ore</span>
+          <strong class="stat__value" id="coins">0</strong>
+        </div>
+        <div class="stat">
+          <span class="stat__label">Lives</span>
+          <strong class="stat__value" id="lives">5</strong>
+        </div>
+        <div class="stat">
+          <span class="stat__label">Depth</span>
+          <strong class="stat__value" id="level">1</strong>
+        </div>
+      </section>
+
+      <div class="controls">
+        <button id="mine" class="mine" type="button">
+          <span>Mine</span>
+          <small>+1 ore · +25 score</small>
+        </button>
+        <button id="damage" class="hazard" type="button">
+          <span>Hazard</span>
+          <small>−1 life</small>
+        </button>
+        <button id="reset" class="quiet" type="button">Reset</button>
+      </div>
+
+      <footer class="board__foot">
+        <span id="status">loading wasm…</span>
+        <a href="https://github.com/" rel="noreferrer">wasmcheat demo</a>
+      </footer>
+    </main>
+    <script src="demo.js"></script>
+  </body>
+</html>

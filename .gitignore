@@ -1,0 +1,10 @@
+node_modules/
+dist/
+packages/extension/dist/
+packages/demo-app/out/
+*.log
+.DS_Store
+test-results/
+playwright-report/
+.wasmcheat/
+.pi/

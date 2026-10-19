@@ -1,0 +1,21 @@
+{
+  "name": "@wasmcheat/mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "wasmcheat-mcp": "./dist/bin.js" },
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node dist/bin.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.0",
+    "@wasmcheat/protocol": "0.1.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13",
+    "esbuild": "^0.24.0"
+  }
+}

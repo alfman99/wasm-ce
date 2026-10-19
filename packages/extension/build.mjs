@@ -1,0 +1,38 @@
+import { build } from 'esbuild';
+import { copyFile, mkdir } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+
+// Paths come from this file, not cwd: the root script builds every workspace at once.
+const HERE = fileURLToPath(new URL('.', import.meta.url));
+const DIST = join(HERE, 'dist');
+const SRC = join(HERE, 'src');
+
+await mkdir(DIST, { recursive: true });
+
+const bridgePort = Number(process.env.WASMCHEAT_PORT ?? 7331);
+
+const common = {
+  bundle: true,
+  define: { __BRIDGE_PORT__: String(bridgePort) },
+  target: ['chrome116'],
+  sourcemap: false,
+  legalComments: 'none',
+};
+
+// Service worker runs as a module worker (`type: module` in the manifest).
+await build({ ...common, entryPoints: [join(SRC, 'sw.ts')], outfile: join(DIST, 'sw.js'), format: 'esm' });
+
+// Content scripts are classic scripts, so they must not contain ESM syntax.
+await build({ ...common, entryPoints: [join(SRC, 'relay.ts')], outfile: join(DIST, 'relay.js'), format: 'iife' });
+await build({ ...common, entryPoints: [join(SRC, 'popup.ts')], outfile: join(DIST, 'popup.js'), format: 'iife' });
+
+// The page agent is built by @wasmcheat/page-agent and shipped verbatim.
+await copyFile(join(HERE, '../page-agent/dist/page-agent.js'), join(DIST, 'page-agent.js'));
+
+// dist/ is the loadable extension root, so the manifest's paths are relative to it.
+for (const file of ['manifest.json', 'popup.html', 'popup.css']) {
+  await copyFile(join(file === 'manifest.json' ? SRC : HERE, file), join(DIST, file));
+}
+
+console.log('extension -> packages/extension/dist/{manifest.json,sw,relay,popup,page-agent}.js');

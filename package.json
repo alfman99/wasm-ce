@@ -1,0 +1,35 @@
+{
+  "name": "wasmcheat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser-only Cheat Engine-style memory tool for WebAssembly, driven by an MCP agent.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/protocol",
+    "packages/page-agent",
+    "packages/extension",
+    "packages/mcp-server",
+    "packages/demo-app"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "build:demo": "node packages/demo-app/build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && vitest run && playwright test",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test",
+    "start": "node packages/mcp-server/dist/bin.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@types/chrome": "^0.0.287",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
