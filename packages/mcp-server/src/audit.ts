@@ -17,6 +17,20 @@ export interface AuditEntry {
   ok: boolean;
 }
 
+/** A line as it was appended: the entry plus the timestamp `record` stamped on it. */
+export type AuditLine = { at: string } & AuditEntry;
+
+/**
+ * Live listeners. The DevTools panel cannot read `audit.jsonl` (a browser has no filesystem),
+ * so the server mirrors every written line over the bridge; keeping the listener list here
+ * means the file stays the only producer and there is nothing to keep in sync.
+ */
+const listeners = new Set<(line: AuditLine) => void>();
+
+export function onRecord(handler: (line: AuditLine) => void): void {
+  listeners.add(handler);
+}
+
 export function auditDir(): string {
   return process.env.WASMCHEAT_HOME ?? join(homedir(), '.wasmcheat');
 }
@@ -26,13 +40,22 @@ export function auditPath(): string {
 }
 
 export async function record(entry: AuditEntry): Promise<void> {
-  const line = JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n';
+  const payload: AuditLine = { at: new Date().toISOString(), ...entry };
+  const line = JSON.stringify(payload) + '\n';
   try {
     await mkdir(auditDir(), { recursive: true });
     await appendFile(auditPath(), line, 'utf8');
   } catch (error) {
     // Auditing must never break the tool call it is observing; surface it on stderr only.
     process.stderr.write(`[wasmcheat] audit write failed: ${(error as Error).message}\n`);
+    return;
+  }
+  for (const handler of listeners) {
+    try {
+      handler(payload);
+    } catch {
+      // A throwing listener must not lose a line that is already on disk.
+    }
   }
 }
 

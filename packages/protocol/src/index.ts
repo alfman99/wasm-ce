@@ -652,6 +652,11 @@ export const Events = {
    * a watchpoint hit, for instance — instead of polling a status until it changes.
    */
   pageEvent: 'page.event',
+  /**
+   * One audit line, mirrored live so the DevTools panel can show it. The file on the host
+   * stays the authoritative record; the extension only keeps a session-scoped ring buffer.
+   */
+  auditAppended: 'audit.appended',
 } as const;
 
 /**

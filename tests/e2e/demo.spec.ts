@@ -627,3 +627,62 @@ test('a game inside a cross-origin iframe is found and driven', async () => {
 
   await call(mcp, 'wasmcheat_detach', { tabId: framedTabId, reason: 'e2e framed teardown' });
 });
+
+// A human at the keyboard, with no agent in the loop: the DevTools panel is a first-class panel,
+// not a popup, and it talks to the same dispatcher the MCP bridge uses.
+test('the DevTools panel drives the tab without an agent', async () => {
+  // Test 14 revoked this tab, so this test also proves the panel cannot skip the gate.
+  await game.evaluate(() => (window as unknown as { __foundry: { pause: () => void } }).__foundry.pause());
+
+  const panel = await browser.context.newPage();
+  await panel.goto(`chrome-extension://${browser.extensionId}/panel.html`);
+
+  // The panel finds its target by listing tabs: the inspected tab is a click, not a hidden channel.
+  const row = panel.locator(`li.tab[data-tab-id="${tabId}"]`);
+  await expect(row).toBeVisible({ timeout: 20_000 });
+  await row.click();
+  await expect(row).toHaveClass(/is-target/);
+
+  const rawMethod = panel.locator('#raw-method');
+  const rawParams = panel.locator('#raw-params');
+  const rawOut = panel.locator('#raw-out');
+
+  // An unapproved tab is refused exactly as it is for an agent: same code, same message.
+  await rawMethod.fill('page.read');
+  await rawParams.fill('{"address":"w1:0x408","type":"i32"}');
+  await panel.locator('#raw-send').click();
+  await expect(rawOut).toContainText('NEED_APPROVAL');
+
+  // The panel asks and the human answers *in the panel*: the request registers as pending, the click
+  // emits approval.resolved, and the waiting attach proceeds on that event rather than a poll.
+  const attaching = panel.evaluate(() => {
+    const hooks = (window as unknown as { __panel: { attach: (tabId?: number) => Promise<unknown> } }).__panel;
+    return hooks.attach();
+  });
+  await expect(panel.locator('#approval')).toContainText('pending');
+  await panel.locator('#approve').click();
+  expect(JSON.stringify(await attaching)).toContain('granted');
+  await expect(panel.locator('#approval')).toContainText('granted');
+
+  // Write then read the score through the raw console; the DOM is the only thing asserted, so the
+  // panel has to be showing what linear memory actually holds.
+  await rawMethod.fill('page.write');
+  await rawParams.fill('{"address":"w1:0x408","type":"i32","value":987654}');
+  await panel.locator('#raw-send').click();
+  await expect(rawOut).toContainText('"after": 987654');
+
+  await rawMethod.fill('page.read');
+  await rawParams.fill('{"address":"w1:0x408","type":"i32"}');
+  await panel.locator('#raw-send').click();
+  await expect(rawOut).toContainText('987654');
+
+  // A typed form reads the same value: the console and the forms share one dispatcher.
+  await panel.locator('#mem-address').fill('w1:0x408');
+  await panel.locator('#mem-read').click();
+  await expect(panel.locator('#memory-out')).toContainText('987654');
+
+  // The live log comes from the worker's port, which just carried this approval.
+  await expect(panel.locator('#event-log')).toContainText('approval');
+
+  await panel.close();
+});

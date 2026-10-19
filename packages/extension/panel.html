@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WasmCheat</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <div class="bar__row">
+        <h1>WasmCheat</h1>
+        <span id="bridge" class="pill pill--idle">bridge ?</span>
+        <span id="approval" class="pill pill--idle">approval ?</span>
+        <span id="agent" class="pill pill--idle">agent ?</span>
+        <span id="versions" class="micro"></span>
+      </div>
+      <div class="bar__row bar__actions">
+        <button id="attach" type="button">Attach</button>
+        <button id="attach-reload" type="button">Reload &amp; attach</button>
+        <button id="approve" type="button" class="primary">Approve</button>
+        <button id="deny" type="button" class="danger">Deny</button>
+        <button id="detach" type="button" class="danger">Detach</button>
+        <button id="revoke" type="button" class="danger">Revoke</button>
+        <button id="refresh-status" type="button" class="ghost">Refresh</button>
+      </div>
+      <p id="target" class="micro micro--target">no target tab</p>
+      <pre id="status-out" class="out out--error" hidden></pre>
+    </header>
+
+    <main class="grid">
+      <section class="card">
+        <h2>Tabs</h2>
+        <p class="hint">Click a row to make it the target. Attaching still needs the toolbar popup's Approve.</p>
+        <ul id="tabs" class="tabs"></ul>
+      </section>
+
+      <section class="card">
+        <h2>Instances</h2>
+        <div class="actions">
+          <button id="instances-refresh" type="button" class="ghost">Refresh</button>
+          <button id="diagnose" type="button" class="ghost">Diagnose</button>
+        </div>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>id</th>
+              <th>module</th>
+              <th>memory</th>
+              <th>patchability</th>
+              <th>host</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="instances-body"></tbody>
+        </table>
+        <pre id="instances-out" class="out"></pre>
+        <pre id="diagnose-out" class="out"></pre>
+      </section>
+
+      <section class="card">
+        <h2>Reads / writes</h2>
+        <div class="form">
+          <label class="field">
+            <span>type</span>
+            <select id="mem-type"></select>
+          </label>
+          <label class="field field--wide">
+            <span>address</span>
+            <input id="mem-address" type="text" placeholder="w1:0x408 or 0x408" spellcheck="false" />
+          </label>
+        </div>
+        <div class="form">
+          <label class="field">
+            <span>count</span>
+            <input id="mem-count" type="number" min="1" value="4" />
+          </label>
+          <label class="field">
+            <span>bytes</span>
+            <input id="mem-length" type="number" min="1" value="64" />
+          </label>
+          <label class="field field--wide">
+            <span>value</span>
+            <input id="mem-value" type="text" placeholder="123456" spellcheck="false" />
+          </label>
+        </div>
+        <div class="actions">
+          <button id="mem-read" type="button">Read one</button>
+          <button id="mem-read-n" type="button">Read N</button>
+          <button id="mem-read-bytes" type="button" class="ghost">Read bytes</button>
+          <button id="mem-write" type="button" class="primary">Write</button>
+        </div>
+        <pre id="memory-out" class="out"></pre>
+      </section>
+
+      <section class="card">
+        <h2>Freeze</h2>
+        <div class="form">
+          <label class="field field--wide">
+            <span>address</span>
+            <input id="freeze-address" type="text" placeholder="w1:0x408" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>type</span>
+            <select id="freeze-type"></select>
+          </label>
+          <label class="field">
+            <span>value</span>
+            <input id="freeze-value" type="text" placeholder="75" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>freeze id</span>
+            <input id="freeze-id" type="text" placeholder="f1" spellcheck="false" />
+          </label>
+        </div>
+        <div class="actions">
+          <button id="freeze-set" type="button">Set</button>
+          <button id="freeze-clear" type="button" class="ghost">Clear</button>
+          <button id="freeze-list" type="button" class="ghost">List</button>
+        </div>
+        <ul id="freezes" class="list"></ul>
+        <pre id="freeze-out" class="out"></pre>
+      </section>
+
+      <section class="card">
+        <h2>Watch</h2>
+        <div class="form">
+          <label class="field field--wide">
+            <span>address</span>
+            <input id="watch-address" type="text" placeholder="w1:0x408" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>type</span>
+            <select id="watch-type"></select>
+          </label>
+          <label class="field">
+            <span>watch id</span>
+            <input id="watch-id" type="text" placeholder="w1" spellcheck="false" />
+          </label>
+        </div>
+        <div class="actions">
+          <button id="watch-add" type="button">Add</button>
+          <button id="watch-remove" type="button" class="ghost">Remove</button>
+          <button id="watch-list" type="button" class="ghost">List</button>
+          <button id="watch-poll" type="button" class="ghost">Poll events</button>
+        </div>
+        <ul id="watches" class="list"></ul>
+        <ul id="watch-events" class="list list--events"></ul>
+        <pre id="watch-out" class="out"></pre>
+      </section>
+
+      <section class="card card--wide">
+        <h2>Scan</h2>
+        <div class="form">
+          <label class="field field--wide">
+            <span>instance</span>
+            <input id="scan-instance" type="text" placeholder="w1" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>type</span>
+            <select id="scan-type"></select>
+          </label>
+          <label class="field">
+            <span>mode</span>
+            <select id="scan-mode"></select>
+          </label>
+        </div>
+        <div class="form">
+          <label class="field">
+            <span>value</span>
+            <input id="scan-value" type="text" placeholder="75" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>value2</span>
+            <input id="scan-value2" type="text" placeholder="100" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>alignment</span>
+            <select id="scan-alignment">
+              <option value="">auto</option>
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="4">4</option>
+              <option value="8">8</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>range from</span>
+            <input id="scan-start" type="text" placeholder="0x0" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>range to</span>
+            <input id="scan-end" type="text" placeholder="0x10000" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>max results</span>
+            <input id="scan-max" type="number" min="1" placeholder="1000" />
+          </label>
+        </div>
+        <div class="actions">
+          <button id="scan-begin" type="button" class="primary">Begin</button>
+          <button id="scan-narrow" type="button">Narrow</button>
+          <button id="scan-results" type="button" class="ghost">Results</button>
+          <button id="scan-drop" type="button" class="danger">Drop</button>
+          <span id="scan-id" class="micro">no scan</span>
+        </div>
+        <pre id="scan-out" class="out"></pre>
+        <ul id="scan-hits" class="list list--hits"></ul>
+
+        <h3>Text scan</h3>
+        <div class="form">
+          <label class="field field--wide">
+            <span>instance</span>
+            <input id="text-instance" type="text" placeholder="w1" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>encoding</span>
+            <select id="text-encoding">
+              <option value="ascii">ascii</option>
+              <option value="utf8">utf8</option>
+              <option value="bytes">bytes</option>
+            </select>
+          </label>
+          <label class="field field--wide">
+            <span>text</span>
+            <input id="text-value" type="text" placeholder="score" spellcheck="false" />
+          </label>
+          <label class="field field--check">
+            <span>case sensitive</span>
+            <input id="text-case" type="checkbox" />
+          </label>
+        </div>
+        <div class="actions">
+          <button id="text-scan" type="button">Scan text</button>
+        </div>
+        <pre id="text-out" class="out"></pre>
+        <ul id="text-hits" class="list list--hits"></ul>
+      </section>
+
+      <section class="card card--wide">
+        <h2>Watchpoints</h2>
+        <div class="form">
+          <label class="field field--wide">
+            <span>address</span>
+            <input id="trace-address" type="text" placeholder="w1:0x408" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>kind</span>
+            <select id="trace-kind"></select>
+          </label>
+          <label class="field">
+            <span>timeout (s)</span>
+            <input id="trace-timeout" type="number" min="1" value="10" />
+          </label>
+        </div>
+        <div class="actions">
+          <button id="trace-run" type="button" class="primary">Arm &amp; reload</button>
+          <button id="trace-stop" type="button" class="ghost">Stop</button>
+          <button id="trace-clear" type="button" class="ghost">Clear</button>
+        </div>
+        <pre id="trace-out" class="out"></pre>
+        <ul id="trace-hits" class="list list--events"></ul>
+        <ul id="trace-functions" class="list"></ul>
+      </section>
+
+      <section class="card">
+        <h2>Patches</h2>
+        <div class="form">
+          <label class="field field--wide">
+            <span>target</span>
+            <input id="patch-target" type="text" placeholder="takeDamage" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>mode</span>
+            <select id="patch-mode"></select>
+          </label>
+          <label class="field">
+            <span>value</span>
+            <input id="patch-value" type="text" placeholder="0" spellcheck="false" />
+          </label>
+        </div>
+        <div class="form">
+          <label class="field field--wide">
+            <span>note</span>
+            <input id="patch-note" type="text" placeholder="why" />
+          </label>
+          <label class="field">
+            <span>patch id</span>
+            <input id="patch-id" type="text" placeholder="p1" spellcheck="false" />
+          </label>
+        </div>
+        <div class="actions">
+          <button id="patch-add" type="button">Add</button>
+          <button id="patch-list" type="button" class="ghost">List</button>
+          <button id="patch-remove" type="button" class="ghost">Remove</button>
+          <button id="patch-clear" type="button" class="danger">Clear all</button>
+        </div>
+        <ul id="patches" class="list"></ul>
+        <pre id="patch-out" class="out"></pre>
+      </section>
+
+      <section class="card">
+        <h2>Hooks</h2>
+        <div class="form">
+          <label class="field">
+            <span>instance</span>
+            <input id="hook-instance" type="text" placeholder="w1" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>target</span>
+            <select id="hook-target">
+              <option value="export">export</option>
+              <option value="import">import</option>
+            </select>
+          </label>
+          <label class="field field--wide">
+            <span>name</span>
+            <input id="hook-name" type="text" placeholder="addScore or env.log" spellcheck="false" />
+          </label>
+        </div>
+        <label class="field field--block">
+          <span>body</span>
+          <textarea id="hook-body" rows="3" spellcheck="false">return args[0] * 10;</textarea>
+        </label>
+        <div class="form">
+          <label class="field">
+            <span>fallback</span>
+            <select id="hook-fallback-mode">
+              <option value="">none</option>
+              <option value="passthrough">passthrough</option>
+              <option value="replace-return">replace-return</option>
+              <option value="offset-result">offset-result</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>fallback value</span>
+            <input id="hook-fallback-value" type="text" placeholder="0" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>hook id</span>
+            <input id="hook-id" type="text" placeholder="h1" spellcheck="false" />
+          </label>
+          <label class="field field--check">
+            <span>enabled</span>
+            <input id="hook-enabled" type="checkbox" checked />
+          </label>
+        </div>
+        <div class="actions">
+          <button id="hook-add" type="button">Add</button>
+          <button id="hook-list" type="button" class="ghost">List</button>
+          <button id="hook-remove" type="button" class="ghost">Remove</button>
+          <button id="hook-toggle" type="button" class="ghost">Set enabled</button>
+        </div>
+        <ul id="hooks" class="list"></ul>
+        <pre id="hook-out" class="out"></pre>
+      </section>
+
+      <section class="card">
+        <h2>Audit</h2>
+        <p class="hint">
+          The host file is authoritative. The worker keeps the lines recorded while it was alive, so a
+          fresh worker shows fewer.
+        </p>
+        <div class="form">
+          <label class="field">
+            <span>limit</span>
+            <input id="audit-limit" type="number" min="1" max="200" value="40" />
+          </label>
+        </div>
+        <div class="actions">
+          <button id="audit-read" type="button">Read</button>
+        </div>
+        <p id="audit-note" class="micro"></p>
+        <pre id="audit-out" class="out"></pre>
+      </section>
+
+      <section class="card card--wide">
+        <h2>Raw console</h2>
+        <div class="form">
+          <label class="field field--wide">
+            <span>method</span>
+            <input id="raw-method" type="text" placeholder="page.read" spellcheck="false" />
+          </label>
+        </div>
+        <label class="field field--block">
+          <span>params (JSON)</span>
+          <textarea id="raw-params" rows="3" spellcheck="false">{"address":"w1:0x408","type":"i32"}</textarea>
+        </label>
+        <div class="actions">
+          <button id="raw-send" type="button" class="primary">Send</button>
+        </div>
+        <pre id="raw-out" class="out"></pre>
+
+        <h3>Events</h3>
+        <div class="actions">
+          <button id="events-pause" type="button" class="ghost">Pause</button>
+          <span id="events-count" class="micro">0 events</span>
+        </div>
+        <ul id="event-log" class="list list--events"></ul>
+      </section>
+    </main>
+
+    <script src="panel.js"></script>
+  </body>
+</html>

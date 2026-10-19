@@ -2,10 +2,12 @@ import {
   BridgeError,
   Events,
   PROTOCOL_VERSION,
+  isEvent,
   isRequest,
   makeErrorResponse,
   makeResponse,
   type ApprovalState,
+  type BridgeErrorShape,
   type PageAgentInfo,
   type PageDiagnostics,
   type TabInfo,
@@ -200,6 +202,66 @@ function send(payload: unknown): void {
 
 function emit(event: string, data: unknown): void {
   send({ v: PROTOCOL_VERSION, kind: 'evt', event, data });
+  broadcastToPanels(event, data);
+}
+
+// ---------------------------------------------------------------- panel ports
+
+const PANEL_PORT_NAME = 'wasmcheat.panel';
+const AUDIT_RING_MAX = 200;
+
+/** Ports opened by DevTools panel pages, registered on connect and dropped on disconnect. */
+const panelPorts = new Set<chrome.runtime.Port>();
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== PANEL_PORT_NAME) return;
+  panelPorts.add(port);
+  port.onDisconnect.addListener(() => {
+    panelPorts.delete(port);
+    // Reading lastError keeps Chrome from logging an unchecked error for a port the panel closed.
+    void chrome.runtime.lastError;
+  });
+});
+
+/**
+ * Fan an event out to every open panel. The panel only watches, so a dead port must not stop
+ * the others: the loop drops the port it could not post to and keeps going.
+ */
+function broadcastToPanels(event: string, data: unknown): void {
+  for (const port of [...panelPorts]) {
+    try {
+      port.postMessage({ event, data });
+    } catch {
+      panelPorts.delete(port);
+    }
+  }
+}
+
+/**
+ * The last audit lines the MCP server reported, newest first.
+ *
+ * Session-scoped on purpose: a browser cannot read `$WASMCHEAT_HOME/audit.jsonl`, so the server
+ * mirrors each line it appends and this is only what arrived while the worker was up. The file
+ * on the host stays authoritative, which is what `ext.audit`'s note says.
+ */
+const auditLines: unknown[] = [];
+
+function rememberAudit(line: unknown): void {
+  auditLines.unshift(line);
+  if (auditLines.length > AUDIT_RING_MAX) auditLines.length = AUDIT_RING_MAX;
+  broadcastToPanels(Events.auditAppended, line);
+}
+
+function auditTail(params: { limit?: number } | undefined): { lines: unknown[]; total: number; note: string } {
+  const requested = Number(params?.limit ?? 50);
+  const limit = Math.max(1, Math.min(Number.isFinite(requested) ? requested : 50, AUDIT_RING_MAX));
+  return {
+    lines: auditLines.slice(0, limit),
+    total: auditLines.length,
+    note:
+      `Session-scoped: the ${auditLines.length} line(s) the MCP server reported since this extension connected, newest ` +
+      'first. The file on the host is authoritative — `node scripts/wasmcheat-cli.mjs audit <limit>` prints the full history.',
+  };
 }
 
 async function onBridgeMessage(raw: unknown): Promise<void> {
@@ -207,6 +269,10 @@ async function onBridgeMessage(raw: unknown): Promise<void> {
   try {
     parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
   } catch {
+    return;
+  }
+  if (isEvent(parsed)) {
+    onBridgeEvent(parsed.event, parsed.data);
     return;
   }
   if (!isRequest(parsed)) return;
@@ -219,10 +285,22 @@ async function onBridgeMessage(raw: unknown): Promise<void> {
   }
 }
 
+/** Events the server pushes to us unprompted. Only the audit mirror so far. */
+function onBridgeEvent(event: string, data: unknown): void {
+  if (event === Events.auditAppended) rememberAudit(data);
+}
+
 async function handleBridgeRequest(method: string, params: unknown): Promise<unknown> {
   switch (method) {
     case 'ext.ping':
-      return { ok: true, extension: chrome.runtime.getManifest().version, protocol: PROTOCOL_VERSION };
+      // `bridgeConnected` lets the DevTools status bar say whether the host is actually listening;
+      // it is additive, so older callers that only read `ok`/`extension` are unaffected.
+      return {
+        ok: true,
+        extension: chrome.runtime.getManifest().version,
+        protocol: PROTOCOL_VERSION,
+        bridgeConnected: socket?.readyState === WebSocket.OPEN,
+      };
     case 'ext.listTabs':
       return listTabs();
     case 'ext.requestApproval':
@@ -241,6 +319,8 @@ async function handleBridgeRequest(method: string, params: unknown): Promise<unk
       return reloadTab(params as { tabId: number });
     case 'ext.traceArm':
       return traceArm(params as { tabId: number; address: string; type?: string; maxHits?: number; kind?: string });
+    case 'ext.audit':
+      return auditTail(params as { limit?: number } | undefined);
     default:
       throw new BridgeError('BAD_PARAMS', `unknown extension method "${method}"`);
   }
@@ -616,6 +696,25 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse: (v
     return undefined;
   }
 
+  if (msg.type === 'wasmcheat.panel.call') {
+    // The DevTools panel goes through the very dispatcher the WebSocket uses, so the approval
+    // gate, frame routing, worker routing and error shapes are identical: a panel is a second
+    // front-end, not a trust bypass.
+    const call = msg as unknown as { method?: unknown; params?: unknown };
+    void (async () => {
+      if (typeof call.method !== 'string') {
+        sendResponse(errorReply(new BridgeError('BAD_PARAMS', 'wasmcheat.panel.call needs a method string')));
+        return;
+      }
+      try {
+        sendResponse({ result: await handleBridgeRequest(call.method, call.params) });
+      } catch (error) {
+        sendResponse(errorReply(error));
+      }
+    })();
+    return true;
+  }
+
   if (msg.type === 'popup.state') {
     void (async () => {
       sendResponse({
@@ -657,6 +756,11 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse: (v
 
   return undefined;
 });
+
+/** Same normalisation the bridge response uses, so a panel sees the identical code and message. */
+function errorReply(error: unknown): { error: BridgeErrorShape } {
+  return { error: makeErrorResponse('panel', error).error ?? { code: 'INTERNAL', message: String(error) } };
+}
 
 /** Two URLs on the same origin count as the same site; a missing URL is never a match. */
 function sameSite(before: string | undefined, after: string | undefined): boolean {

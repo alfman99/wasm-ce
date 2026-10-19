@@ -3,6 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import {
   BridgeError,
+  Events,
   PATCH_MODES,
   TRACE_KINDS,
   VALUE_TYPES,
@@ -33,7 +34,7 @@ import {
 } from '@wasmcheat/protocol';
 import { Bridge } from './bridge.js';
 import { waitForApproval, waitForPageEvent } from './events.js';
-import { record, tail } from './audit.js';
+import { onRecord, record, tail } from './audit.js';
 
 export type ToolResult = CallToolResult;
 
@@ -93,6 +94,10 @@ function json<T>(value: unknown): T {
 
 export function createServer(bridge: Bridge): McpServer {
   const server = new McpServer({ name: 'wasmcheat', version: '0.1.0' });
+
+  // Mirror every appended audit line to the extension so the DevTools panel can show it: a
+  // browser cannot read $WASMCHEAT_HOME/audit.jsonl, and this keeps `record` the one producer.
+  onRecord((line) => bridge.send(Events.auditAppended, line));
 
   /** Forward a page-level method through the extension's approval gate. */
   /**

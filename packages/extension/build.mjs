@@ -27,14 +27,20 @@ await build({ ...common, entryPoints: [join(SRC, 'sw.ts')], outfile: join(DIST, 
 await build({ ...common, entryPoints: [join(SRC, 'relay.ts')], outfile: join(DIST, 'relay.js'), format: 'iife' });
 await build({ ...common, entryPoints: [join(SRC, 'popup.ts')], outfile: join(DIST, 'popup.js'), format: 'iife' });
 
+// The DevTools bootstrap page and its panel are ordinary extension pages: IIFE, like the popup.
+await build({ ...common, entryPoints: [join(SRC, 'devtools.ts')], outfile: join(DIST, 'devtools.js'), format: 'iife' });
+await build({ ...common, entryPoints: [join(SRC, 'panel.ts')], outfile: join(DIST, 'panel.js'), format: 'iife' });
+
 // The page agent and the worker agent are built by @wasmcheat/page-agent and shipped verbatim.
 // worker-agent.js is a web_accessible_resource: blob workers can only importScripts it from there.
 await copyFile(join(HERE, '../page-agent/dist/page-agent.js'), join(DIST, 'page-agent.js'));
 await copyFile(join(HERE, '../page-agent/dist/worker-agent.js'), join(DIST, 'worker-agent.js'));
 
 // dist/ is the loadable extension root, so the manifest's paths are relative to it.
-for (const file of ['manifest.json', 'popup.html', 'popup.css']) {
+for (const file of ['manifest.json', 'popup.html', 'popup.css', 'devtools.html', 'panel.html', 'panel.css']) {
   await copyFile(join(file === 'manifest.json' ? SRC : HERE, file), join(DIST, file));
 }
 
-console.log('extension -> packages/extension/dist/{manifest.json,sw,relay,popup,page-agent,worker-agent}.js');
+console.log(
+  'extension -> packages/extension/dist/{manifest.json,sw,relay,popup,devtools,panel,page-agent,worker-agent}.js',
+);

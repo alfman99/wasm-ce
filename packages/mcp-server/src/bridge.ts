@@ -2,10 +2,12 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import {
   BridgeError,
   Events,
+  PROTOCOL_VERSION,
   isEvent,
   isResponse,
   makeRequest,
   type BridgeErrorShape,
+  type EventMessage,
 } from '@wasmcheat/protocol';
 
 /**
@@ -124,6 +126,22 @@ export class Bridge {
       this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer, method });
       socket.send(JSON.stringify(makeRequest(id, method, params)));
     });
+  }
+
+  /**
+   * Push an event to the extension. This is the only direction the server has ever spoken
+   * unprompted (the audit mirror), so it is a no-op rather than an error when no extension is
+   * connected: the human opening the panel later gets the buffer the extension kept, if any.
+   */
+  send(event: string, data: unknown): void {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== 1) return;
+    const message: EventMessage = { v: PROTOCOL_VERSION, kind: 'evt', event, data };
+    try {
+      socket.send(JSON.stringify(message));
+    } catch {
+      // A socket that died between the check and the send is closed by its 'close' handler.
+    }
   }
 
   private accept(socket: WebSocket): void {
