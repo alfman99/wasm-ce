@@ -40,9 +40,11 @@ process could answer this server's tool calls with made-up data.
 ## 4. Start the target
 
 ```bash
-node packages/demo-app/serve.mjs
-# then open http://127.0.0.1:4173/
+npm run demo
 ```
+
+That serves the demo on <http://127.0.0.1:4173/>, opens it, and prints the extension path and the MCP
+config block. (`node packages/demo-app/serve.mjs` does the same without opening anything.)
 
 Foundry is a clicker: a score, ore, lives and a depth. Its state lives in linear memory, which is
 what makes it a target rather than a toy. Click **Mine** a few times and leave the tab open.
@@ -54,10 +56,11 @@ DevTools toolbar. If the panel is not listed, reload the extension and reopen De
 
 1. In **Tabs**, click the Foundry row. It becomes the target.
 2. Click **Attach**. The first attach for a site asks for approval: press **Approve**. Nothing runs
-   in the tab until you do.
-3. In **Instances**, press **Refresh** and look for an entry with a memory size and an export list.
-   Empty? Press **Diagnose** — it reports the frames the page has, whether the agent saw any
-   `WebAssembly.instantiate` call, and whether the page blocks `new Function`.
+   in the tab until you do. Attach fills **Instances** for you; if the list is empty it prints
+   **Diagnose** (frames, `WebAssembly.instantiate` calls seen, whether the page blocks `new Function`)
+   so you do not have to guess which button explains it.
+3. If the game only starts when you click something, start it and press **Reload & attach**: the page
+   agent has to exist before the game instantiates its module.
 
 ## 6. Find the score
 

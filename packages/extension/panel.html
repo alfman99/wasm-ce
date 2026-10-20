@@ -65,7 +65,11 @@
             <input id="bridge-token" type="password" placeholder="paste the whole line" autocomplete="off" />
           </label>
           <button id="token-save" type="button" class="primary">Save and reconnect</button>
-          <p class="note">The bridge refuses a wrong token. Saving a new one reconnects at once.</p>
+          <p class="note">
+            You normally never open this: the extension asks the bridge for its token on first
+            connect. Paste one only when pairing is off (<code>WASMCHEAT_PAIRING=off</code>) or
+            another process already holds the bridge.
+          </p>
         </div>
       </details>
 
