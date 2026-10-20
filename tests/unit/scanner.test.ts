@@ -244,6 +244,17 @@ describe('ScanStore comparison operators', () => {
     expect(offsets(down)).toEqual([0x100]);
   });
 
+  it('matches an f32 increased-by whose rounding error scales with the value, not the delta', () => {
+    const { access, scans } = ctx;
+    access.write(0x100, 'f32', 100.5);
+    access.write(0x200, 'f32', 100.5);
+    const first = scans.pass(access, { instanceId: INSTANCE, type: 'f32', mode: 'exact', value: 100.5 });
+
+    access.write(0x100, 'f32', 100.6); // stored delta is 0.0999985, an f32 ulp of 100 off 0.1
+    access.write(0x200, 'f32', 100.7);
+    expect(offsets(scans.narrow(access, first.scanId, 'increased-by', { value: 0.1 }))).toEqual([0x100]);
+  });
+
   it('requires a value for comparison modes and value2 for between', () => {
     const { access, scans } = ctx;
     expect(() => scans.pass(access, { instanceId: INSTANCE, type: 'i32', mode: 'greater' })).toThrow(/requires a value/);
@@ -306,6 +317,13 @@ describe('scanText', () => {
     writeAscii(access, 0x100, 'Level Up');
     expect(scanText(access, { instanceId: INSTANCE, text: 'level up' }).matches).toEqual([]);
     expect(scanText(access, { instanceId: INSTANCE, text: 'level up', caseSensitive: false }).matches).toEqual([0x100]);
+  });
+
+  it('folds the needle too, so "Player" finds "player"', () => {
+    const { access } = ctx;
+    writeAscii(access, 0x100, 'player one');
+    expect(scanText(access, { instanceId: INSTANCE, text: 'Player', caseSensitive: false }).matches).toEqual([0x100]);
+    expect(scanText(access, { instanceId: INSTANCE, text: 'Player', encoding: 'utf8', caseSensitive: false }).matches).toEqual([0x100]);
   });
 
   it('matches utf8 text and raw hex bytes', () => {

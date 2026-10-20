@@ -19,7 +19,8 @@ import {
  *
  * The extension is the client because only it can reach browser tabs; the MCP server
  * therefore has to be the listener. One extension connection at a time; a newer one
- * replaces the older (a reloaded extension, a second browser).
+ * replaces the older (a reloaded extension, a second browser) only once it presents the token,
+ * so a connection that cannot authenticate never disturbs the one in use.
  */
 
 export interface BridgeOptions {
@@ -41,11 +42,14 @@ export interface BridgeOptions {
   token?: string;
   /**
    * Allow an extension on this machine to fetch the token over the loopback socket instead of being
-   * given it by hand. This is trust-on-first-use between processes of the same user: whoever
-   * connects first gets the token, which is the same authority as reading the file on disk. Set to
+   * given it by hand. This is trust-on-first-use: the token goes to whoever asks while no
+   * authenticated socket is connected, and never while one is, so a running bridge cannot be taken
+   * over. Web pages are refused at the upgrade (their Origin is not `chrome-extension://`). Set to
    * false (`WASMCHEAT_PAIRING=off`) when the token is a deliberate secret.
    */
   pairing?: boolean;
+  /** Where the token lives, for error messages that tell a human what to paste. */
+  tokenPath?: string;
 }
 
 interface Pending {
@@ -53,24 +57,23 @@ interface Pending {
   reject: (error: unknown) => void;
   timer: ReturnType<typeof setTimeout>;
   method: string;
+  socket: WebSocket;
 }
 
 export class Bridge {
   private server: WebSocketServer | null = null;
+  /**
+   * The socket that presented the token, and the only one requests go to or anything is accepted
+   * from. It is cleared on its 'close', not when it starts closing, so pairing stays refused until
+   * it is really gone, while an extension that dropped its own socket (a restart, a reinstall, a
+   * wiped token) can still ask for the token again. Unauthenticated sockets are never stored here.
+   */
   private socket: WebSocket | null = null;
   private readonly pending = new Map<string, Pending>();
   private readonly listeners = new Map<string, Set<(data: unknown) => void>>();
   private waiters: Array<() => void> = [];
   private nextId = 1;
   private extensionVersion: string | null = null;
-  /** Sockets that have presented the token. A socket that has not is never used for requests. */
-  private readonly authenticated = new WeakSet<object>();
-  /**
-   * The socket that currently holds the token. Pairing is offered only while no live socket is
-   * authenticated, so a process cannot take over a running bridge, while an extension that dropped
-   * its own socket (a restart, a reinstall, a wiped token) can still ask for the token again.
-   */
-  private authenticatedSocket: WebSocket | null = null;
   readonly requestTimeoutMs: number;
 
   constructor(readonly options: BridgeOptions) {
@@ -79,7 +82,13 @@ export class Bridge {
 
   async start(): Promise<void> {
     if (this.server) return;
-    const server = new WebSocketServer({ host: this.options.host, port: this.options.port });
+    const server = new WebSocketServer({
+      host: this.options.host,
+      port: this.options.port,
+      // The extension sends `chrome-extension://<id>`; Node clients (tests, scripts) send none. A web
+      // page always sends its own origin, so refusing every other one keeps pages off the socket.
+      verifyClient: ({ origin }: { origin?: string }) => !origin || origin.startsWith('chrome-extension://'),
+    });
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error) => reject(error);
       server.once('error', onError);
@@ -96,15 +105,16 @@ export class Bridge {
   }
 
   async stop(): Promise<void> {
-    this.socket?.close();
-    this.socket = null;
     const server = this.server;
     this.server = null;
+    // `server.close` waits for every client, authenticated or not.
+    for (const client of server?.clients ?? []) client.terminate();
+    this.socket = null;
     if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 
   get connected(): boolean {
-    return this.socket?.readyState === 1 && this.authenticated.has(this.socket);
+    return this.socket?.readyState === 1;
   }
 
   /** The port actually bound, so a test can ask for an ephemeral one by passing 0. */
@@ -147,22 +157,20 @@ export class Bridge {
   }
 
   async request<T>(method: string, params: unknown = {}, timeoutMs?: number): Promise<T> {
-    // A socket that is open but unauthenticated is a configuration problem: waiting cannot fix it.
-    if (this.socket && this.socket.readyState === 1 && !this.authenticated.has(this.socket)) {
-      throw new BridgeError(
-        'NO_AGENT',
-        'the WasmCheat extension connected but has not presented a valid bridge token; paste the token from ~/.wasmcheat/token into the extension panel',
-      );
-    }
+    // An open socket that has not said hello yet is usually mid-handshake (pairing, then hello), so
+    // it gets the same grace as a reconnect.
     const grace = this.options.reconnectGraceMs ?? 0;
-    if ((!this.socket || this.socket.readyState !== 1) && grace > 0) {
+    if (!this.connected && grace > 0) {
       await this.waitForExtension(grace).catch(() => undefined);
     }
     const socket = this.socket;
-    if (!socket || socket.readyState !== 1 || !this.authenticated.has(socket)) {
+    if (!socket || socket.readyState !== 1) {
+      const waiting = [...(this.server?.clients ?? [])].some((client) => client.readyState === 1);
       throw new BridgeError(
         'NO_AGENT',
-        'the WasmCheat extension is not connected; load it in Chrome and keep the MCP server running',
+        waiting
+          ? `the WasmCheat extension connected but has not presented a valid bridge token; paste the token from ${this.tokenPath} into the extension panel`
+          : 'the WasmCheat extension is not connected; load it in Chrome and keep the MCP server running',
       );
     }
     const id = `r${this.nextId++}`;
@@ -172,14 +180,14 @@ export class Bridge {
         this.pending.delete(id);
         reject(new BridgeError('TIMEOUT', `${method} timed out after ${budget}ms`, { method }));
       }, budget);
-      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer, method });
+      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer, method, socket });
       socket.send(JSON.stringify(makeRequest(id, method, params)));
     });
   }
 
   /**
-   * Push an event to the extension. This is the only direction the server has ever spoken
-   * unprompted (the audit mirror), so it is a no-op rather than an error when no extension is
+   * Push an event to the authenticated extension. This is the only direction the server has ever
+   * spoken unprompted (the audit mirror), so it is a no-op rather than an error when no extension is
    * connected: the human opening the panel later gets the buffer the extension kept, if any.
    */
   send(event: string, data: unknown): void {
@@ -193,25 +201,20 @@ export class Bridge {
     }
   }
 
+  private get tokenPath(): string {
+    return this.options.tokenPath ?? '~/.wasmcheat/token';
+  }
+
   private accept(socket: WebSocket): void {
-    if (this.socket && this.socket !== socket) {
-      // A stale worker from before an extension reload: drop it instead of splitting traffic.
-      try {
-        this.socket.close(1000, 'replaced by a newer connection');
-      } catch {
-        // already gone
-      }
-    }
-    this.socket = socket;
     process.stderr.write('[wasmcheat] extension connected\n');
 
-    socket.on('message', (raw) => this.onMessage(raw));
+    socket.on('message', (raw) => this.onMessage(socket, raw));
     socket.on('close', () => {
+      // Requests sent on this socket can never be answered, whether or not it was still current.
+      this.rejectPending(socket, new BridgeError('NO_AGENT', 'the extension disconnected from the bridge'));
       if (this.socket !== socket) return;
       this.socket = null;
-      if (this.authenticatedSocket === socket) this.authenticatedSocket = null;
       this.extensionVersion = null;
-      this.rejectAll(new BridgeError('NO_AGENT', 'the extension disconnected from the bridge'));
       this.emit(Events.disconnected, { at: Date.now() });
       process.stderr.write('[wasmcheat] extension disconnected\n');
     });
@@ -220,7 +223,9 @@ export class Bridge {
     });
   }
 
-  private onMessage(raw: unknown): void {
+  private onMessage(socket: WebSocket, raw: unknown): void {
+    // A socket we already closed (replaced, refused) has nothing more to say.
+    if (socket.readyState !== 1) return;
     let parsed: unknown;
     try {
       parsed = JSON.parse(String(raw));
@@ -228,9 +233,23 @@ export class Bridge {
       return;
     }
 
+    if (isRequest(parsed)) {
+      this.onRequest(socket, parsed.id, parsed.method);
+      return;
+    }
+
+    if (isEvent(parsed) && parsed.event === 'bridge.hello') {
+      this.onHello(socket, parsed.data);
+      return;
+    }
+
+    // Everything else (answers, page events, audit lines) is only believed from the socket that
+    // presented the token: anything else on the port could invent it.
+    if (socket !== this.socket) return;
+
     if (isResponse(parsed)) {
       const entry = this.pending.get(parsed.id);
-      if (!entry) return;
+      if (!entry || entry.socket !== socket) return;
       this.pending.delete(parsed.id);
       clearTimeout(entry.timer);
       if (parsed.error) entry.reject(fromShape(parsed.error));
@@ -238,61 +257,75 @@ export class Bridge {
       return;
     }
 
-    if (isRequest(parsed)) {
-      this.onRequest(parsed.id, parsed.method, parsed.params);
+    if (isEvent(parsed)) this.emit(parsed.event, parsed.data);
+  }
+
+  private onHello(socket: WebSocket, raw: unknown): void {
+    const data = raw as { extension?: string; token?: unknown } | null;
+    if (!this.checkToken(data?.token)) {
+      // Refuse the socket and say so on stderr: a wrong token is a configuration problem a human
+      // has to see, not something to retry silently.
+      process.stderr.write('[wasmcheat] rejected an extension connection: bad bridge token\n');
+      this.emit('bridge.unauthorized', { at: Date.now() });
+      try {
+        socket.close(1008, 'bad bridge token');
+      } catch {
+        // already gone
+      }
       return;
     }
-
-    if (isEvent(parsed)) {
-      if (parsed.event === 'bridge.hello') {
-        const data = parsed.data as { extension?: string; token?: unknown } | null;
-        if (!this.checkToken(data?.token)) {
-          // Refuse the socket and say so on stderr: a wrong token is a configuration problem a human
-          // has to see, not something to retry silently.
-          process.stderr.write('[wasmcheat] rejected an extension connection: bad bridge token\n');
-          this.emit('bridge.unauthorized', { at: Date.now() });
-          try {
-            this.socket?.close(1008, 'bad bridge token');
-          } catch {
-            // already gone
-          }
-          return;
-        }
-        this.authenticated.add(this.socket as object);
-        this.authenticatedSocket = this.socket;
-        this.extensionVersion = data?.extension ?? 'unknown';
-        process.stderr.write('[wasmcheat] extension authenticated\n');
-        const waiters = this.waiters;
-        this.waiters = [];
-        for (const waiter of waiters) waiter();
+    const previous = this.socket;
+    if (previous && previous !== socket) {
+      // A stale worker from before an extension reload: drop it instead of splitting traffic.
+      this.rejectPending(previous, new BridgeError('NO_AGENT', 'the extension reconnected on a new socket'));
+      try {
+        previous.close(1000, 'replaced by a newer connection');
+      } catch {
+        // already gone
       }
-      this.emit(parsed.event, parsed.data);
     }
+    this.socket = socket;
+    this.extensionVersion = data?.extension ?? 'unknown';
+    process.stderr.write('[wasmcheat] extension authenticated\n');
+    const waiters = this.waiters;
+    this.waiters = [];
+    for (const waiter of waiters) waiter();
+    this.emit('bridge.hello', raw);
   }
 
   /**
    * The extension is the client, so a request from it is unusual: pairing is the only one. It is
-   * answered once per socket and refuses once anything is authenticated, so a second process cannot
-   * take over a bridge that is already in use.
+   * refused while an authenticated socket exists, so a second process cannot take over a bridge
+   * that is already in use.
    */
-  private onRequest(id: string, method: string, _params: unknown): void {
+  private onRequest(socket: WebSocket, id: string, method: string): void {
     if (method !== BRIDGE_PAIR) {
-      this.reply(id, makeErrorResponse(id, new BridgeError('UNSUPPORTED', `unknown request "${method}"`)));
+      if (socket === this.socket) {
+        this.reply(socket, makeErrorResponse(id, new BridgeError('UNSUPPORTED', `unknown request "${method}"`)));
+      }
+      return;
+    }
+    const holder = this.socket;
+    if (holder && holder !== socket && holder.readyState === 2 && this.options.pairing !== false) {
+      // The holder is already leaving (a restarting extension closes before it redials): answer once
+      // it is really gone instead of refusing a re-pair that would succeed a moment later.
+      holder.once('close', () => {
+        if (socket.readyState === 1) this.onRequest(socket, id, method);
+      });
       return;
     }
     // A paired socket that has already gone away must not block a fresh install (or an extension
     // reload, which drops its token) from pairing again.
-    const pairedAlive = this.authenticatedSocket !== null && this.authenticatedSocket.readyState === 1;
-    const allowed = this.options.pairing !== false && !pairedAlive;
+    const allowed = this.options.pairing !== false && holder === null;
     if (!allowed || !this.options.token) {
       this.reply(
-        id,
+        socket,
         makeErrorResponse(
           id,
           new BridgeError(
             'UNSUPPORTED',
             this.options.pairing === false
-              ? 'pairing is disabled on this server; paste the token from ~/.wasmcheat/token into the WasmCheat panel'
+              ? `pairing is disabled on this server; paste the token from ${this.tokenPath} into the WasmCheat panel`
               : 'this bridge is already paired with another extension',
           ),
         ),
@@ -300,12 +333,12 @@ export class Bridge {
       return;
     }
     process.stderr.write('[wasmcheat] an extension paired over the loopback socket\n');
-    this.reply(id, makeResponse(id, { token: this.options.token, paired: true }));
+    this.reply(socket, makeResponse(id, { token: this.options.token, paired: true }));
   }
 
-  private reply(id: string, message: unknown): void {
+  private reply(socket: WebSocket, message: unknown): void {
     try {
-      this.socket?.send(JSON.stringify(message));
+      socket.send(JSON.stringify(message));
     } catch {
       // The socket died between the request and the answer; 'close' handles the rest.
     }
@@ -334,8 +367,9 @@ export class Bridge {
     }
   }
 
-  private rejectAll(error: BridgeError): void {
+  private rejectPending(socket: WebSocket, error: BridgeError): void {
     for (const [id, entry] of this.pending) {
+      if (entry.socket !== socket) continue;
       clearTimeout(entry.timer);
       entry.reject(error);
       this.pending.delete(id);

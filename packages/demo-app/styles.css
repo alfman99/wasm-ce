@@ -1,7 +1,7 @@
 /*
  * Foundry, the demo target.
  *
- * This page is a game, not a tool, so it is allowed a darker palette and a large number — the score
+ * This page is a game, not a tool, so it is allowed a darker palette and a large number: the score
  * is the thing an agent comes here to find. It shares nothing with the panel on purpose: a target
  * that looks like the inspector makes it harder to tell which window you are about to write to.
  */
@@ -17,7 +17,7 @@
   --line: #2a2f2c;
   --ink: #eef2ec;
   --ink-2: #a8b1a8;
-  --ink-3: #78827a;
+  --ink-3: #8a948b;
   --molten: #ff7a2f;
   --molten-soft: #2a1a11;
   --ore: #ffcf4d;
@@ -84,7 +84,7 @@ h1 {
   background: var(--molten-soft);
   color: var(--molten);
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .spacer {
@@ -139,7 +139,7 @@ code {
 .stat__label,
 .label {
   color: var(--ink-3);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 550;
   letter-spacing: 0.02em;
   text-transform: none;
@@ -207,7 +207,7 @@ button {
 
 button small {
   color: var(--ink-3);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 500;
 }
 
@@ -226,7 +226,7 @@ button.mine {
 }
 
 button.mine small {
-  color: #5b2f12;
+  color: #4a250d;
 }
 
 button.mine:hover {
@@ -264,7 +264,7 @@ button.quiet,
   border-top: 1px solid var(--line);
   color: var(--ink-3);
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .status {

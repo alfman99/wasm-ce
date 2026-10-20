@@ -1,6 +1,6 @@
 /**
  * The middle worker: it owns nothing but a child worker. Its only job is to prove that a worker
- * started from inside another worker is still captured — the page's `Worker` wrapper never sees
+ * started from inside another worker is still captured: the page's `Worker` wrapper never sees
  * this constructor, so only the worker-scope wrapper can.
  */
 let child = null;

@@ -285,7 +285,7 @@ function address(field: HTMLInputElement): string {
   if (!raw) throw new BridgeError('BAD_PARAMS', 'address is empty');
   if (/^[A-Za-z0-9_-]+:/.test(raw)) return raw;
   if (!selectedInstanceId) {
-    throw new BridgeError('BAD_PARAMS', `"${raw}" has no <instanceId>: prefix — click Use on an instance first`);
+    throw new BridgeError('BAD_PARAMS', `"${raw}" has no <instanceId>: prefix: click Use on an instance first`);
   }
   return `${selectedInstanceId}:${raw}`;
 }
@@ -325,7 +325,7 @@ function instanceFrom(fieldId: string): string {
   if (knownInstances.length === 0) {
     throw new BridgeError(
       'BAD_PARAMS',
-      'no WebAssembly instance is loaded in this tab yet, so there is nothing to point at — press Diagnose to see why (the game may start on a click, sit in an iframe, or run in a worker)',
+      'no WebAssembly instance is loaded in this tab yet, so there is nothing to point at. Press Diagnose to see why (the game may start on a click, sit in an iframe, or run in a worker)',
     );
   }
   const ids = knownInstances.map((instance) => instance.id).join(', ');
@@ -355,6 +355,11 @@ function typeOf(id: string): ValueType {
 }
 
 // ---------------------------------------------------------------- list building
+
+/** `1 match`, `3 matches`: counts in the panel are sentences, not `match(es)`. */
+function count(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
 
 function span(text: string, className?: string): HTMLSpanElement {
   const element = document.createElement('span');
@@ -395,6 +400,8 @@ function listItem(parts: (string | HTMLElement)[]): HTMLLIElement {
   for (const part of parts) item.append(typeof part === 'string' ? span(part) : part);
   return item;
 }
+
+const NO_SCAN_YET = 'No scan yet. Press First Scan with a value you can see on the page; Next Scan then narrows that list.';
 
 function renderList(host: HTMLElement, items: HTMLLIElement[], emptyText: string): void {
   host.replaceChildren(...(items.length ? items : [listItem([span(emptyText, 'empty')])]));
@@ -527,7 +534,7 @@ function renderInstances(instances: InstanceInfo[]): void {
     const row = document.createElement('tr');
     row.append(
       cell(instance.id),
-      cell(instance.moduleHash ?? '—'),
+      cell(instance.moduleHash ?? '-'),
       cell(
         instance.memory
           ? `${instance.memory.byteLength} B${instance.memory.growable ? ' growable' : ''}`
@@ -567,7 +574,7 @@ async function refreshInstances(): Promise<string> {
   const instances = await instanceList();
   renderInstances(instances);
   return instances.length
-    ? `${instances.length} instance(s): ${instances.map((instance) => instance.id).join(', ')}`
+    ? `${count(instances.length, 'instance')}: ${instances.map((instance) => instance.id).join(', ')}`
     : 'No instances yet. Press Refresh; if it stays empty, press Diagnose to see why.';
 }
 
@@ -618,7 +625,7 @@ async function readBytes(): Promise<string> {
     length: fieldNum('mem-length', 'bytes'),
     encoding: 'hex',
   });
-  return `${formatAddress(result.address)} ${result.values.length} byte(s)\nhex ${result.hex ?? ''}`;
+  return `${formatAddress(result.address)} ${count(result.values.length, 'byte')}\nhex ${result.hex ?? ''}`;
 }
 
 // ---------------------------------------------------------------- memory viewer
@@ -695,7 +702,7 @@ async function listWorkers(): Promise<string> {
   return workers
     .map(
       (worker) =>
-        `${worker.id}  ${worker.type.padEnd(6)}  ${worker.instances} instance(s)  ${worker.url || '(no url)'}`,
+        `${worker.id}  ${worker.type.padEnd(6)}  ${count(worker.instances, 'instance')}  ${worker.url || '(no url)'}`,
     )
     .join('\n');
 }
@@ -711,9 +718,9 @@ async function scanPointers(): Promise<string> {
     maxOffset,
   });
   if (paths.length === 0) {
-    return `no chain reaches ${formatAddress(target)} within ${maxDepth} hop(s) and ${maxOffset} bytes per hop - raise either bound`;
+    return `no chain reaches ${formatAddress(target)} within ${count(maxDepth, 'hop')} and ${maxOffset} bytes per hop - raise either bound`;
   }
-  const header = `${paths.length} chain(s), shortest first`;
+  const header = `${count(paths.length, 'chain')}, shortest first`;
   return [header, ...paths
     .map(
       (path, index) =>
@@ -777,7 +784,7 @@ function renderFreezes(entries: FreezeEntry[]): void {
       }),
     ]),
   );
-  renderList(el('freezes'), items, 'Nothing frozen. Click an address in Found, then press Set freeze.');
+  renderList(el('freezes'), items, 'Nothing frozen. Click an address in Found, then press Set.');
 }
 
 async function freezeSet(): Promise<string> {
@@ -801,7 +808,7 @@ async function freezeClear(): Promise<string> {
 async function freezeList(): Promise<string> {
   const entries = await pageCall<FreezeEntry[]>('page.freeze.list');
   renderFreezes(entries);
-  return `${entries.length} freeze(s)`;
+  return count(entries.length, 'freeze');
 }
 
 // ---------------------------------------------------------------- watch
@@ -821,7 +828,7 @@ function renderWatches(entries: WatchEntry[]): void {
       }),
     ]),
   );
-  renderList(el('watches'), items, 'No watches. Enter an address and a type, then press Add watch.');
+  renderList(el('watches'), items, 'No watches. Enter an address and a type, then press Add.');
 }
 
 function renderWatchEvents(events: WatchEvent[]): void {
@@ -857,13 +864,13 @@ async function watchRemove(): Promise<string> {
 async function watchList(): Promise<string> {
   const entries = await pageCall<WatchEntry[]>('page.watch.list');
   renderWatches(entries);
-  return `${entries.length} watch(es)`;
+  return count(entries.length, 'watch', 'watches');
 }
 
 async function watchPoll(): Promise<string> {
   const events = await pageCall<WatchEvent[]>('page.watch.poll', {});
   renderWatchEvents(events);
-  return events.length ? `${events.length} event(s), newest first` : 'no watch events since the last poll';
+  return events.length ? `${count(events.length, 'event')}, newest first` : 'no watch events since the last poll';
 }
 
 // ---------------------------------------------------------------- scan
@@ -927,7 +934,7 @@ function syncScanFields(): void {
 function renderScanSummary(summary: ScanSummary): void {
   activeScanId = summary.scanId;
   markScanStep('narrow');
-  el('scan-id').textContent = `scan ${summary.scanId} · ${summary.matchCount} match(es)`;
+  el('scan-id').textContent = `scan ${summary.scanId} · ${count(summary.matchCount, 'match', 'matches')}`;
   const items = [...summary.sample]
     .sort((a, b) => a.address.offset - b.address.offset)
     .map((hit) => listItem([addressLink(formatAddress(hit.address)), String(hit.value)]));
@@ -942,12 +949,12 @@ function renderScanHits(hits: ScanHit[], total: number): void {
 }
 
 function requireScanId(): string {
-  if (!activeScanId) throw new BridgeError('SCAN_CLOSED', 'no scan open — press Begin first');
+  if (!activeScanId) throw new BridgeError('SCAN_CLOSED', 'no scan open: press First Scan first');
   return activeScanId;
 }
 
 function scanSummaryLine(summary: ScanSummary, verb: string): string {
-  return `${verb} ${summary.scanId} · ${summary.mode} ${summary.type} · ${summary.matchCount} match(es)${
+  return `${verb} ${summary.scanId} · ${summary.mode} ${summary.type} · ${count(summary.matchCount, 'match', 'matches')}${
     summary.truncated ? ' · truncated at maxResults' : ''
   } · memory ${summary.memoryByteLength} B`;
 }
@@ -986,7 +993,7 @@ async function scanResults(): Promise<string> {
     limit: 100,
   });
   renderScanHits(result.hits, result.total);
-  return `${result.hits.length} of ${result.total} hit(s) shown`;
+  return `${result.hits.length} of ${count(result.total, 'hit')} shown`;
 }
 
 async function scanDrop(): Promise<string> {
@@ -995,7 +1002,7 @@ async function scanDrop(): Promise<string> {
   activeScanId = undefined;
   el('scan-id').textContent = 'no scan';
   markScanStep('first');
-  renderList(el('scan-hits'), [], 'No scan yet. Press First Scan with a value you can see on the page; Next Scan then narrows that list.');
+  renderList(el('scan-hits'), [], NO_SCAN_YET);
   return dropped ? `${id} dropped` : `${id} was already closed`;
 }
 
@@ -1023,37 +1030,37 @@ async function bookmarkList(): Promise<string> {
     ),
     'No bookmarks. Type an address and a label, then press Add bookmark.',
   );
-  return items.length === 0 ? 'nothing bookmarked yet' : `${items.length} bookmark(s)`;
+  return items.length === 0 ? 'nothing bookmarked yet' : count(items.length, 'bookmark');
 }
 
 async function bookmarkClear(): Promise<string> {
   const { removed } = await pageCall<{ removed: number }>('page.bookmark.clear');
   await bookmarkList();
-  return `cleared ${removed} bookmark(s)`;
+  return `cleared ${count(removed, 'bookmark')}`;
 }
 
 async function savedList(): Promise<string> {
   const items = await pageCall<SavedScanSummary[]>('page.saved.list');
   renderList(
     el('saved-list-out'),
-    items.map((item) => listItem([span(`${item.name} · ${item.matchCount} match(es) · ${item.mode} ${item.type}`)])),
+    items.map((item) => listItem([span(`${item.name} · ${count(item.matchCount, 'match', 'matches')} · ${item.mode} ${item.type}`)])),
     'No saved scans in this page. Save one before anything reloads it.',
   );
-  return items.length === 0 ? 'nothing saved yet' : `${items.length} saved scan(s)`;
+  return items.length === 0 ? 'nothing saved yet' : count(items.length, 'saved scan');
 }
 
 async function savedSave(): Promise<string> {
   const name = requireSavedName();
   const saved = await pageCall<SavedScanSummary>('page.saved.save', { name, scanId: requireScanId() });
   await savedList();
-  return `saved "${saved.name}" · ${saved.matchCount} match(es)`;
+  return `saved "${saved.name}" · ${count(saved.matchCount, 'match', 'matches')}`;
 }
 
 async function savedOpen(): Promise<string> {
   const name = requireSavedName();
   const opened = await pageCall<{ scanId: string; summary: ScanSummary }>('page.saved.open', { name });
   activeScanId = opened.scanId;
-  el('scan-id').textContent = `scan ${opened.scanId} · ${opened.summary.matchCount} match(es) (from "${name}")`;
+  el('scan-id').textContent = `scan ${opened.scanId} · ${count(opened.summary.matchCount, 'match', 'matches')} (from "${name}")`;
   renderList(el('scan-hits'), [], 'No hits in this answer. Narrow again with Next Scan, or widen the byte range.');
   return `opened "${name}" as ${opened.scanId} · narrow it with the scan form above`;
 }
@@ -1085,7 +1092,7 @@ async function scanText(): Promise<string> {
     listItem([addressLink(`${instanceId}:0x${offset.toString(16)}`), `+${offset}`]),
   );
   renderList(el('text-hits'), items, `No match for "${text}". Try the case-insensitive box, or another encoding.`);
-  return `${result.matches.length} of ${result.total} match(es) · ${result.encoding}${
+  return `${result.matches.length} of ${count(result.total, 'match', 'matches')} · ${result.encoding}${
     result.truncated ? ' · truncated' : ''
   } · memory ${result.memoryByteLength} B`;
 }
@@ -1101,8 +1108,8 @@ function sleep(ms: number): Promise<void> {
 function traceLines(status: WriteTraceStatus, lastError: unknown): string {
   return [
     `armed: ${status.armed ? 'yes' : 'no'} · installed: ${status.installed ? 'yes' : 'no'}`,
-    `address: ${status.address ?? '—'} · type: ${status.type ?? '—'} · kind: ${status.kind ?? '—'} · instance: ${
-      status.instanceId ?? '—'
+    `address: ${status.address ?? '-'} · type: ${status.type ?? '-'} · kind: ${status.kind ?? '-'} · instance: ${
+      status.instanceId ?? '-'
     }`,
     `hits: ${status.hits.length} · dropped: ${status.dropped}`,
     status.note ? `note: ${status.note}` : '',
@@ -1130,7 +1137,7 @@ function renderTrace(status: WriteTraceStatus): void {
   renderList(
     el('trace-functions'),
     status.functions.map((entry) =>
-      listItem([entry.name ?? `wasm-function[${entry.funcIndex}]`, `${entry.hits} hit(s)`]),
+      listItem([entry.name ?? `wasm-function[${entry.funcIndex}]`, count(entry.hits, 'hit')]),
     ),
     'No function touched that address yet. Reload the tab with the watchpoint armed, then play.',
   );
@@ -1195,7 +1202,7 @@ function renderPatches(entries: PatchEntry[]): void {
       }),
     ]),
   );
-  renderList(el('patches'), items, 'No patches. Choose a target and a mode, then press Add patch.');
+  renderList(el('patches'), items, 'No patches. Choose a target and a mode, then press Add.');
 }
 
 async function patchAdd(): Promise<string> {
@@ -1209,13 +1216,13 @@ async function patchAdd(): Promise<string> {
   if (note) params.note = note;
   const entry = await pageCall<PatchEntry>('page.patch.add', params);
   renderPatches(await pageCall<PatchEntry[]>('page.patch.list'));
-  return `${entry.id} ${entry.mode} ${entry.target} — reload to install it`;
+  return `${entry.id} ${entry.mode} ${entry.target}: reload to install it`;
 }
 
 async function patchList(): Promise<string> {
   const entries = await pageCall<PatchEntry[]>('page.patch.list');
   renderPatches(entries);
-  return `${entries.length} patch(es)`;
+  return count(entries.length, 'patch', 'patches');
 }
 
 async function patchRemove(): Promise<string> {
@@ -1241,7 +1248,7 @@ function renderHooks(entries: HookEntry[]): void {
       `${entry.target} ${entry.name}`,
       entry.enabled ? 'enabled' : 'disabled',
       entry.pending ? 'pending' : entry.fallbackUsed ? 'fallback' : 'script',
-      `${entry.calls} call(s)`,
+      count(entry.calls, 'call'),
       entry.lastReturn === undefined || entry.lastReturn === null ? '' : `return ${compact(entry.lastReturn)}`,
       miniButton(entry.enabled ? 'Disable' : 'Enable', () => {
         void run(el('hook-out'), async () => {
@@ -1290,7 +1297,7 @@ async function hookAdd(): Promise<string> {
 async function hookList(): Promise<string> {
   const entries = await pageCall<HookEntry[]>('page.hook.list');
   renderHooks(entries);
-  return `${entries.length} hook(s)`;
+  return count(entries.length, 'hook');
 }
 
 async function hookRemove(): Promise<string> {
@@ -1321,7 +1328,7 @@ interface AuditReply {
 async function readAudit(): Promise<string> {
   const limit = fieldNum('audit-limit', 'limit');
   const reply = await swCall<AuditReply>('ext.audit', { limit });
-  el('audit-note').textContent = `${reply.note} — showing ${reply.lines.length} of ${reply.total}`;
+  el('audit-note').textContent = `${reply.note}. Showing ${reply.lines.length} of ${reply.total}`;
   return reply.lines.length
     ? reply.lines.map((line) => compact(line)).join('\n')
     : 'no audit lines recorded by this worker yet';
@@ -1527,6 +1534,7 @@ function wire(): void {
     renderEventLog();
   });
 
+  renderList(el('scan-hits'), [], NO_SCAN_YET);
   renderList(el('event-log'), [], 'No events yet. Bridge and page events appear here as they happen.');
   openEvents();
 

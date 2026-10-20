@@ -1,7 +1,7 @@
 import type { TabInfo } from '@wasmcheat/protocol';
 
 /**
- * The toolbar popup answers one question — "is this tab set up?" — and gets out of the way.
+ * The toolbar popup answers one question ("is this tab set up?") and gets out of the way.
  *
  * There is nothing to approve: the panel targets the tab you open it on, and a game is a game
  * because you opened it. The only thing worth surfacing here is the bridge, because a missing or
@@ -52,8 +52,20 @@ function renderBridge(info: PopupState): void {
 }
 
 async function refresh(): Promise<void> {
-  const response = (await chrome.runtime.sendMessage({ type: 'popup.state' })) as PopupState | undefined;
-  if (!response) return;
+  let response: PopupState | undefined;
+  try {
+    response = (await chrome.runtime.sendMessage({ type: 'popup.state' })) as PopupState | undefined;
+  } catch (error) {
+    response = undefined;
+    note.textContent = String((error as Error)?.message ?? error);
+  }
+  if (!response) {
+    setPill('extension not answering', 'bad');
+    target.textContent = 'The extension did not answer.';
+    stateLine.textContent = 'Press Refresh. If it keeps failing, reload WasmCheat in chrome://extensions.';
+    hint.textContent = '';
+    return;
+  }
   renderBridge(response);
 
   const tab = response.tabs.find((entry) => entry.tabId === response.activeTabId);
@@ -62,7 +74,7 @@ async function refresh(): Promise<void> {
     stateLine.textContent = '';
     hint.textContent =
       'Switch to the page you want to work on and open DevTools there. Chrome extension pages and browser settings cannot be attached to.';
-    note.textContent = `${response.tabs.length} tab(s) visible`;
+    note.textContent = `${response.tabs.length} ${response.tabs.length === 1 ? 'tab' : 'tabs'} visible`;
     return;
   }
 
@@ -80,7 +92,7 @@ tokenSave.addEventListener('click', () => {
   void (async () => {
     const token = tokenInput.value.trim();
     if (!token) {
-      tokenHint.textContent = 'Paste the line printed by the MCP server first.';
+      tokenHint.textContent = 'Paste the contents of ~/.wasmcheat/token first.';
       return;
     }
     await chrome.storage.local.set({ bridgeToken: token, bridgeTokenSource: 'pasted' });

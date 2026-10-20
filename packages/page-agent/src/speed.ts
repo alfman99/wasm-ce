@@ -87,7 +87,9 @@ export class TimeMachine {
 
     const machine = this;
     performance.now = () => machine.virtual();
-    Date.now = () => machine.virtual() + machine.dateOffset;
+    // `Date.now` is integer milliseconds by contract (`BigInt(Date.now())` must not throw), while the
+    // virtual clock is built from fractional `performance.now`.
+    Date.now = () => Math.floor(machine.virtual() + machine.dateOffset);
     // A frame callback's timestamp shares the `performance.now` time base, so the scale applies to it
     // the same way. The real frame still runs at the display's pace; only the number changes.
     if (scope && realFrame) {

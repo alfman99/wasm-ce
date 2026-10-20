@@ -1,13 +1,12 @@
 /*
- * Toolbar popup: the approval surface. One job — show which tabs the extension can see and let the
- * human grant or refuse access — so it is a short list, a token field and a status line, sized to
- * the 380px a popup gets.
+ * Toolbar popup: says whether the tab in front is set up and whether the bridge is live, with a
+ * token field that appears only when the bridge needs one. Sized to the 380px a popup gets.
  *
  * Tokens match panel.css on purpose: the two surfaces are the same product seen at two scales.
  */
 
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
 
@@ -24,6 +23,8 @@
   --accent-soft: #e7f1ee;
   --danger: #ad382b;
   --danger-soft: #fbeceb;
+  --warn: #7d5200;
+  --warn-soft: #fdf3e2;
 }
 
 
@@ -117,7 +118,7 @@ h1 {
   border-radius: 999px;
   background: var(--surface);
   color: var(--ink-2);
-  font-size: 10.5px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -137,6 +138,27 @@ h1 {
 
 .pill--live::before {
   background: var(--accent);
+}
+
+/* Status is never colour alone: the pill text says the same thing as its tone. */
+.pill--warn {
+  border-color: color-mix(in srgb, var(--warn) 35%, var(--line));
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.pill--warn::before {
+  background: var(--warn);
+}
+
+.pill--bad {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.pill--bad::before {
+  background: var(--danger);
 }
 
 .lede {
@@ -201,9 +223,8 @@ h1 {
 
 .micro {
   color: var(--ink-3);
-  font-size: 10.5px;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 550;
 }
 
 footer {
@@ -216,9 +237,7 @@ footer {
 
 footer #note {
   flex: 1;
-  text-transform: none;
-  letter-spacing: 0;
-  font-size: 11px;
+  font-weight: 400;
 }
 
 .ghost {

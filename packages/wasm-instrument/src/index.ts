@@ -27,12 +27,12 @@
  * function, with that function's index baked in as a constant.
  *
  * Prefixed opcodes are walked for the same reason the plain ones are: real modules use them.
- * Emscripten's `-pthread` output is full of 0xFE atomic loads and stores, and Unity's player leans
- * on 0xFD vectors, so refusing either prefix would leave watchpoints unavailable exactly where
- * games are biggest. The atomic loads and stores and the vector memory accesses carry the same
- * memarg as `i32.load`, so they are probed exactly like it. The rest of the atomic space is
- * refused, because its immediates are not decoded here; the rest of the vector space is copied
- * through after its immediates are skipped, since only memory accesses need a probe.
+ * Unity's player leans on 0xFD vectors, and 0xFE atomic loads and stores are valid on an unshared
+ * memory too. Shared memories themselves are refused (see `skipLimits`), so Emscripten's `-pthread`
+ * output, which imports one, is not supported. The atomic loads and stores and the vector memory
+ * accesses carry the same memarg as `i32.load`, so they are probed exactly like it. The rest of
+ * the atomic space is refused, because its immediates are not decoded here; the rest of the vector
+ * space is copied through after its immediates are skipped, since only memory accesses need a probe.
  *
  * One vector form cannot be probed at all. `v128.load*_lane` takes its address *under* a vector
  * operand — `[address, v128] -> [v128]` — so the address is not on top of the stack where a
@@ -306,7 +306,8 @@ export function instrumentModule(bytes: Uint8Array, options: InstrumentOptions =
 
   const storeCallbackIndex = writes ? importedFunctionCount : null;
   const readCallbackIndex = reads ? importedFunctionCount + (writes ? 1 : 0) : null;
-  const flagsGlobalIndex = layout.globalCount;
+  // Imported globals come first in the global index space, so the appended flag follows them too.
+  const flagsGlobalIndex = layout.importedGlobalCount + layout.globalCount;
   const armFunctionIndex = definedFunctionSlot(layout.functionCount);
 
   const storeInjectionFor = (definedFunctionIndex: number): Uint8Array<ArrayBuffer> | null => {
@@ -414,8 +415,11 @@ export function instrumentModule(bytes: Uint8Array, options: InstrumentOptions =
       case 10:
         section.payload = rewrittenCode.payload;
         break;
+      case 0:
+        section.payload = shiftFunctionNames(section.payload, context);
+        break;
       default:
-        // Table, memory, data count, data and custom sections carry no function indices.
+        // Table, memory, data count and data sections carry no function indices.
         break;
     }
   }
@@ -467,6 +471,7 @@ interface ModuleLayout {
   functionTypeIndices: number[];
   importedFunctionCount: number;
   functionCount: number;
+  importedGlobalCount: number;
   globalCount: number;
 }
 
@@ -684,7 +689,9 @@ function rewriteInstructionSequence(
       case 0x03: // loop
       case 0x04: // if
       case 0x06: // try (legacy exception handling)
-        reader.skipLeb(5); // block type: 0x40, a value type, or an s33 type index
+        // Block type: 0x40, a value type, or an s33 type index. Read as a value type first, so a
+        // typed reference result is refused; a set high bit means the rest of a type index follows.
+        if ((valueType(reader, options.site) & 0x80) !== 0) reader.skipLeb(4);
         depth += 1;
         break;
       case 0x07: // catch <tag>
@@ -718,7 +725,7 @@ function rewriteInstructionSequence(
       case 0x1c: {
         // select with an explicit list of result types
         const types = reader.u32();
-        reader.skip(types);
+        for (let index = 0; index < types; index += 1) valueType(reader, options.site);
         break;
       }
       case 0x20: // local.get
@@ -744,8 +751,8 @@ function rewriteInstructionSequence(
       case 0x44: // f64.const
         reader.skip(8);
         break;
-      case 0xd0: // ref.null <heap type>
-        reader.u8();
+      case 0xd0: // ref.null <heap type>: an s33, one byte for the abstract types, more for a type index
+        reader.skipLeb(5);
         break;
       case 0xfc: {
         // Bulk memory and table operations, prefixed. The bulk writes (memory.init/copy/fill)
@@ -825,8 +832,7 @@ function rewriteInstructionSequence(
           case 'store':
           case 'lane-load':
           case 'lane-store': {
-            reader.u32(); // alignment
-            const offset = reader.u32();
+            const offset = readMemargOffset(reader, options.site);
             // The lane forms carry a lane index after the memarg whether or not they are probed.
             if (layout === 'lane-load' || layout === 'lane-store') reader.u8();
             if (layout === 'load') {
@@ -858,13 +864,10 @@ function rewriteInstructionSequence(
         // loudly instead of being half-instrumented.
         const subopcode = reader.u32();
         if (subopcode >= 0x10 && subopcode <= 0x16) {
-          reader.u32(); // alignment
-          const offset = reader.u32();
+          memoryOffset = readMemargOffset(reader, options.site);
           loads = true;
-          memoryOffset = offset;
         } else if (subopcode >= 0x17 && subopcode <= 0x1d) {
-          reader.u32(); // alignment
-          reader.u32(); // offset
+          readMemargOffset(reader, options.site);
           writes = true;
         } else {
           throw unsupported(
@@ -878,8 +881,7 @@ function rewriteInstructionSequence(
           // Loads and stores: alignment then offset. The offset is part of the effective
           // address, and compilers emit `i32.const 0; i32.load offset=N` for globals, so a probe
           // that only saw the base operand would report 0 for every static address.
-          reader.u32();
-          const offset = reader.u32();
+          const offset = readMemargOffset(reader, options.site);
           if (opcode <= 0x35) memoryOffset = offset;
           break;
         }
@@ -905,6 +907,36 @@ function rewriteInstructionSequence(
   }
 
   return { bytes: out.toBytes(), end: reader.offset, storeCount, readCount, unprobed };
+}
+
+/**
+ * Reads one value type. Every value type is one byte except the typed references
+ * `(ref null <heap type>)` (0x63) and `(ref <heap type>)` (0x64), which carry an s33 heap type
+ * after the prefix; reading those as one byte would leave the heap type behind to be decoded as
+ * whatever comes next, so they are refused wherever a value type is read.
+ */
+function valueType(reader: Reader, site: string): number {
+  const type = reader.u8();
+  if (type === 0x63 || type === 0x64) {
+    throw unsupported(
+      `${site} uses a typed reference value type (0x${type.toString(16)}), which this rewriter cannot decode`,
+    );
+  }
+  return type;
+}
+
+/**
+ * Reads a memarg and returns its offset. Bit 6 of the alignment field (the multi-memory encoding)
+ * means a memory index precedes the offset; only memory 0 exists here, so an explicit 0 is kept as
+ * it was and any other index is refused.
+ */
+function readMemargOffset(reader: Reader, site: string): number {
+  const alignment = reader.u32();
+  if ((alignment & 0x40) !== 0) {
+    const memory = reader.u32();
+    if (memory !== 0) throw unsupported(`${site} accesses memory ${memory}, only memory 0 is supported`);
+  }
+  return reader.u32();
 }
 
 function parseSections(bytes: Uint8Array): Section[] {
@@ -940,7 +972,9 @@ function inspectModule(sections: Section[]): ModuleLayout {
   const types = readTypes(requireSection(sections, 1).payload);
   const importSection = sections.find((section) => section.id === 2);
   const imports =
-    importSection === undefined ? { functionCount: 0, memoryCount: 0 } : inspectImports(importSection.payload);
+    importSection === undefined
+      ? { functionCount: 0, memoryCount: 0, globalCount: 0 }
+      : inspectImports(importSection.payload);
   const memorySection = sections.find((section) => section.id === 5);
   const declaredMemoryCount = memorySection === undefined ? 0 : countMemories(memorySection.payload);
   if (imports.memoryCount + declaredMemoryCount > 1) throw unsupported('multiple memories are not supported');
@@ -956,6 +990,7 @@ function inspectModule(sections: Section[]): ModuleLayout {
     functionTypeIndices,
     importedFunctionCount: imports.functionCount,
     functionCount,
+    importedGlobalCount: imports.globalCount,
     globalCount: globalSection === undefined ? 0 : countGlobals(globalSection.payload),
   };
 }
@@ -983,18 +1018,22 @@ function readTypes(payload: Uint8Array): FunctionType[] {
     if (form !== 0x60) {
       throw unsupported(`type ${index} uses type form 0x${form.toString(16)}, only function types are supported`);
     }
-    const params = reader.bytes(reader.u32()); // parameter value types, one byte each
-    const results = reader.bytes(reader.u32()); // result value types
+    // Parameter then result value types, one byte each once typed references are refused.
+    const readValueTypes = (): Uint8Array =>
+      Uint8Array.from({ length: reader.u32() }, () => valueType(reader, `type ${index}`));
+    const params = readValueTypes();
+    const results = readValueTypes();
     types.push({ params, results });
   }
   return types;
 }
 
-function inspectImports(payload: Uint8Array): { functionCount: number; memoryCount: number } {
+function inspectImports(payload: Uint8Array): { functionCount: number; memoryCount: number; globalCount: number } {
   const reader = new Reader(payload);
   const count = reader.u32();
   let functionCount = 0;
   let memoryCount = 0;
+  let globalCount = 0;
   for (let index = 0; index < count; index += 1) {
     reader.skip(reader.u32()); // module name
     reader.skip(reader.u32()); // field name
@@ -1005,16 +1044,17 @@ function inspectImports(payload: Uint8Array): { functionCount: number; memoryCou
         functionCount += 1;
         break;
       case 0x01: // table: reference type then limits
-        reader.u8();
-        skipLimits(reader);
+        valueType(reader, `import ${index}`);
+        skipLimits(reader, 'table');
         break;
       case 0x02: // memory: limits
-        skipLimits(reader);
+        skipLimits(reader, 'memory');
         memoryCount += 1;
         break;
       case 0x03: // global: value type then mutability
+        valueType(reader, `import ${index}`);
         reader.u8();
-        reader.u8();
+        globalCount += 1;
         break;
       case 0x04: // tag: attribute then type index
         reader.u8();
@@ -1024,13 +1064,14 @@ function inspectImports(payload: Uint8Array): { functionCount: number; memoryCou
         throw unsupported(`import ${index} has unknown kind 0x${kind.toString(16)}`);
     }
   }
-  return { functionCount, memoryCount };
+  return { functionCount, memoryCount, globalCount };
 }
 
-function skipLimits(reader: Reader): void {
+/** Memory and table imports share the limits encoding; `kind` names which one a refusal is about. */
+function skipLimits(reader: Reader, kind: 'memory' | 'table'): void {
   const flags = reader.u8();
-  if ((flags & 0x02) !== 0) throw unsupported('shared memory (threads) is not supported');
-  if ((flags & 0x04) !== 0) throw unsupported('64-bit memories are not supported');
+  if ((flags & 0x02) !== 0) throw unsupported(`a shared ${kind} is not supported`);
+  if ((flags & 0x04) !== 0) throw unsupported(`a 64-bit ${kind} is not supported`);
   reader.u32(); // minimum
   if ((flags & 0x01) !== 0) reader.u32(); // maximum
 }
@@ -1038,7 +1079,7 @@ function skipLimits(reader: Reader): void {
 function countMemories(payload: Uint8Array): number {
   const reader = new Reader(payload);
   const count = reader.u32();
-  for (let index = 0; index < count; index += 1) skipLimits(reader);
+  for (let index = 0; index < count; index += 1) skipLimits(reader, 'memory');
   return count;
 }
 
@@ -1197,7 +1238,9 @@ function constantAsNumber(value: number | bigint | undefined): number {
 /** The patch constant as an i64. A fractional number is truncated, as `i64.const` cannot hold it. */
 function constantAsI64(value: number | bigint | undefined): bigint {
   if (value === undefined) return 0n;
-  return typeof value === 'bigint' ? value : BigInt(Math.trunc(value));
+  if (typeof value === 'bigint') return value;
+  if (!Number.isFinite(value)) throw unsupported(`an i64 stub cannot return ${value}: it is not a finite number`);
+  return BigInt(Math.trunc(value));
 }
 
 /** Little-endian IEEE-754 payload of an `f32.const` or `f64.const`. */
@@ -1213,7 +1256,7 @@ function countGlobals(payload: Uint8Array): number {
   const reader = new Reader(payload);
   const count = reader.u32();
   for (let index = 0; index < count; index += 1) {
-    reader.u8(); // value type
+    valueType(reader, `global ${index}`);
     reader.u8(); // mutability
     const expression = rewriteInstructionSequence(payload, reader.offset, {
       shiftFunctionIndex: IDENTITY,
@@ -1269,7 +1312,7 @@ function appendFlagsGlobal(payload: Uint8Array | null, context: RewriteContext):
     const count = reader.u32();
     globals.u32(count + 1);
     for (let index = 0; index < count; index += 1) {
-      const valueType = reader.u8();
+      const type = valueType(reader, `global ${index}`);
       const mutability = reader.u8();
       const expression = rewriteInstructionSequence(payload, reader.offset, {
         shiftFunctionIndex: context.shiftFunctionIndex,
@@ -1277,7 +1320,7 @@ function appendFlagsGlobal(payload: Uint8Array | null, context: RewriteContext):
         probeCall: null,
         site: `the initializer of global ${index}`,
       });
-      globals.u8(valueType).u8(mutability).bytes(expression.bytes);
+      globals.u8(type).u8(mutability).bytes(expression.bytes);
       reader.seek(expression.end);
     }
   }
@@ -1300,6 +1343,11 @@ function appendArmExport(
     for (let index = 0; index < count; index += 1) {
       const nameLength = reader.u32();
       const name = reader.bytes(nameLength);
+      if (UTF8_DECODE.decode(name) === ARM_EXPORT) {
+        // A second `__wc_arm` would be a duplicate export the engine rejects, and the flag of the
+        // first rewrite would still guard the old call sites.
+        throw unsupported(`the module already exports "${ARM_EXPORT}", so it is already instrumented`);
+      }
       const kind = reader.u8();
       const target = reader.u32();
       exports.u32(nameLength).bytes(name).u8(kind);
@@ -1309,6 +1357,46 @@ function appendArmExport(
     }
   }
   return exports.name(ARM_EXPORT).u8(0x00).u32(armFunctionIndex).toBytes();
+}
+
+/**
+ * Keeps the `name` custom section true to the shifted function index space. The function-names
+ * subsection (id 1) is renumbered; the local and label names (ids 2 and 3) are keyed by function
+ * index too and are dropped rather than renumbered; every other subsection names an index space
+ * this rewriter only appends to, so it is copied as it was. Other custom sections are untouched.
+ * Engines ignore a malformed name section, so one that does not parse loses its subsections
+ * instead of rejecting the module.
+ */
+function shiftFunctionNames(payload: Uint8Array, context: RewriteContext): Uint8Array {
+  const reader = new Reader(payload);
+  const nameLength = reader.u32();
+  if (UTF8_DECODE.decode(reader.bytes(nameLength)) !== 'name') return payload;
+  const header = payload.subarray(0, reader.offset);
+  const names = new Writer().bytes(header);
+  try {
+    while (!reader.atEnd) {
+      const id = reader.u8();
+      const content = reader.bytes(reader.u32());
+      if (id === 2 || id === 3) continue;
+      if (id !== 1) {
+        names.u8(id).u32(content.length).bytes(content);
+        continue;
+      }
+      const functions = new Reader(content);
+      const count = functions.u32();
+      const shifted = new Writer().u32(count);
+      for (let index = 0; index < count; index += 1) {
+        shifted.u32(context.shiftFunctionIndex(functions.u32()));
+        const length = functions.u32();
+        shifted.u32(length).bytes(functions.bytes(length));
+      }
+      const bytes = shifted.toBytes();
+      names.u8(id).u32(bytes.length).bytes(bytes);
+    }
+  } catch {
+    return header;
+  }
+  return names.toBytes();
 }
 
 function shiftStartFunction(payload: Uint8Array, context: RewriteContext): Uint8Array<ArrayBuffer> {
@@ -1335,6 +1423,9 @@ function shiftElementFunctions(payload: Uint8Array, context: RewriteContext): Ui
   };
   const copyByte = (): void => {
     elements.u8(reader.u8());
+  };
+  const copyReferenceType = (): void => {
+    elements.u8(valueType(reader, 'an element segment'));
   };
   const copyIndex = (): void => {
     elements.u32(reader.u32());
@@ -1377,17 +1468,17 @@ function shiftElementFunctions(payload: Uint8Array, context: RewriteContext): Ui
         copyExpressions();
         break;
       case 5: // passive, reference type then expressions
-        copyByte();
+        copyReferenceType();
         copyExpressions();
         break;
       case 6: // active, explicit table index, reference type then expressions
         copyIndex();
         copyExpression();
-        copyByte();
+        copyReferenceType();
         copyExpressions();
         break;
       case 7: // declarative, reference type then expressions
-        copyByte();
+        copyReferenceType();
         copyExpressions();
         break;
       default:
@@ -1440,7 +1531,7 @@ function rewriteCodeSection(payload: Uint8Array, context: RewriteContext): CodeR
     const localGroups = locals.u32();
     for (let group = 0; group < localGroups; group += 1) {
       locals.u32(); // how many locals this group declares
-      locals.u8(); // their value type
+      valueType(locals, `the locals of function ${definedFunctionIndex}`);
     }
     const localsEnd = bodyStart + locals.offset;
     const probes = context.probes;

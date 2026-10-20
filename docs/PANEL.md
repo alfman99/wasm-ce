@@ -2,7 +2,7 @@
 
 The panel is the same bridge an MCP client talks to, with a human at the keyboard. Every call it
 makes goes through the service worker's `wasmcheat.panel.call` family, which reuses the WebSocket
-dispatcher — so frame routing, worker routing and the audit log behave identically. A panel is a
+dispatcher, so frame routing, worker routing and the audit log behave identically. A panel is a
 front end, not a separate implementation.
 
 Open it with DevTools on the target tab → **WasmCheat**. The panel is bound to that tab: there is no
@@ -18,22 +18,22 @@ tab picker, because the tab you are inspecting is the tab you mean.
 | **Now** | `Foundry · w1 · 0x408`. Tab, then instance, then the address in the forms. Updates as you click. It answers "what am I about to write to?" |
 | `bridge` pill | The extension's WebSocket to the MCP server: `bridge live`, `bridge offline (retrying)`, `token refused`, `waiting for pairing`. |
 | `tab-state` pill | `this tab`: the panel targets the tab it lives on. |
-| `agent` pill | `agent ready`, or `agent unreachable`. |
-| Steps strip | `1 Attach`, `2 Scan for a value`, `3 Change it`. The current step is outlined, so the strip tells you where you are rather than listing three links. |
+| `agent` pill | `agent ready`, `agent ready · scripts blocked` (the page's CSP forbids hook bodies, so use a declarative fallback), or `not attached yet`. |
+| Steps strip | `1 Attach to this tab`, `2 Scan for a value`, `3 Change it`. The current step is outlined, so the strip tells you where you are rather than listing three links. |
 | **Help** / **Theme** | The same help sheet as <kbd>?</kbd>, and a light/dark switch that is remembered. |
 
-The three chips under the header are the workflow: **1 Attach**, **2 Scan for a value**,
+The three chips under the header are the workflow: **1 Attach to this tab**, **2 Scan for a value**,
 **3 Change it**. Each jumps to the card that does that job.
 
 **Attach** is the whole setup: it installs the page agent (reloading the tab once if the page
 started before the extension), fills the Instances table, and quotes **Diagnose** when the table is
-empty — so the next step is in front of you instead of in a doc. There is nothing to approve.
+empty, so the next step is in front of you instead of in a doc. There is nothing to approve.
 
 ## Cards
 
 The first screen is the loop: Instances, Scan, Text scan, Found, Reads / writes, Freeze,
-Watch, Bookmarks and Memory View. Everything else — Watchpoints, Patches, Hooks, Pointers, Speed
-hack, Workers, Saved scans, Audit and the raw console — is one click away under **Advanced**, which
+Watch, Bookmarks and Memory View. Everything else (Watchpoints, Patches, Hooks, Pointers, Speed
+hack, Workers, Saved scans, Audit and the raw console) is one click away under **Advanced**, which
 is collapsed until you need it.
 
 Every card is a set of forms over one page method; the MCP column names the tool that does the same
@@ -60,7 +60,7 @@ thing, so a human and an agent are never using different mechanisms.
 | **Saved scans** | Candidate lists kept in the page's `sessionStorage`, so a reload does not lose the narrowing. | `wasmcheat_saved` |
 | **Bookmarks** | Labelled addresses kept in `localStorage`. | `wasmcheat_bookmark` |
 | **Audit** | Every change made through the extension, from the panel or from an agent. | `wasmcheat_audit` |
-| **Raw console and events** | Any page method with JSON parameters, plus a live log of bridge and page events with **Pause**. | — |
+| **Raw console and events** | Any page method with JSON parameters, plus a live log of bridge and page events with **Pause**. | None |
 
 ## Shortcuts
 
@@ -76,7 +76,7 @@ Shortcuts are ignored while you are typing in a field, so `t` in a value box is 
 ## Addresses
 
 `w1:0x408` is instance `w1` at byte offset `0x408`. `0x408` alone means "the instance currently in
-the forms" — the panel fills it in for you. Inside workers the same shape carries the realm:
+the forms"; the panel fills it in for you. Inside workers the same shape carries the realm:
 `k1-1:0x408` is instance 1 of worker `k1`, and `k1n1-1:0x408` is a worker started by `k1`.
 
 ## Habits worth keeping
@@ -97,7 +97,7 @@ the forms" — the panel fills it in for you. Inside workers the same shape carr
 | Panel says `no tab attached` | DevTools must be open on a web page; extension pages and `chrome://` tabs cannot be inspected |
 | `NO_AGENT` in an output block | Press **Attach** (or **Reload & attach** when the game starts on a click) |
 | `NO_AGENT` | **Detach**, then **Attach**; if it repeats, **Reload & attach** |
-| Instances empty | **Diagnose**; all-zero call counts mean the module was compiled before the agent — reload and attach |
+| Instances empty | **Diagnose**; all-zero call counts mean the module was compiled before the agent; reload and attach |
 | A hook call returns `HOOK_EVAL_BLOCKED` | The page forbids `new Function`; use a declarative fallback |
 | `freeze` does not stick | The app rewrites the value outside the 16 ms pass, or the address is a copy; try the mirror address a scan also found |
 | Watchpoint status says `installed: false` | The module was already compiled; the panel reloads to arm it, so retry and let the reload finish |

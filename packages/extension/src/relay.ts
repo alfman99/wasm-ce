@@ -53,8 +53,13 @@ try {
 if (!(window as unknown as PageAgentGlobal)[RELAY_FLAG]) {
   (window as unknown as PageAgentGlobal)[RELAY_FLAG] = true;
 
+  /**
+   * The page agent mints the channel id (crypto.randomUUID) and the first hello or ready of this
+   * document fixes it; a later one with another id is ignored, and results and events must carry it.
+   * This is not secrecy: the page shares this window, so its own scripts (MAIN world) can read every
+   * message, id included. It stops cross-talk and a page script answering a call it was never sent.
+   */
   let channelId: string | null = null;
-  let nextId = 1;
   const pending = new Map<string, Pending>();
   const channelWaiters: Array<() => void> = [];
 
@@ -79,11 +84,14 @@ if (!(window as unknown as PageAgentGlobal)[RELAY_FLAG]) {
     if (!data || data.source !== 'wasmcheat-page') return;
 
     if ((data.type === 'hello' || data.type === 'ready') && data.channelId) {
+      if (channelId !== null && data.channelId !== channelId) return;
       channelId = data.channelId;
       while (channelWaiters.length > 0) channelWaiters.shift()!();
       if (data.type === 'ready') announceAttachment(data.channelId);
       return;
     }
+
+    if (channelId === null || data.channelId !== channelId) return;
 
     if (data.type === 'event' && typeof data.event === 'string') {
       forwardEvent(data.event, data.data);
@@ -165,7 +173,9 @@ if (!(window as unknown as PageAgentGlobal)[RELAY_FLAG]) {
 
   async function call(method: string, params: unknown): Promise<unknown> {
     const channel = await ensureChannel();
-    const id = String(nextId++);
+    // Random, not sequential, so a result cannot be posted for a call before it was made.
+    // getRandomValues, not randomUUID: plain http pages are not a secure context.
+    const id = Array.from(crypto.getRandomValues(new Uint32Array(4)), (n) => n.toString(36)).join('');
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);

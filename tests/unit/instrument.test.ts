@@ -6,6 +6,7 @@ import {
   buildLoadModule,
   buildOpcodeModule,
   buildPatchModule,
+  buildRawModule,
   buildSimdLaneModule,
   buildSimdModule,
   buildStartModule,
@@ -198,6 +199,17 @@ function typeSectionCount(bytes: Uint8Array): number {
     offset = end;
   }
   return 0;
+}
+
+/** A short ASCII name as the binary format encodes it: length byte, then the characters. */
+function ascii(value: string): number[] {
+  return [value.length, ...Array.from(value, (character) => character.charCodeAt(0))];
+}
+
+/** One code-section entry: size, then the local groups and instructions it was given, then `end`. */
+function codeBody(locals: number[], instructions: number[]): number[] {
+  const body = [...locals, ...instructions, 0x0b];
+  return [body.length, ...body];
 }
 
 function captureRejection(run: () => unknown): BridgeError {
@@ -684,5 +696,123 @@ describe('instrumentModule', () => {
     expect(exports.flag()).toBe(2.5);
     expect(exports.big()).toBe(-9000000000n);
     expect(instrumented.patchedFunctions).toEqual([3, 5]);
+  });
+
+  it('puts the flag after imported globals instead of on top of one', () => {
+    // store_at(addr, value) over an imported memory, next to an imported mutable i32 global.
+    const instrumented = instrumentModule(
+      buildRawModule([
+        [1, [0x01, 0x60, 0x02, 0x7f, 0x7f, 0x00]],
+        [2, [0x02, ...ascii('env'), ...ascii('g'), 0x03, 0x7f, 0x01, ...ascii('env'), ...ascii('mem'), 0x02, 0x00, 0x01]],
+        [3, [0x01, 0x00]],
+        [7, [0x01, ...ascii('store_at'), 0x00, 0x00]],
+        [10, [0x01, ...codeBody([0x00], [0x20, 0x00, 0x20, 0x01, 0x36, 0x02, 0x00])]],
+      ]),
+      { reads: false },
+    );
+    const g = new WebAssembly.Global({ value: 'i32', mutable: true }, 1234);
+    const calls: number[] = [];
+    const instance = new WebAssembly.Instance(new WebAssembly.Module(instrumented.bytes), {
+      env: { g, mem: new WebAssembly.Memory({ initial: 1 }) },
+      __wasmcheat: { on_store: (func: number) => calls.push(func) },
+    });
+    const exports = exportsOf<{ store_at(addr: number, value: number): void; __wc_arm(flags: number): void }>(
+      instance,
+    );
+
+    exports.store_at(0, 7);
+    expect(calls).toEqual([]);
+    exports.__wc_arm(1);
+    exports.store_at(0, 7);
+    expect(g.value).toBe(1234);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('refuses a typed reference local instead of reading its heap type as an opcode', () => {
+    // One local of `(ref null 0)`: 0x63 then the heap type, which a one-byte read would leave behind.
+    const error = captureRejection(() =>
+      instrumentModule(
+        buildRawModule([
+          [1, [0x01, 0x60, 0x00, 0x00]],
+          [3, [0x01, 0x00]],
+          [10, [0x01, ...codeBody([0x01, 0x01, 0x63, 0x00], [])]],
+        ]),
+      ),
+    );
+
+    expect(error.code).toBe('UNSUPPORTED');
+    expect(error.message).toContain('typed reference');
+  });
+
+  it('decodes a memarg that names memory 0 explicitly', () => {
+    // i32.load with alignment 0x42 (bit 6: a memory index follows), memory 0, offset 4.
+    const instrumented = instrumentModule(
+      buildRawModule([
+        [1, [0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f]],
+        [3, [0x01, 0x00]],
+        [5, [0x01, 0x00, 0x01]],
+        [7, [0x01, ...ascii('f'), 0x00, 0x00]],
+        [10, [0x01, ...codeBody([0x00], [0x20, 0x00, 0x28, 0x42, 0x00, 0x04])]],
+      ]),
+    );
+    const { instance, reads } = instantiateModule(instrumented);
+    const exports = exportsOf<{ f(addr: number): number; __wc_arm(flags: number): void }>(instance);
+
+    exports.__wc_arm(1);
+    expect(exports.f(8)).toBe(0);
+    expect(instrumented.readCount).toBe(1);
+    expect(reads).toEqual([{ addr: 12, func: functionIndex(instrumented, 'f') }]);
+  });
+
+  it('refuses to instrument a module twice', () => {
+    const error = captureRejection(() => instrumentModule(instrumentModule(buildStoreModule()).bytes));
+
+    expect(error.code).toBe('UNSUPPORTED');
+    expect(error.message).toContain('already instrumented');
+  });
+
+  it('keeps the name section pointing at the function it names', () => {
+    // run() traps; the name section calls function 0 "victim", and the engine's stack trace uses it.
+    const instrumented = instrumentModule(
+      buildRawModule([
+        [1, [0x01, 0x60, 0x00, 0x00]],
+        [3, [0x01, 0x00]],
+        [7, [0x01, ...ascii('run'), 0x00, 0x00]],
+        [10, [0x01, ...codeBody([0x00], [0x00])]],
+        [0, [...ascii('name'), 0x01, 0x09, 0x01, 0x00, ...ascii('victim')]],
+      ]),
+    );
+    const exports = exportsOf<{ run(): void }>(instantiateModule(instrumented).instance);
+
+    let stack = '';
+    try {
+      exports.run();
+    } catch (error) {
+      stack = String((error as Error).stack);
+    }
+    expect(stack).toContain('victim');
+  });
+
+  it('names a table in the refusal of a 64-bit table import', () => {
+    const error = captureRejection(() =>
+      instrumentModule(
+        buildRawModule([
+          [1, [0x00]],
+          [2, [0x01, ...ascii('env'), ...ascii('t'), 0x01, 0x70, 0x04, 0x01]],
+        ]),
+      ),
+    );
+
+    expect(error.code).toBe('UNSUPPORTED');
+    expect(error.message).toContain('64-bit table');
+  });
+
+  it('refuses an i64 stub value that is not a finite number', () => {
+    const error = captureRejection(() =>
+      instrumentModule(buildPatchModule(), { patches: [{ byName: 'big', mode: 'stub', value: Number.NaN }] }),
+    );
+
+    expect(error.code).toBe('UNSUPPORTED');
+    expect(error.message).toContain('NaN');
   });
 });

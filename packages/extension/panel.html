@@ -563,7 +563,7 @@
 
         <fieldset class="group group--wide" id="card-console">
           <legend>Raw console and events</legend>
-          <p class="hint">Any page method with JSON parameters, through the same approval gate and the same audit log as every other call.</p>
+          <p class="hint">Any page method with JSON parameters, through the same dispatcher and the same audit log as every other call.</p>
           <div class="row">
             <label class="field field--grow">
               <span>Method:</span>
@@ -615,13 +615,13 @@
           </div>
           <div class="sheet__body">
             <ol>
-              <li><b>Approve the tab.</b> Attach asks for permission once per tab and site. Nothing runs before you approve, and nothing runs after you revoke.</li>
+              <li><b>Attach.</b> The panel works on the tab you opened it on. Attach starts the page agent there; a page that loaded before the agent is reloaded once so its wasm is captured.</li>
               <li><b>Read the instance list.</b> Instances shows what Wasm modules the page loaded. Empty means the page has not started its game yet, or the game lives in a frame or worker; Diagnose in the Instances card says which.</li>
               <li><b>Scan.</b> Pick a type and a value you can see on screen, then First Scan. Play, watch the number change, type the new value and Next Scan. Repeat until one address is left.</li>
               <li><b>Change it.</b> Click the address, then Write, Freeze or Watch. Verify by reading the address back, not by trusting the page to redraw.</li>
             </ol>
 
-            <h3>The three numbers that matter</h3>
+            <h3>Three words to know</h3>
             <div class="sheet__grid">
               <div class="sheet__cell"><b>Address</b>A place in linear memory, written <code>w1:0x408</code>: instance, then byte offset. <code>k1n1-1:0x408</code> is an instance inside a nested worker.</div>
               <div class="sheet__cell"><b>Type</b>How many bytes and whether they are signed. A value that will not match is usually the wrong width: try i64 or f64 before deciding the address is wrong.</div>
@@ -640,11 +640,11 @@
               Every tool the MCP server exposes has a form here. Patches, watchpoints, hooks,
               pointers, workers, saved scans, the audit log and the raw console sit under
               <strong>Advanced</strong> at the bottom of the panel, one click away, because the loop
-              above is what ninety percent of a session needs.
+              above is what most sessions need.
             </p>
 
             <h3>When something is refused</h3>
-            <p><code>NEED_APPROVAL</code> means the human has not approved this tab yet. <code>NO_AGENT</code> means the page agent is not running; Detach then Attach, or use Reload &amp; attach. <code>HOOK_EVAL_BLOCKED</code> means the page forbids <code>new Function</code>, so use a declarative fallback instead of a hook body.</p>
+            <p><code>NO_AGENT</code> means the page agent is not running; Detach then Attach, or use Reload &amp; attach. <code>HOOK_EVAL_BLOCKED</code> means the page forbids <code>new Function</code>, so use a declarative fallback instead of a hook body.</p>
 
             <h3>Full documentation</h3>
             <p><a href="https://github.com/alfman99/wasm-ce/blob/main/docs/PANEL.md" target="_blank" rel="noreferrer">Panel tour</a> · <a href="https://github.com/alfman99/wasm-ce/blob/main/docs/QUICKSTART.md" target="_blank" rel="noreferrer">Quick start</a> · <a href="https://github.com/alfman99/wasm-ce/blob/main/docs/AGENT_GUIDE.md" target="_blank" rel="noreferrer">Agent guide</a> · <a href="https://github.com/alfman99/wasm-ce/blob/main/README.md" target="_blank" rel="noreferrer">README</a></p>

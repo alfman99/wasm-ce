@@ -144,6 +144,8 @@ export class PageRuntime {
     );
     this.trace.onHit((hit) => this.emitEvent('trace.hit', hit));
     this.patches = new PatchStore(() => this.refreshInstrumenter());
+    // Patches restored from a previous document never fired `onWiringChange`, so wire them now.
+    this.refreshInstrumenter();
   }
 
   /**
@@ -275,21 +277,16 @@ export class PageRuntime {
    */
   async listInstances(): Promise<InstanceInfo[]> {
     const merged = this.localInstances();
-    for (const channel of this.workers.values()) {
-      if (channel.terminated) continue;
-      try {
-        const instances = (await this.workerCall(
-          channel.id,
-          'page.listInstances',
-          {},
-          WORKER_PROBE_TIMEOUT_MS,
-        )) as InstanceInfo[];
-        channel.instances = instances.length;
-        merged.push(...instances);
-      } catch {
-        // One unreachable worker must not blank the listing for the realm that does answer.
-      }
-    }
+    const channels = this.liveWorkers();
+    const answers = await Promise.allSettled(
+      channels.map((channel) => this.workerCall(channel.id, 'page.listInstances', {}, WORKER_PROBE_TIMEOUT_MS)),
+    );
+    // One unreachable worker must not blank the listing for the realm that does answer.
+    answers.forEach((answer, i) => {
+      if (answer.status !== 'fulfilled' || !Array.isArray(answer.value)) return;
+      channels[i]!.instances = answer.value.length;
+      merged.push(...(answer.value as InstanceInfo[]));
+    });
     // `latest` means newest by creation time, and workers are visited after the page realm.
     return merged.sort((a, b) => a.createdAt - b.createdAt);
   }
@@ -307,30 +304,29 @@ export class PageRuntime {
 
   /** Workers this agent bootstrapped, with a freshly probed instance count. */
   async listWorkers(): Promise<WorkerInfo[]> {
-    const infos: WorkerInfo[] = [];
-    for (const channel of this.workers.values()) {
-      if (channel.terminated) continue;
-      try {
-        const instances = await this.workerCall(
-          channel.id,
-          'page.listInstances',
-          {},
-          WORKER_PROBE_TIMEOUT_MS,
-        );
-        if (Array.isArray(instances)) channel.instances = instances.length;
-      } catch {
+    // Probed in parallel: a pthread-pool worker parked in `Atomics.wait` never answers, and one
+    // timeout per worker in sequence would outlast the bridge's own deadline.
+    const listed = await Promise.all(
+      this.liveWorkers().map(async (channel) => {
+        const [instances, nested] = await Promise.allSettled([
+          this.workerCall(channel.id, 'page.listInstances', {}, WORKER_PROBE_TIMEOUT_MS),
+          this.workerCall(channel.id, 'page.listWorkers', {}, WORKER_PROBE_TIMEOUT_MS),
+        ]);
         // A worker that never ran the agent keeps its last known count and stays listed.
-      }
-      infos.push({ id: channel.id, url: channel.url, type: channel.type, instances: channel.instances });
-      // A worker's own workers: their ids already carry the chain (`k1n1`), so they need no prefixing.
-      try {
-        const nested = await this.workerCall(channel.id, 'page.listWorkers', {}, WORKER_PROBE_TIMEOUT_MS);
-        if (Array.isArray(nested)) infos.push(...(nested as WorkerInfo[]));
-      } catch {
-        // Unreachable child: the parent stays listed, which is enough to explain the gap.
-      }
-    }
-    return infos;
+        if (instances.status === 'fulfilled' && Array.isArray(instances.value)) channel.instances = instances.value.length;
+        const info: WorkerInfo = { id: channel.id, url: channel.url, type: channel.type, instances: channel.instances };
+        // A worker's own workers: their ids already carry the chain (`k1n1`), so they need no prefixing.
+        // An unreachable child leaves the parent listed, which is enough to explain the gap.
+        return nested.status === 'fulfilled' && Array.isArray(nested.value)
+          ? [info, ...(nested.value as WorkerInfo[])]
+          : [info];
+      }),
+    );
+    return listed.flat();
+  }
+
+  private liveWorkers(): WorkerChannel[] {
+    return [...this.workers.values()].filter((channel) => !channel.terminated);
   }
 
   /** Called by the Worker wrapper for every worker whose bootstrap it installed. */
@@ -351,6 +347,11 @@ export class PageRuntime {
       link.post({ __wasmcheat: 'hello' });
     } catch {
       // A worker that died during startup simply never answers; the probe times out.
+    }
+    // A worker started after a speed change would otherwise run its clock at 1x. The message waits in
+    // the worker's queue until its agent boots, so a timeout here does not mean it was lost.
+    if (this.speed.scale !== 1) {
+      this.workerCall(link.id, 'page.speed.set', { scale: this.speed.scale }, WORKER_PROBE_TIMEOUT_MS).catch(() => undefined);
     }
   }
 
@@ -388,7 +389,6 @@ export class PageRuntime {
     entry.resolve(message.result);
   }
 
-  /** Forward one page method into a worker realm and wait for its answer. */
   /** Applies a speed scale here and in every worker realm this page owns. */
   private async setSpeedEverywhere(scale: number): Promise<SpeedStatus> {
     const status = this.speed.set(scale);
@@ -404,6 +404,7 @@ export class PageRuntime {
     return status;
   }
 
+  /** Forward one page method into a worker realm and wait for its answer. */
   async workerCall(
     workerId: string,
     method: string,
@@ -445,17 +446,23 @@ export class PageRuntime {
     const why = reason ? `cannot reach it: ${reason}` : '';
     return new BridgeError(
       'NO_INSTANCE',
-      `worker ${workerId} (${channel.url}) is gone${why ? ` (${why})` : ''}; its instances no longer exist — reload the tab`,
+      `worker ${workerId} (${channel.url}) is gone${why ? ` (${why})` : ''}; its instances no longer exist. Reload the tab`,
       { workerId, url: channel.url },
     );
   }
 
   // ---------------------------------------------------------------- memory
 
+  /**
+   * "latest" is how an address stays valid across the reloads real apps do: the id is resolved
+   * at call time instead of being baked into a string the agent remembered.
+   */
+  private resolveInstanceId(instanceId: string): string {
+    return instanceId === 'latest' ? this.registry.list().at(-1)?.id ?? instanceId : instanceId;
+  }
+
   private access(instanceId: string): { tracked: TrackedInstance; access: MemoryAccess } {
-    // "latest" is how an address stays valid across the reloads real apps do: the id is resolved
-    // at call time instead of being baked into a string the agent remembered.
-    const resolved = instanceId === 'latest' ? this.registry.list().at(-1)?.id ?? instanceId : instanceId;
+    const resolved = this.resolveInstanceId(instanceId);
     const tracked = this.registry.get(resolved);
     const instanceId2 = resolved;
     if (!tracked) {
@@ -567,11 +574,13 @@ export class PageRuntime {
   freezeSet(params: { address: Address; type: ValueType; value: number }): FreezeEntry {
     const { access } = this.access(params.address.instanceId);
     access.read(params.address.offset, params.type); // validates range up front
+    // Pinned once: a timer that re-resolved "latest" every tick would silently move to a new instance.
+    const address = { ...params.address, instanceId: this.resolveInstanceId(params.address.instanceId) };
     const id = `f${this.nextId++}`;
     const record: FreezeRecord = {
       id,
-      address: params.address,
-      instanceId: params.address.instanceId,
+      address,
+      instanceId: address.instanceId,
       offset: params.address.offset,
       type: params.type,
       value: params.value,
@@ -620,10 +629,12 @@ export class PageRuntime {
   watchAdd(params: { address: Address; type: ValueType }): WatchEntry {
     const { access } = this.access(params.address.instanceId);
     const current = access.read(params.address.offset, params.type);
+    // Pinned once, like a freeze: "latest" must not retarget the watch when a new instance appears.
+    const address = { ...params.address, instanceId: this.resolveInstanceId(params.address.instanceId) };
     const id = `v${this.nextId++}`;
     const record: WatchRecord = {
       id,
-      address: params.address,
+      address,
       offset: params.address.offset,
       type: params.type,
       lastValue: current,
@@ -667,7 +678,8 @@ export class PageRuntime {
         try {
           const { access } = this.access(watch.address.instanceId);
           const current = access.read(watch.offset, watch.type);
-          if (current !== watch.lastValue) {
+          // Object.is: a NaN that stays NaN is not a change, and NaN !== NaN would log one every tick.
+          if (!Object.is(current, watch.lastValue)) {
             const event: WatchEvent = {
               watchId: watch.id,
               address: watch.address,
@@ -775,16 +787,23 @@ export class PageRuntime {
   /** Session objects live in the realm that minted them; the list output is the merged view. */
   private async mergeWorkers(method: string, params: unknown): Promise<unknown[]> {
     const merged = this.local(method, params) as unknown[];
-    for (const channel of this.workers.values()) {
-      if (channel.terminated) continue;
-      try {
-        const fromWorker = await this.workerCall(channel.id, method, params, WORKER_PROBE_TIMEOUT_MS);
-        if (Array.isArray(fromWorker)) merged.push(...fromWorker);
-      } catch {
-        // One unreachable worker must not hide the entries this realm owns.
-      }
+    const answers = await Promise.allSettled(
+      this.liveWorkers().map((channel) => this.workerCall(channel.id, method, params, WORKER_PROBE_TIMEOUT_MS)),
+    );
+    // One unreachable worker must not hide the entries this realm owns; order stays the workers' order.
+    for (const answer of answers) {
+      if (answer.status === 'fulfilled' && Array.isArray(answer.value)) merged.push(...answer.value);
     }
     return merged;
+  }
+
+  /**
+   * Features that keep state in Web Storage, which a worker global does not have. Saying so beats the
+   * confusing storage error (or, for a watchpoint, the silent loss at reload) the call would produce.
+   */
+  private refuseInWorker(feature: string, reason: string): void {
+    if (this.workerId === null) return;
+    throw new BridgeError('UNSUPPORTED', `${feature} is not available for worker instances yet: ${reason}`);
   }
 
   /** Methods answered by this realm alone. */
@@ -814,14 +833,17 @@ export class PageRuntime {
       case 'page.saved.list':
         return listSaved();
       case 'page.saved.save':
+        this.refuseInWorker('saving a scan', 'a worker has no sessionStorage to keep it in');
         return this.savedSave(p);
       case 'page.saved.open':
+        this.refuseInWorker('opening a saved scan', 'a worker has no sessionStorage to keep it in');
         return this.savedOpen(p);
       case 'page.saved.delete':
         return deleteSaved((p as unknown as { name?: unknown })?.name);
       case 'page.bookmark.list':
         return listBookmarks();
       case 'page.bookmark.add':
+        this.refuseInWorker('bookmarking an address', 'a worker has no localStorage to keep the address list in');
         return addBookmark(p as { label: unknown; address: unknown; type?: unknown; note?: unknown });
       case 'page.bookmark.remove':
         return removeBookmark((p as unknown as { id?: unknown })?.id);
@@ -850,6 +872,10 @@ export class PageRuntime {
       case 'page.hook.remove':
         return this.hookRemove(p);
       case 'page.trace.arm':
+        this.refuseInWorker(
+          'a watchpoint (find_writes/find_reads)',
+          'a worker has no sessionStorage, so the watchpoint cannot survive the reload that installs it',
+        );
         return this.trace.arm(p as unknown as TraceArmOptions);
       case 'page.trace.stop':
         return this.trace.stop();

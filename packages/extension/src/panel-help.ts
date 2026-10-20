@@ -220,7 +220,7 @@ function crumbText(): { title: string; instance: string; address: string } {
   const target = document.getElementById('target')?.textContent?.trim() ?? '';
   const instance = (document.getElementById('scan-instance') as HTMLInputElement | null)?.value ?? '';
   const address = (document.getElementById('mem-address') as HTMLInputElement | null)?.value ?? '';
-  // "Foundry — demo target · http://…" -> "Foundry": the crumb names the page you are looking at,
+  // "Foundry · WasmCheat demo target · http://…" -> "Foundry": the crumb names the page you are looking at,
   // not the URL you already know.
   const name = target.replace(/^tab \d+ · /, '').split(' · ')[0]?.trim() ?? '';
   const title = name.length > 42 ? `${name.slice(0, 41)}…` : name;

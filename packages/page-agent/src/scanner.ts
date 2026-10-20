@@ -48,6 +48,11 @@ interface CompareOptions {
   value2?: number;
   tolerance: number;
   isFloat: boolean;
+  /**
+   * Relative float error for increased-by/decreased-by when the caller set no tolerance: the
+   * rounding in `current - previous` scales with the operands, not with the (small) delta.
+   */
+  relative?: number;
 }
 
 function matchesTarget(current: number, options: CompareOptions): boolean {
@@ -96,15 +101,21 @@ export function satisfies(mode: ScanMode, current: number, previous: number | un
       return (previous === undefined || current < previous) && matchesTarget(current, options);
     case 'increased-by': {
       if (previous === undefined || target === undefined) return true;
-      return current > previous && close(current - previous, Math.abs(target), options);
+      return current > previous && closeDelta(current - previous, Math.abs(target), current, previous, options);
     }
     case 'decreased-by': {
       if (previous === undefined || target === undefined) return true;
-      return current < previous && close(previous - current, Math.abs(target), options);
+      return current < previous && closeDelta(previous - current, Math.abs(target), current, previous, options);
     }
     default:
       return true;
   }
+}
+
+function closeDelta(delta: number, target: number, current: number, previous: number, options: CompareOptions): boolean {
+  if (!options.isFloat) return delta === target;
+  const scaled = Math.max(Math.abs(current), Math.abs(previous)) * (options.relative ?? 0);
+  return Math.abs(delta - target) <= Math.max(options.tolerance, scaled);
 }
 
 export class ScanStore {
@@ -227,7 +238,9 @@ export class ScanStore {
     const values = new Float64Array(Math.max(session.count, 1));
     let count = 0;
 
-    const compare: CompareOptions = { value: options.value, value2: options.value2, tolerance, isFloat };
+    // A few ulps of the larger operand (f32 epsilon is 2^-23); only when the caller set no tolerance.
+    const relative = options.tolerance !== undefined || !isFloat ? 0 : session.type === 'f32' ? 2 ** -22 : 2 ** -50;
+    const compare: CompareOptions = { value: options.value, value2: options.value2, tolerance, isFloat, relative };
 
     for (let i = 0; i < session.count; i++) {
       const offset = session.addresses[i]!;
@@ -349,7 +362,11 @@ export function scanText(access: MemoryAccess, options: TextScanOptions): TextSc
 
   const haystack = access.readBytes(start, end - start);
   const folded = options.caseSensitive === false && encoding !== 'bytes';
-  if (folded) asciiLowerInPlace(haystack);
+  if (folded) {
+    asciiLowerInPlace(haystack);
+    // Both sides fold, or "Player" never matches. UTF-8 multibyte bytes are >= 0x80 and stay as they are.
+    asciiLowerInPlace(needle);
+  }
 
   const maxResults = options.maxResults ?? DEFAULT_MAX_RESULTS;
   const matches: number[] = [];

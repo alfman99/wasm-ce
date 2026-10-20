@@ -575,6 +575,17 @@ export function buildOpcodeModule(instructions: number[]): Uint8Array<ArrayBuffe
   return Uint8Array.from(module.bytes);
 }
 
+/**
+ * A module from raw section payloads, in the order given, for the encodings the builders above
+ * never produce. Each entry is a section id and its payload bytes.
+ */
+export function buildRawModule(sections: [id: number, payload: number[]][]): Uint8Array<ArrayBuffer> {
+  const module = new Writer();
+  module.raw([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+  for (const [id, payload] of sections) module.section(id, new Writer().raw(payload));
+  return Uint8Array.from(module.bytes);
+}
+
 /** Encodes a code section whose bodies all declare no locals. */
 function codeSection(bodies: number[][]): Writer {
   const code = new Writer().u32(bodies.length);

@@ -794,7 +794,7 @@ test('the DevTools panel drives the tab without an agent', async () => {
   await panel.locator('#ptr-max-offset').fill('256');
   await panel.locator('#ptr-scan').click();
   const chains = panel.locator('#ptr-out');
-  await expect(chains).toContainText(/chain\(s\), shortest first/);
+  await expect(chains).toContainText(/chains?, shortest first/);
   await expect(chains).toContainText('-> w1:0x408');
   // The same form resolves a chain, which is how a chain found after a reload gets verified.
   const paste = /paste "([^"]+)"/.exec((await chains.textContent()) ?? '');

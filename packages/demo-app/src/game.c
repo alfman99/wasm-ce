@@ -2,7 +2,7 @@
 //
 // Built with a plain `clang --target=wasm32` and loaded by hand (see src/demo.js) instead of
 // through Emscripten's glue: the glue caches `wasmExports['get_score']` on first call, which
-// would hide the very thing this project demonstrates — patching an export on a live instance.
+// would hide the very thing this project demonstrates: patching an export on a live instance.
 //
 // `volatile` keeps the compiler from promoting these to wasm globals; they must sit in the
 // linear memory a Cheat Engine-style scanner can walk.

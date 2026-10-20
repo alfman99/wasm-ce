@@ -356,7 +356,8 @@ export class WasmRegistry {
       const module = typed.module;
       if (isBufferSource(source)) rememberModuleBytesSafe(module, toBytes(source));
       registerInAll(typed.instance, module, instrumented.imports ?? null, 'instantiate', instrumented.plans);
-      return typed;
+      // A caller that passed a Module expects an Instance back; only the rewrite turned it into bytes.
+      return source instanceof Real.Module ? typed.instance : typed;
     }
 
     async function patchedInstantiateStreaming(

@@ -1,10 +1,10 @@
 # Status: what works, what is known-broken, what is next
 
-Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`):
+Last verified on 2026-10-20 (`npm run build`, then the checks below):
 
 - `npm ci` clean, `npm run build` 0 errors, `npm run typecheck` 0 errors
-- `npx vitest run` **123 passed** (13 files)
-- `npx playwright test` **22 passed, 0 skipped** (~22 s, real Chromium, real extension, no mocks)
+- `npx vitest run` **147 passed** (15 files)
+- `npx playwright test` **22 passed, 0 skipped** (~28 s, real Chromium, real extension, no mocks)
 
 ## Proven end to end (real browser, real tab)
 
@@ -37,19 +37,20 @@ Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`
   the page realm and in every worker realm (0–20x, and 0 freezes the clock); e2e measures score
   growth at 4x against 1x, at 0, and after reset; a unit test proves the scale reaches workers.
 - Memory viewer in the DevTools panel: 16 bytes per row, pan earlier/later, ASCII gutter, **Follow
-  pointer** (reads a u32 and jumps), and clicking any address — a scan hit, a bookmark, a watch
-  event — jumps the dump to it. Proven in the panel e2e.
+  pointer** (reads a u32 and jumps), and clicking any address (a scan hit, a bookmark, a watch
+  event) jumps the dump to it. Proven in the panel e2e.
 - Cross-origin iframes: `all_frames`, per-frame relay, frame resolution by instance count, e2e
   against `framed.html` (a genuinely cross-origin `localhost` vs `127.0.0.1` embed).
 - DevTools panel (`packages/extension/dist` → DevTools → WasmCheat): every tool as a form, a raw
   RPC console, a live event log and a live audit view, sharing one dispatcher with the WebSocket.
 - Live Playables game ("My Mini Mart", cross-origin iframe): found the coin counter as **i64**, froze
-  two mirrored copies at 99,999,999 and the game showed it. See "Two WebAssembly facts" in the
+  two mirrored copies at 99,999,999 and the game showed it. See "Three WebAssembly facts" in the
   README for why i32 scans missed it.
 - Bridge authentication: token minted into `$WASMCHEAT_HOME/token` (or `WASMCHEAT_TOKEN`), required
   in `bridge.hello`, wrong token closed with `1008 bad bridge token`. The extension pairs for it on
-  first connect (`bridge.pair`, answered only while no live socket is authenticated); pairing is off
-  when the token is pinned or `WASMCHEAT_PAIRING=off`. A paired token is stored with its source, so
+  first connect (`bridge.pair`, refused until the authenticated socket has closed); pairing is off
+  when the token is pinned or `WASMCHEAT_PAIRING=off`. A web-page `Origin` is refused at the
+  upgrade, and an unauthenticated socket can neither answer requests nor send events or audit lines. A paired token is stored with its source, so
   the popup/panel can say `paired` instead of asking for a paste.
 - Attaching to a page that predates the agent reloads that tab once, on its own, and reports
   `autoReloaded` so an agent knows every address it had is stale.
@@ -58,6 +59,14 @@ Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`
   replaced by a reload.
 
 ## Implemented, with honest limits
+
+- **Worker instances (`k1-…`) have no storage.** A worker realm has no `sessionStorage` or
+  `localStorage`, so saving or opening a saved scan, adding a bookmark, and `find_writes` /
+  `find_reads` on a worker instance return `UNSUPPORTED` with a sentence saying why, instead of
+  failing silently. Scan, read, write, freeze, watch and the speed hack work in workers.
+- **Shared memories are refused by the rewriter**, so watchpoints and patches do not reach an
+  Emscripten `-pthread` build. Typed function references (`ref null $t` locals, GC types) are refused
+  with `UNSUPPORTED` rather than rewritten.
 
 - **Atomics / SIMD probing**: `0xFE` loads/stores and `0xFD` v128 memory ops are probed; v128 lane
   loads are reported through `unprobed[]` instead of probed. Read-modify-write atomics throw
@@ -76,11 +85,11 @@ Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`
 
 ## Environment limits (not gaps in the tool)
 
-1. **SharedArrayBuffer / `pthread` threads** — worker realms themselves are reached with
+1. **SharedArrayBuffer / `pthread` threads.** Worker realms themselves are reached with
    `postMessage`, which every page has. What is untested is a page that shares one memory between
    threads: `SharedArrayBuffer` requires cross-origin isolation (COOP/COEP) and a pthread build, and
    neither the demo nor the suite exercises it. Single-realm atomics loads/stores are probed.
-2. **Speed hack scope** — `performance.now`, `Date.now` and `requestAnimationFrame` are wrapped in the
+2. **Speed hack scope.** `performance.now`, `Date.now` and `requestAnimationFrame` are wrapped in the
    page realm *and* in every worker realm (the scale is forwarded down the chain), so a worker game
    speeds up too. A game that measures time with `performance.timeOrigin` arithmetic, or with a
    `Date.now` captured before the agent installed, keeps the real clock.
@@ -92,6 +101,9 @@ Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`
 - Coins, currencies and scores in engine-built games are usually `i64` or `f64`, and often mirrored in
   two places. Scan, narrow to the candidates, freeze them all, then confirm by read.
 - Keep the popup or the DevTools panel open during a long session; either one pins the service worker.
+  Without them, a 30-second alarm wakes the worker and redials the bridge.
 - Never arm a watchpoint and reload by hand: `wasmcheat_find_writes` reloads for you, and the arm
-  intent is persisted in `sessionStorage` so the agent re-arms at `document_start`.
+  intent is persisted in `sessionStorage` so the agent re-arms at `document_start`. The extension
+  sends the arm only to the first document after it, on the same site, and forgets it after that,
+  on stop or clear, or when the page refuses it.
 - A scan is a snapshot of a moment: pause the game (or use delta modes) before trusting a hit list.

@@ -49,9 +49,10 @@ const FRAME_PROBE_TIMEOUT_MS = 1_500;
 /**
  * MV3 terminates an idle service worker after 30s. A tab that is still loading (or a wait for a
  * page reload during attach) looks exactly like idleness to Chrome, and the bridge would then find
- * no socket. Pinging a trivial extension API every 15s keeps the worker alive while work is pending.
+ * no socket. An alarm every 30s (Chrome's minimum period from 120; 116 to 119 round it up to a
+ * minute) wakes the worker and redials the bridge.
  */
-const KEEPALIVE_MS = 15_000;
+const KEEPALIVE_MS = 30_000;
 
 let socket: WebSocket | null = null;
 let reconnectDelay = RECONNECT_BASE_MS;
@@ -61,6 +62,13 @@ const attachedTabs = new Set<number>();
 const tabFrames = new Map<number, Map<number, string>>();
 /** tabId → the frame that owns the wasm, so page.* calls land in the right realm. */
 const activeFrame = new Map<number, number>();
+/**
+ * tabId → the top frame's documentId. A relay only announces when its document starts, so an
+ * announcement from frame 0 with a new id is a new top document (a reload or a navigation), and the
+ * frames of the old one are gone. `tabs.onUpdated` cannot say that: an iframe loading flips the
+ * tab's status to 'loading' too, and a Playables page re-creates its game frame on every ad break.
+ */
+const topDocument = new Map<number, string>();
 
 /**
  * The tab the popup should put first. In Chrome, opening the popup does not change the active tab, so
@@ -95,7 +103,24 @@ function originOf(url: string | undefined): string | null {
  * has to outlive the reload that creates that document. The relay announces itself at
  * document_start, which is where we put it back.
  */
-const pendingTraces = new Map<number, { address: string; type?: string; maxHits?: number; kind?: string }>();
+interface TraceOptions {
+  address: string;
+  type?: string;
+  maxHits?: number;
+  kind?: string;
+}
+/**
+ * The intent is consumed by the one reload it asked for: `armedIn` is the top document it was armed
+ * in (already armed directly), `document` the next top document, which gets it in every frame. A
+ * later document, or a document on another site, drops it instead of being watched unasked.
+ */
+interface PendingTrace {
+  options: TraceOptions;
+  origin: string | null;
+  armedIn?: string;
+  document?: string;
+}
+const pendingTraces = new Map<number, PendingTrace>();
 
 /**
  * Everything above is in memory, which an MV3 worker loses whenever Chrome suspends it — and a
@@ -105,14 +130,18 @@ const pendingTraces = new Map<number, { address: string; type?: string; maxHits?
  * The chosen frame is deliberately *not* persisted: which frame owns the wasm can change between
  * documents, and a restored answer from the previous document is worse than re-probing.
  */
-/** Restoring routing state is a storage read; a request that arrives first must wait for it. */
+/**
+ * Restoring routing state is a storage read. A request, a relay announcement or a tab event that
+ * arrives first must wait for it, or the restore overwrites what it recorded with older state.
+ */
 let sessionReady: Promise<void> = Promise.resolve();
 
 const SESSION_KEY = 'wasmcheat.session';
 interface SessionState {
   attached: number[];
   frames: Record<string, Record<string, string>>;
-  traces: Record<string, { address: string; type?: string; maxHits?: number; kind?: string }>;
+  documents: Record<string, string>;
+  traces: Record<string, PendingTrace>;
 }
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -126,6 +155,7 @@ function persistSession(): void {
       frames: Object.fromEntries(
         [...tabFrames].map(([tabId, frames]) => [String(tabId), Object.fromEntries(frames)]),
       ),
+      documents: Object.fromEntries(topDocument),
       traces: Object.fromEntries(pendingTraces),
     };
     void chrome.storage.session.set({ [SESSION_KEY]: state }).catch(() => undefined);
@@ -140,6 +170,7 @@ async function restoreSession(): Promise<void> {
     for (const [tabId, frames] of Object.entries(stored.frames ?? {})) {
       tabFrames.set(Number(tabId), new Map(Object.entries(frames).map(([id, url]) => [Number(id), url])));
     }
+    for (const [tabId, id] of Object.entries(stored.documents ?? {})) topDocument.set(Number(tabId), id);
     for (const [tabId, trace] of Object.entries(stored.traces ?? {})) pendingTraces.set(Number(tabId), trace);
   } catch {
     // A fresh window has no session state; nothing to restore.
@@ -314,7 +345,8 @@ const AUDIT_RING_MAX = 200;
 const panelPorts = new Set<chrome.runtime.Port>();
 
 chrome.runtime.onConnect.addListener((port) => {
-  if (port.name !== PANEL_PORT_NAME) return;
+  // Audit lines and page events are for the panel, not for a content script that asks by name.
+  if (port.name !== PANEL_PORT_NAME || !port.sender || !fromExtensionPage(port.sender)) return;
   panelPorts.add(port);
   port.onDisconnect.addListener(() => {
     panelPorts.delete(port);
@@ -359,8 +391,8 @@ function auditTail(params: { limit?: number } | undefined): { lines: unknown[]; 
     lines: auditLines.slice(0, limit),
     total: auditLines.length,
     note:
-      `Session-scoped: the ${auditLines.length} line(s) the MCP server reported since this extension connected, newest ` +
-      'first. The file on the host is authoritative — `node scripts/wasmcheat-cli.mjs audit <limit>` prints the full history.',
+      `Session-scoped: the ${count(auditLines.length, 'line')} the MCP server reported since this extension connected, newest ` +
+      'first. The file on the host is authoritative: `node scripts/wasmcheat-cli.mjs audit <limit>` prints the full history.',
   };
 }
 
@@ -394,7 +426,10 @@ function onBridgeEvent(event: string, data: unknown): void {
   if (event === Events.auditAppended) rememberAudit(data);
 }
 
-async function handleBridgeRequest(method: string, params: unknown): Promise<unknown> {
+/** Who asked: the MCP server records some calls itself, so the extension must not report them again. */
+type CallOrigin = 'bridge' | 'panel';
+
+async function handleBridgeRequest(method: string, params: unknown, origin: CallOrigin = 'bridge'): Promise<unknown> {
   await sessionReady;
   switch (method) {
     case 'ext.ping':
@@ -415,7 +450,7 @@ async function handleBridgeRequest(method: string, params: unknown): Promise<unk
     case 'ext.ensureAgent':
       return ensureAgent(params as { tabId: number; reload?: boolean; frameId?: number });
     case 'ext.call':
-      return callTab(params as { tabId: number; method: string; params?: unknown; timeoutMs?: number });
+      return callTab(params as { tabId: number; method: string; params?: unknown; timeoutMs?: number }, origin);
     case 'ext.detach':
       return detach(params as { tabId: number });
     case 'ext.reload':
@@ -469,9 +504,10 @@ async function detach(params: { tabId: number }): Promise<{ ok: true }> {
   attachedTabs.delete(params.tabId);
   activeFrame.delete(params.tabId);
   tabFrames.delete(params.tabId);
+  topDocument.delete(params.tabId);
   pendingTraces.delete(params.tabId);
   persistSession();
-  await reportAction(params.tabId, 'ext.detach', params, { ok: true }, undefined);
+  // Not reported from here: only the MCP server calls ext.detach, and it records the detach itself.
   return { ok: true };
 }
 
@@ -485,15 +521,25 @@ async function detach(params: { tabId: number }): Promise<{ ok: true }> {
  * with the old document — the agent asked for this reload, so it knows.
  */
 async function reloadTab(params: { tabId: number }): Promise<{ reloaded: true }> {
-  attachedTabs.delete(params.tabId);
+  forgetDocument(params.tabId);
   await chrome.tabs.reload(params.tabId);
   const ready = await waitFor(() => attachedTabs.has(params.tabId), 15_000);
   if (!ready) {
     throw new BridgeError('NO_AGENT', `tab ${params.tabId} did not re-attach after reload`);
   }
-  activeFrame.delete(params.tabId);
   await reportAction(params.tabId, 'ext.reload', params, { reloaded: true }, undefined);
   return { reloaded: true };
+}
+
+/**
+ * Forgets the routing of a tab's current document; the relays of the next one announce their frames
+ * again. It also makes "wait until attached" mean the new document, not the old one.
+ */
+function forgetDocument(tabId: number): void {
+  attachedTabs.delete(tabId);
+  tabFrames.delete(tabId);
+  activeFrame.delete(tabId);
+  persistSession();
 }
 
 /** Arms a write watchpoint now and remembers it for the next document of that tab. */
@@ -504,17 +550,25 @@ async function traceArm(params: {
   maxHits?: number;
   kind?: string;
 }): Promise<unknown> {
-  const options = {
+  const options: TraceOptions = {
     address: params.address,
     ...(params.type ? { type: params.type } : {}),
     ...(params.maxHits ? { maxHits: params.maxHits } : {}),
     ...(params.kind ? { kind: params.kind } : {}),
   };
-  pendingTraces.set(params.tabId, options);
+  const tab = await getTab(params.tabId);
+  pendingTraces.set(params.tabId, { options, origin: originOf(tab.url), armedIn: topDocument.get(params.tabId) });
   persistSession();
   // Through `callTab`, so arming lands in the same audit funnel as an agent's `page.trace.arm`:
   // a human clicking "Arm & reload" must not be invisible.
-  return callTab({ tabId: params.tabId, method: 'page.trace.arm', params: options, timeoutMs: 8_000 });
+  try {
+    return await callTab({ tabId: params.tabId, method: 'page.trace.arm', params: options, timeoutMs: 8_000 });
+  } catch (error) {
+    // A refused arm (a worker instance is UNSUPPORTED) must not be re-sent after the next reload.
+    pendingTraces.delete(params.tabId);
+    persistSession();
+    throw error;
+  }
 }
 
 async function ensureAgent(params: { tabId: number; reload?: boolean; frameId?: number }): Promise<PageAgentInfo> {
@@ -523,6 +577,7 @@ async function ensureAgent(params: { tabId: number; reload?: boolean; frameId?: 
 
   const attachOnce = async (reload: boolean): Promise<PageAgentInfo> => {
     if (reload) {
+      forgetDocument(params.tabId);
       await chrome.tabs.reload(params.tabId);
       reloaded = true;
       const ready = await waitFor(() => attachedTabs.has(params.tabId), 15_000);
@@ -539,9 +594,7 @@ async function ensureAgent(params: { tabId: number; reload?: boolean; frameId?: 
       activeFrame.set(params.tabId, params.frameId);
       persistSession();
     }
-    const frameId = params.frameId ?? (await resolveFrame(params.tabId));
-    const info = await helloWithRetry(params.tabId, frameId);
-    return frameId === undefined ? info : { ...info, frameId };
+    return helloWithRetry(params.tabId, params.frameId);
   };
 
   try {
@@ -566,11 +619,15 @@ async function ensureAgent(params: { tabId: number; reload?: boolean; frameId?: 
  * call, and a message sent to a dying frame resolves with no payload at all. That is a race, not a
  * missing agent, so it is worth a few hundred milliseconds before telling the human to reload.
  */
-async function helloWithRetry(tabId: number, frameId: number | undefined): Promise<PageAgentInfo> {
+async function helloWithRetry(tabId: number, pinned: number | undefined): Promise<PageAgentInfo> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= 6; attempt += 1) {
     try {
-      return await sendToTab<PageAgentInfo>(tabId, 'page.hello', {}, 8_000, frameId);
+      // Resolved per attempt: a frame that vanished was dropped by sendToTab, so the next try
+      // re-probes instead of knocking on the dead id again.
+      const frameId = pinned ?? (await resolveFrame(tabId));
+      const info = await sendToTab<PageAgentInfo>(tabId, 'page.hello', {}, 8_000, frameId);
+      return { ...info, frameId };
     } catch (error) {
       lastError = error;
       const retryable = error instanceof BridgeError && error.code === 'NO_AGENT';
@@ -586,7 +643,7 @@ async function helloWithRetry(tabId: number, frameId: number | undefined): Promi
  * script in the top frame cannot see into it. Ask every frame we know about and pick the one
  * that actually captured an instance; fall back to the frame with the most instances.
  */
-async function resolveFrame(tabId: number): Promise<number | undefined> {
+async function resolveFrame(tabId: number): Promise<number> {
   const cached = activeFrame.get(tabId);
   if (cached !== undefined) {
     // Frame ids are per document and a page made of iframes throws them away constantly (YouTube
@@ -600,11 +657,13 @@ async function resolveFrame(tabId: number): Promise<number | undefined> {
     }
   }
 
+  // Nothing announced yet (a page from before the install): the top frame is the honest default.
+  // Never "every frame": instance ids start at w1 in each realm, so a broadcast write lands twice.
   const frames = tabFrames.get(tabId);
-  if (!frames || frames.size === 0) return undefined;
+  if (!frames || frames.size === 0) return 0;
   if (frames.size === 1) {
-    const [only] = [...frames.keys()];
-    if (only !== undefined) activeFrame.set(tabId, only);
+    const [only = 0] = [...frames.keys()];
+    activeFrame.set(tabId, only);
     return only;
   }
 
@@ -619,7 +678,7 @@ async function resolveFrame(tabId: number): Promise<number | undefined> {
     }
   }
   if (best) activeFrame.set(tabId, best.frameId);
-  return best?.frameId;
+  return best?.frameId ?? 0;
 }
 
 async function injectAgent(tabId: number): Promise<void> {
@@ -668,12 +727,28 @@ interface ActionLine {
   detail?: unknown;
 }
 
+/** The MCP server records these itself, in its tool's words; only a panel's call is reported here. */
+const SERVER_AUDITED = new Set(['page.saved.save', 'page.saved.open', 'page.saved.delete']);
+
+/** `1 match`, `3 matches`: audit lines are read by people. */
+function count(value: unknown, one: string, many = `${one}s`): string {
+  return `${String(value)} ${Number(value) === 1 ? one : many}`;
+}
+
 /**
  * The page methods that mutate something. Every one of them is reported to the host for the audit
  * log, whether it was an agent or a human in the panel that triggered it: `callTab` is the single
  * funnel, so the log cannot miss a path.
  */
-async function reportAction(tabId: number, method: string, params: unknown, result: unknown, error: unknown): Promise<void> {
+async function reportAction(
+  tabId: number,
+  method: string,
+  params: unknown,
+  result: unknown,
+  error: unknown,
+  origin: CallOrigin = 'bridge',
+): Promise<void> {
+  if (origin === 'bridge' && SERVER_AUDITED.has(method)) return;
   const line = describeAction(tabId, method, params, result, error);
   if (!line) return;
   send({ v: PROTOCOL_VERSION, kind: 'evt', event: Events.actionAudit, data: line });
@@ -769,7 +844,7 @@ function describeAction(
         tabId,
         ok,
         summary: ok
-          ? `scan ${String(r?.scanId)} ${String(r?.mode ?? p?.mode)} ${String(p?.type)}${p?.value === undefined ? '' : ` = ${String(p.value)}`} -> ${String(r?.matchCount)} match(es)`
+          ? `scan ${String(r?.scanId)} ${String(r?.mode ?? p?.mode)} ${String(p?.type)}${p?.value === undefined ? '' : ` = ${String(p.value)}`} -> ${count(r?.matchCount, 'match', 'matches')}`
           : `scan failed: ${failure}`,
         detail: { instanceId: p?.instanceId, truncated: r?.truncated },
       };
@@ -779,7 +854,7 @@ function describeAction(
         tabId,
         ok,
         summary: ok
-          ? `scan ${String(p?.scanId)} narrowed by ${String(p?.mode)} -> ${String(r?.matchCount)} match(es)`
+          ? `scan ${String(p?.scanId)} narrowed by ${String(p?.mode)} -> ${count(r?.matchCount, 'match', 'matches')}`
           : `scan narrowing failed: ${failure}`,
         detail: { mode: p?.mode, value: p?.value },
       };
@@ -791,7 +866,7 @@ function describeAction(
         tabId,
         ok,
         summary: ok
-          ? `text scan ${String(p?.encoding ?? 'ascii')} "${String(p?.text)}" -> ${String(r?.total)} match(es)`
+          ? `text scan ${String(p?.encoding ?? 'ascii')} "${String(p?.text)}" -> ${count(r?.total, 'match', 'matches')}`
           : `text scan failed: ${failure}`,
       };
     case 'page.pointer.scan':
@@ -800,7 +875,7 @@ function describeAction(
         tabId,
         ok,
         summary: ok
-          ? `pointer scan for ${String(p?.instanceId)}:0x${Number(p?.offset ?? 0).toString(16)} (depth ${String(p?.maxDepth ?? 3)}) -> ${Array.isArray(r) ? r.length : 0} chain(s)`
+          ? `pointer scan for ${String(p?.instanceId)}:0x${Number(p?.offset ?? 0).toString(16)} (depth ${String(p?.maxDepth ?? 3)}) -> ${count(Array.isArray(r) ? r.length : 0, 'chain')}`
           : `pointer scan failed: ${failure}`,
         detail: { maxOffset: p?.maxOffset },
       };
@@ -849,6 +924,33 @@ function describeAction(
       return { kind: 'patch', tabId, ok, summary: ok ? `patch removed ${String(p?.patchId)}` : `patch remove failed: ${failure}` };
     case 'page.patch.clear':
       return { kind: 'patch', tabId, ok, summary: ok ? 'all patches cleared' : `patch clear failed: ${failure}` };
+    case 'page.saved.save':
+      return {
+        kind: 'scan',
+        tabId,
+        ok,
+        summary: ok
+          ? `saved scan "${String(r?.name ?? p?.name)}" (${count(r?.matchCount, 'match', 'matches')})`
+          : `saving scan "${String(p?.name)}" failed: ${failure}`,
+      };
+    case 'page.saved.open': {
+      const opened = (r?.summary ?? null) as { matchCount?: number } | null;
+      return {
+        kind: 'scan',
+        tabId,
+        ok,
+        summary: ok
+          ? `re-opened saved scan "${String(p?.name)}" (${count(opened?.matchCount, 'match', 'matches')})`
+          : `opening saved scan "${String(p?.name)}" failed: ${failure}`,
+      };
+    }
+    case 'page.saved.delete':
+      return {
+        kind: 'scan',
+        tabId,
+        ok,
+        summary: ok ? `deleted saved scan "${String(p?.name)}"` : `deleting saved scan "${String(p?.name)}" failed: ${failure}`,
+      };
     case 'ext.reload':
       return {
         kind: 'reload',
@@ -861,56 +963,62 @@ function describeAction(
   }
 }
 
-async function callTab(params: {
-  tabId: number;
-  method: string;
-  params?: unknown;
-  timeoutMs?: number;
-}): Promise<unknown> {
+async function callTab(
+  params: {
+    tabId: number;
+    method: string;
+    params?: unknown;
+    timeoutMs?: number;
+  },
+  origin: CallOrigin = 'bridge',
+): Promise<unknown> {
   if (typeof params.method !== 'string' || !params.method.startsWith('page.')) {
     throw new BridgeError('BAD_PARAMS', `ext.call only forwards page.* methods, got "${params.method}"`);
   }
+  if ((params.method === 'page.trace.stop' || params.method === 'page.trace.clear') && pendingTraces.delete(params.tabId)) {
+    persistSession();
+  }
   const timeoutMs = Math.max(1_000, Math.min(params.timeoutMs ?? RPC_TIMEOUT_MS, 120_000));
+  const report = (result: unknown, error: unknown): Promise<void> =>
+    reportAction(params.tabId, params.method, params.params, result, error, origin);
+  const attempt = async (frameId: number): Promise<unknown> => {
+    try {
+      const result = await sendToTab(params.tabId, params.method, params.params ?? {}, timeoutMs, frameId);
+      await report(result, undefined);
+      return result;
+    } catch (error) {
+      await report(undefined, error);
+      throw error;
+    }
+  };
   const frameId = await resolveFrame(params.tabId);
+  let result: unknown;
   try {
-    const result = await sendToTab(params.tabId, params.method, params.params ?? {}, timeoutMs, frameId);
-    await reportAction(params.tabId, params.method, params.params, result, undefined);
-    return result;
+    result = await sendToTab(params.tabId, params.method, params.params ?? {}, timeoutMs, frameId);
   } catch (error) {
     // The right realm can change without the page reloading: a Playables game boots inside a frame
     // that did not exist when we picked one, and the request lands where the instance id is unknown.
-    // Re-probe (the frame with the most instances wins) and ask again, once.
+    // Re-probe (the frame with the most instances wins) so the next call lands right, but only ask
+    // again here when the call changes nothing: a mutation is never sent twice.
     if (error instanceof BridgeError && (error.code === 'NO_INSTANCE' || error.code === 'NO_MEMORY')) {
       activeFrame.delete(params.tabId);
       persistSession();
       const probed = await resolveFrame(params.tabId);
-      if (probed !== frameId) {
-        try {
-          const result = await sendToTab(params.tabId, params.method, params.params ?? {}, timeoutMs, probed);
-          await reportAction(params.tabId, params.method, params.params, result, undefined);
-          return result;
-        } catch (retryError) {
-          await reportAction(params.tabId, params.method, params.params, undefined, retryError);
-          throw retryError;
-        }
-      }
+      const mutates = describeAction(params.tabId, params.method, params.params, undefined, undefined) !== null;
+      if (probed !== frameId && !mutates) return attempt(probed);
     }
     if (!(error instanceof BridgeError) || error.code !== 'NO_AGENT') {
-      await reportAction(params.tabId, params.method, params.params, undefined, error);
+      await report(undefined, error);
       throw error;
     }
+    // NO_AGENT means no live page agent took the call (no relay, a frame that is gone, a document
+    // torn down mid-call), so sending it again after injecting cannot apply it twice.
     await injectAgent(params.tabId);
     attachedTabs.add(params.tabId);
-    const retryId = frameId ?? (await resolveFrame(params.tabId));
-    try {
-      const result = await sendToTab(params.tabId, params.method, params.params ?? {}, timeoutMs, retryId);
-      await reportAction(params.tabId, params.method, params.params, result, undefined);
-      return result;
-    } catch (retryError) {
-      await reportAction(params.tabId, params.method, params.params, undefined, retryError);
-      throw retryError;
-    }
+    return attempt(await resolveFrame(params.tabId));
   }
+  await report(result, undefined);
+  return result;
 }
 
 async function sendToTab<T>(
@@ -918,39 +1026,25 @@ async function sendToTab<T>(
   method: string,
   params: unknown,
   timeoutMs: number,
-  frameId?: number,
+  frameId = 0,
 ): Promise<T> {
   const message = { type: 'wasmcheat.rpc', method, params };
-  const send = (toFrame?: number): Promise<unknown> =>
-    withTimeout(
-      toFrame === undefined ? chrome.tabs.sendMessage(tabId, message) : chrome.tabs.sendMessage(tabId, message, { frameId: toFrame }),
-      timeoutMs,
-      method,
-    );
   let response: unknown;
   try {
-    response = await send(frameId);
+    response = await withTimeout(chrome.tabs.sendMessage(tabId, message, { frameId }), timeoutMs, method);
   } catch (error) {
     const text = error instanceof Error ? error.message : String(error);
-    const lostFrame = /Receiving end does not exist|Could not establish connection|No frame with id/i.test(text);
-    if (lostFrame && frameId !== undefined) {
-      // The frame we routed to is gone; every frame gets the call and the first relay that answers
-      // wins. The next call re-probes instead of reusing the dead id.
-      activeFrame.delete(tabId);
-      try {
-        response = await send(undefined);
-      } catch (retryError) {
-        const retryText = retryError instanceof Error ? retryError.message : String(retryError);
-        if (/Receiving end does not exist|Could not establish connection|No frame with id/i.test(retryText)) {
-          throw new BridgeError('NO_AGENT', `no WasmCheat relay in tab ${tabId}; the page needs a reload`);
-        }
-        throw retryError;
-      }
-    } else if (lostFrame) {
-      throw new BridgeError('NO_AGENT', `no WasmCheat relay in tab ${tabId}; the page needs a reload`);
-    } else {
-      throw error;
-    }
+    if (!/Receiving end does not exist|Could not establish connection|No frame with id/i.test(text)) throw error;
+    // Never fall back to every frame: instance ids start at w1 in each realm, so the call would run
+    // wherever the id happens to exist. Drop the dead frame instead; the caller re-resolves.
+    if (activeFrame.get(tabId) === frameId) activeFrame.delete(tabId);
+    if (tabFrames.get(tabId)?.delete(frameId)) persistSession();
+    throw new BridgeError(
+      'NO_AGENT',
+      frameId === 0
+        ? `no WasmCheat relay in tab ${tabId}; the page needs a reload`
+        : `frame ${frameId} of tab ${tabId} is gone; call again to re-resolve the frame`,
+    );
   }
 
   const payload = response as { result?: unknown; error?: { code?: string; message?: string } } | undefined;
@@ -1012,24 +1106,14 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse: (v
 
   if (msg.type === 'wasmcheat.relay-ready') {
     const tabId = sender.tab?.id;
-    if (tabId !== undefined) {
-      attachedTabs.add(tabId);
-      const frameId = sender.frameId ?? 0;
-      let frames = tabFrames.get(tabId);
-      if (!frames) tabFrames.set(tabId, (frames = new Map()));
-      const url = (msg as { url?: string }).url ?? sender.url ?? '';
-      if (!frames.has(frameId) || frames.get(frameId) !== url) {
-        frames.set(frameId, url);
-        persistSession();
-        emit(Events.tabsChanged, { tabId, attached: true, frameId });
-      }
-      const trace = pendingTraces.get(tabId);
-      if (trace) {
-        // Best effort and deliberately fire-and-forget: the page may still instantiate first,
-        // and the trace status reports that honestly.
-        void sendToTab(tabId, 'page.trace.arm', trace, 5_000, frameId).catch(() => undefined);
-      }
-    }
+    if (tabId !== undefined) void sessionReady.then(() => onRelayReady(tabId, sender, msg.url));
+    return undefined;
+  }
+
+  // Everything below is for extension pages (panel, popup): a content script runs in the page's
+  // renderer, so it gets neither the dispatcher nor the list of every open tab.
+  if ((msg.type === 'wasmcheat.panel.call' || msg.type === 'popup.state') && !fromExtensionPage(sender)) {
+    sendResponse(errorReply(new BridgeError('BAD_PARAMS', `${msg.type} is only accepted from an extension page`)));
     return undefined;
   }
 
@@ -1044,7 +1128,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse: (v
         return;
       }
       try {
-        sendResponse({ result: await handleBridgeRequest(call.method, call.params) });
+        sendResponse({ result: await handleBridgeRequest(call.method, call.params, 'panel') });
       } catch (error) {
         sendResponse(errorReply(error));
       }
@@ -1070,36 +1154,76 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse: (v
   return undefined;
 });
 
+function onRelayReady(tabId: number, sender: chrome.runtime.MessageSender, announcedUrl: string | undefined): void {
+  attachedTabs.add(tabId);
+  const frameId = sender.frameId ?? 0;
+  if (frameId === 0 && sender.documentId && topDocument.get(tabId) !== sender.documentId) {
+    // A new top document (a reload, plain or not): the frames of the old one are gone.
+    if (topDocument.has(tabId)) {
+      tabFrames.delete(tabId);
+      activeFrame.delete(tabId);
+    }
+    topDocument.set(tabId, sender.documentId);
+    persistSession();
+  }
+  let frames = tabFrames.get(tabId);
+  if (!frames) tabFrames.set(tabId, (frames = new Map()));
+  const url = announcedUrl ?? sender.url ?? '';
+  if (!frames.has(frameId) || frames.get(frameId) !== url) {
+    frames.set(frameId, url);
+    persistSession();
+    emit(Events.tabsChanged, { tabId, attached: true, frameId });
+  }
+
+  const trace = pendingTraces.get(tabId);
+  if (trace && frameId === 0 && sender.documentId !== trace.armedIn && sender.documentId !== trace.document) {
+    // The first top document after the arm is the reload it asked for; any later one, or one on
+    // another site, means the intent is spent.
+    if (trace.document === undefined && originOf(sender.url) === trace.origin) trace.document = sender.documentId;
+    else pendingTraces.delete(tabId);
+    persistSession();
+  }
+  const pending = pendingTraces.get(tabId);
+  if (pending?.document !== undefined) {
+    // Best effort and deliberately fire-and-forget: the page may still instantiate first,
+    // and the trace status reports that honestly.
+    void sendToTab(tabId, 'page.trace.arm', pending.options, 5_000, frameId).catch(() => undefined);
+  }
+}
+
+/** Extension pages only (panel, popup, the panel opened as a tab), never a content script. */
+function fromExtensionPage(sender: chrome.runtime.MessageSender): boolean {
+  return sender.url?.startsWith(chrome.runtime.getURL('')) === true;
+}
+
 /** Same normalisation the bridge response uses, so a panel sees the identical code and message. */
 function errorReply(error: unknown): { error: BridgeErrorShape } {
   return { error: makeErrorResponse('panel', error).error ?? { code: 'INTERNAL', message: String(error) } };
 }
 
-chrome.tabs.onRemoved.addListener((tabId) => {
-  attachedTabs.delete(tabId);
-  tabFrames.delete(tabId);
-  activeFrame.delete(tabId);
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  await sessionReady;
+  forgetDocument(tabId);
+  topDocument.delete(tabId);
   pendingTraces.delete(tabId);
-  persistSession();
 });
 
 // A new document means new frames and a new page agent, so forget the routing and re-probe on the
-// next call. Nothing else has to happen: there is no grant to revoke.
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.status === 'loading' && changeInfo.url) {
-    attachedTabs.delete(tabId);
-    tabFrames.delete(tabId);
-    activeFrame.delete(tabId);
-    persistSession();
-  }
+// next call. Nothing else has to happen: there is no grant to revoke. This only catches a URL change;
+// a plain reload is caught by the new top document's relay announcing itself (onRelayReady).
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
+  if (changeInfo.status !== 'loading' || !changeInfo.url) return;
+  await sessionReady;
+  forgetDocument(tabId);
 });
 
 chrome.runtime.onStartup.addListener(() => connect());
 chrome.runtime.onInstalled.addListener(() => connect());
 
-// Keep trying to reach the local bridge for as long as the worker is alive.
+// Keep trying to reach the local bridge for as long as the worker is alive. The alarm (30s is
+// Chrome's minimum period) wakes a suspended worker and redials, so the bridge comes back on its own.
 connect();
-chrome.alarms?.create?.('wasmcheat-bridge-keepalive', { periodInMinutes: 0.5 });
-chrome.alarms?.onAlarm?.addListener?.((alarm) => {
+void chrome.alarms.create('wasmcheat-bridge-keepalive', { periodInMinutes: KEEPALIVE_MS / 60_000 });
+chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'wasmcheat-bridge-keepalive') void connect();
 });

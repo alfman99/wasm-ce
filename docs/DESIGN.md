@@ -8,7 +8,7 @@ come from. Read this before changing any of the three surfaces.
 | Surface | The one decision it exists for |
 | --- | --- |
 | DevTools panel | Find an address, then change it. Everything else is available but ordered behind that. |
-| Toolbar popup | Grant or refuse access to one tab. Nothing else fits in 380px, so nothing else is there. |
+| Toolbar popup | Say whether this tab is set up: its title, whether the page agent is running, and the bridge state. A token field appears only when the bridge refuses the extension or needs a token. Nothing else fits in 380px, so nothing else is there. |
 | Demo (Foundry) | Be a plausible target: state in linear memory, a number on screen you can watch move. |
 
 The panel is not a dashboard. It has no stat row, no activity feed and no invented numbers. Its
@@ -44,7 +44,7 @@ layout is one readable column in the order you work: what you are attached to â†
 
 The demo is the exception: it is a game, so it runs a molten palette (`#ff7a2f` on `#0e100f`) and a
 44px score. A target that looks like the inspector makes it harder to tell which window you are about
-to write to.
+to write to. Its quietest text (`#8a948b`) still measures 5.1:1 on the raised stat cards.
 
 Radii: 10px cards, 7px controls, 999px pills only. Spacing is a 4px scale, 12px between cards.
 
@@ -52,12 +52,15 @@ Radii: 10px cards, 7px controls, 999px pills only. Spacing is a 4px scale, 12px 
 
 Light is the default; <kbd>T</kbd> (or **Theme**) switches to dark and the choice is remembered. The
 panel does not follow `prefers-color-scheme`: a panel that silently turns dark at night is a
-different product than the one described here.
+different product than the one described here. The popup is light only: it is open for seconds,
+and a second theme there would be one more thing to keep in sync.
 
 ## Type
 
 System UI at 12.5px for the panel, `ui-monospace` at 11.5px for data, tabular numerals everywhere a
-number can change. No display face, no wide-tracked uppercase labels, no monospace headlines.
+number can change. 11px is the floor for any text a person has to read (labels, pills, table heads,
+keys); nothing goes smaller. No display face, no wide-tracked uppercase labels, no monospace
+headlines.
 
 ## States
 
@@ -101,8 +104,9 @@ measured.
 Every control is reachable by keyboard and has a visible focus ring (2px accent, 1px offset).
 Labels are real `<label>` elements wrapping their input. Status changes are text, not colour alone.
 The palette and help sheet are `role="dialog"` and close on <kbd>Esc</kbd>. Measured contrast against
-the card surface: `--ink` 16.9:1 light / 14.8:1 dark, `--ink-2` 7.3:1 / 8.0:1, `--ink-3` 5.0:1 /
-5.4:1, `--accent` 5.7:1 / 7.9:1. `--ink-3` is the floor and is only used for labels and notes.
+the card surface: `--ink` 17.6:1 light / 15.3:1 dark, `--ink-2` 7.3:1 / 8.0:1, `--ink-3` 5.7:1 /
+5.4:1, `--accent` 5.7:1 / 7.9:1. `--ink-3` is the floor and is only used for labels and notes. Any new
+pair needs 4.5:1 for normal text.
 
 ## Screenshots
 

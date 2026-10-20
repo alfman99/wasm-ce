@@ -1,6 +1,6 @@
 /**
  * Page side of the worker demo: it owns the UI and nothing else. The game lives in a worker, so
- * `window` has no `WebAssembly` instance to find — which is exactly the case this page exists to
+ * `window` has no `WebAssembly` instance to find, which is exactly the case this page exists to
  * exercise.
  */
 const scoreOut = document.getElementById('score');

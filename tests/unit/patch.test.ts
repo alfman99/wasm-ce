@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { PatchStore } from '../../packages/page-agent/src/patch';
+import { PageRuntime } from '../../packages/page-agent/src/runtime';
 import { WasmRegistry } from '../../packages/page-agent/src/registry';
 import { instrumentModule } from '../../packages/wasm-instrument/src/index';
 import { buildPatchModule } from '../helpers/wasm-builder';
@@ -35,6 +36,23 @@ describe('PatchStore', () => {
     expect(entry.applied).toBe(false);
     expect(patches.list()).toHaveLength(1);
     expect(patches.activePatches()).toEqual([{ byName: 'score', mode: 'stub', value: 999 }]);
+  });
+
+  it('a patch restored after a reload installs the instrumenter without another add', () => {
+    const stored: Record<string, string> = {
+      'wasmcheat.patches': JSON.stringify([{ target: 'score', mode: 'stub', value: 999 }]),
+    };
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key: string) => stored[key] ?? null,
+      setItem: (key: string, value: string) => void (stored[key] = value),
+      removeItem: (key: string) => void delete stored[key],
+    });
+    try {
+      const runtime = new PageRuntime();
+      expect(runtime.registry.hasInstrumenter).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('understands the wasm-function[N] spelling that list_instances uses', () => {

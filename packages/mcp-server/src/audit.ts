@@ -25,6 +25,27 @@ export type AuditKind =
   /** Named addresses added, removed or cleared. */
   | 'bookmark';
 
+/** Every kind once, so a line from the extension can be checked; a missing kind fails to compile. */
+const AUDIT_KINDS: Record<AuditKind, true> = {
+  attach: true,
+  detach: true,
+  write: true,
+  freeze: true,
+  hook: true,
+  scan: true,
+  trace: true,
+  patch: true,
+  speed: true,
+  approval: true,
+  watch: true,
+  reload: true,
+  bookmark: true,
+};
+
+export function isAuditKind(value: unknown): value is AuditKind {
+  return typeof value === 'string' && Object.hasOwn(AUDIT_KINDS, value);
+}
+
 export interface AuditEntry {
   kind: AuditKind;
   tabId?: number;
@@ -59,8 +80,9 @@ export async function record(entry: AuditEntry): Promise<void> {
   const payload: AuditLine = { at: new Date().toISOString(), ...entry };
   const line = JSON.stringify(payload) + '\n';
   try {
-    await mkdir(auditDir(), { recursive: true });
-    await appendFile(auditPath(), line, 'utf8');
+    // What the agent touched is the human's business only: owner-only, like the token beside it.
+    await mkdir(auditDir(), { recursive: true, mode: 0o700 });
+    await appendFile(auditPath(), line, { encoding: 'utf8', mode: 0o600 });
   } catch (error) {
     // Auditing must never break the tool call it is observing; surface it on stderr only.
     process.stderr.write(`[wasmcheat] audit write failed: ${(error as Error).message}\n`);

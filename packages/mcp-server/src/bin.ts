@@ -3,7 +3,7 @@ import { Bridge } from './bridge.js';
 import { createServer } from './server.js';
 import { auditPath } from './audit.js';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -27,10 +27,18 @@ function resolveToken(): { token: string; from: 'env' | 'file'; path: string } {
   if (fromEnv) return { token: fromEnv, from: 'env', path };
   if (existsSync(path)) {
     const saved = readFileSync(path, 'utf8').trim();
-    if (saved) return { token: saved, from: 'file', path };
+    if (saved) {
+      try {
+        // A token written by an older build, or copied in by hand, may be world-readable.
+        chmodSync(path, 0o600);
+      } catch {
+        // Best effort: a file we cannot chmod is still a token we can read.
+      }
+      return { token: saved, from: 'file', path };
+    }
   }
   const minted = randomBytes(32).toString('hex');
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(path, `${minted}\n`, { mode: 0o600 });
   return { token: minted, from: 'file', path };
 }
@@ -47,7 +55,16 @@ const reconnectGraceMs = Number(process.env.WASMCHEAT_RECONNECT_GRACE_MS ?? 8_00
 // explicit secret is a decision that nothing should be able to fetch it.
 const pairing = (process.env.WASMCHEAT_PAIRING ?? (process.env.WASMCHEAT_TOKEN ? 'off' : 'on')).toLowerCase() !== 'off';
 
-const bridge = new Bridge({ host, port, requestTimeoutMs: 30_000, token, reconnectGraceMs, pairing });
+// Pairing trusts whoever can reach the port, which is only this machine on a loopback address.
+if (pairing && !['127.0.0.1', '::1', 'localhost'].includes(host)) {
+  process.stderr.write(
+    `[wasmcheat] refusing to start: WASMCHEAT_HOST=${host} is not a loopback address, and pairing would hand the ` +
+      'bridge token to anything on the network. Set WASMCHEAT_PAIRING=off (and paste the token by hand), or listen on 127.0.0.1.\n',
+  );
+  process.exit(1);
+}
+
+const bridge = new Bridge({ host, port, requestTimeoutMs: 30_000, token, tokenPath, reconnectGraceMs, pairing });
 
 try {
   await bridge.start();
@@ -55,7 +72,7 @@ try {
   const code = (error as NodeJS.ErrnoException).code;
   const hint =
     code === 'EADDRINUSE'
-      ? `port ${port} is already in use — another WasmCheat server may be running (kill it, or set WASMCHEAT_PORT)`
+      ? `port ${port} is already in use; another WasmCheat server may be running (kill it, or set WASMCHEAT_PORT)`
       : (error as Error).message;
   process.stderr.write(`[wasmcheat] cannot start bridge on ${host}:${port}: ${hint}\n`);
   process.exit(1);
@@ -68,7 +85,7 @@ process.stderr.write(
     ? `[wasmcheat] pairing is open: the extension pairs by itself (token file ${tokenPath}; WASMCHEAT_PAIRING=off requires it by hand)\n`
     : from === 'env'
       ? '[wasmcheat] bridge token: from WASMCHEAT_TOKEN\n'
-      : `[wasmcheat] bridge token: ${tokenPath} — paste it into the WasmCheat panel (or open the popup) once\n`,
+      : `[wasmcheat] bridge token: ${tokenPath}. Paste it into the WasmCheat panel (or open the popup) once\n`,
 );
 process.stderr.write('[wasmcheat] load packages/extension as an unpacked extension, then let an agent in\n');
 

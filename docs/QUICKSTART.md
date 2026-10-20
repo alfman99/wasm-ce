@@ -81,9 +81,9 @@ DevTools toolbar. If the panel is not listed, reload the extension and reopen De
 
 ## 8. Next
 
-- [docs/PANEL.md](PANEL.md) — every card, the shortcuts, and what each one maps to over MCP.
-- [docs/AGENT_GUIDE.md](AGENT_GUIDE.md) — the same loop, driven by an MCP client.
-- [docs/DESIGN.md](DESIGN.md) — why the panel looks and reads the way it does.
+- [docs/PANEL.md](PANEL.md): every card, the shortcuts, and what each one maps to over MCP.
+- [docs/AGENT_GUIDE.md](AGENT_GUIDE.md): the same loop, driven by an MCP client.
+- [docs/DESIGN.md](DESIGN.md): why the panel looks and reads the way it does.
 
 ## When it does not work
 

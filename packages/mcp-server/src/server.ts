@@ -36,7 +36,7 @@ import {
 } from '@wasmcheat/protocol';
 import { Bridge } from './bridge.js';
 import { waitForPageEvent } from './events.js';
-import { onRecord, record, tail, type AuditLine } from './audit.js';
+import { isAuditKind, onRecord, record, tail, type AuditLine } from './audit.js';
 
 export type ToolResult = CallToolResult;
 
@@ -83,6 +83,11 @@ function addr(value: string): Address {
   }
 }
 
+/** `1 match`, `3 matches`: tool notes and audit lines read as sentences. */
+function count(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
 function numeric(value: number | string | undefined): number | undefined {
   if (value === undefined) return undefined;
   const parsed = typeof value === 'number' ? value : Number(value);
@@ -117,7 +122,7 @@ export function createServer(bridge: Bridge): McpServer {
    */
   bridge.on(Events.actionAudit, (data) => {
     const line = data as Partial<AuditLine> | null;
-    if (!line || typeof line.kind !== 'string' || typeof line.summary !== 'string') return;
+    if (!line || !isAuditKind(line.kind) || typeof line.summary !== 'string') return;
     void record({
       kind: line.kind,
       ...(typeof line.tabId === 'number' ? { tabId: line.tabId } : {}),
@@ -218,8 +223,9 @@ export function createServer(bridge: Bridge): McpServer {
       },
     },
     async ({ tabId: askedTab, reload, frameId }) => {
-      const tabId = await resolveTab(bridge, askedTab);
+      let tabId = askedTab;
       try {
+        tabId = await resolveTab(bridge, askedTab);
         const info = await bridge.request<PageAgentInfo>(
           'ext.ensureAgent',
           { tabId, reload, frameId },
@@ -238,7 +244,7 @@ export function createServer(bridge: Bridge): McpServer {
           [
             instances.length === 0
               ? 'Attached, but no WebAssembly instance was captured yet. If the app loaded before the extension, attach with reload=true.'
-              : `Attached. ${instances.length} instance(s) captured.`,
+              : `Attached. ${count(instances.length, 'instance')} captured.`,
             // The extension reloads a page that predates the agent on its own; the agent should know
             // the document is new, because every address it had is gone.
             info.autoReloaded
@@ -264,12 +270,14 @@ export function createServer(bridge: Bridge): McpServer {
       inputSchema: { tabId: TAB_ID },
     },
     async ({ tabId: askedTab }) => {
-      const tabId = await resolveTab(bridge, askedTab);
+      let tabId = askedTab;
       try {
+        tabId = await resolveTab(bridge, askedTab);
         await bridge.request('ext.detach', { tabId });
         await record({ kind: 'detach', tabId, ok: true, summary: 'detached' });
         return ok({ tabId });
       } catch (error) {
+        await record({ kind: 'detach', tabId, ok: false, summary: (error as Error).message });
         return fail(error);
       }
     },
@@ -304,7 +312,7 @@ export function createServer(bridge: Bridge): McpServer {
         'classic or module, and how many WebAssembly instances each has captured. Engines that compile in a worker ' +
         '(Unity, Godot 4, many itch.io builds) show up here; their instances appear in list_instances as k1-1, k1-2… ' +
         'An empty list on a tab that clearly runs wasm means the worker was created before the agent loaded or is nested ' +
-        'inside another worker — neither can be instrumented.',
+        'inside another worker; neither can be instrumented.',
       inputSchema: { tabId: TAB_ID },
     },
     async ({ tabId: askedTab }) => {
@@ -537,27 +545,35 @@ export function createServer(bridge: Bridge): McpServer {
         if (action === 'delete') {
           if (!name) return fail(new BridgeError('BAD_PARAMS', 'name is required for delete'));
           const deleted = await page<boolean>(tabId, 'page.saved.delete', { name });
-          record({ kind: 'scan', tabId, ok: true, summary: `deleted saved scan "${name}"` });
+          record({
+            kind: 'scan',
+            tabId,
+            ok: deleted,
+            summary: deleted ? `deleted saved scan "${name}"` : `no saved scan "${name}" to delete`,
+          });
           return ok({ deleted, name });
         }
         if (action === 'save') {
           if (!name) return fail(new BridgeError('BAD_PARAMS', 'name is required for save'));
           if (!scanId) return fail(new BridgeError('BAD_PARAMS', 'scanId is required for save'));
           const saved = await page<SavedScanSummary>(tabId, 'page.saved.save', { name, scanId });
-          record({ kind: 'scan', tabId, ok: true, summary: `saved scan "${saved.name}" (${saved.matchCount} match(es))` });
-          return ok(saved, `saved ${saved.matchCount} address(es) as "${saved.name}"; it survives a reload of this tab`);
+          record({ kind: 'scan', tabId, ok: true, summary: `saved scan "${saved.name}" (${count(saved.matchCount, 'match', 'matches')})` });
+          return ok(saved, `saved ${count(saved.matchCount, 'address', 'addresses')} as "${saved.name}"; it survives a reload of this tab`);
         }
         if (!name) return fail(new BridgeError('BAD_PARAMS', 'name is required for open'));
         const opened = await page<{ scanId: string; instanceId: string; summary: ScanSummary }>(tabId, 'page.saved.open', {
           name,
           ...(instanceId ? { instanceId } : {}),
         });
-        record({ kind: 'scan', tabId, ok: true, summary: `re-opened saved scan "${name}" (${opened.summary.matchCount} match(es))` });
+        record({ kind: 'scan', tabId, ok: true, summary: `re-opened saved scan "${name}" (${count(opened.summary.matchCount, 'match', 'matches')})` });
         return ok(
           { ...opened.summary, scanId: opened.scanId, instanceId: opened.instanceId, name },
           `narrow it with wasmcheat_scan {scanId: "${opened.scanId}", mode: "changed"}`,
         );
       } catch (error) {
+        if (action !== 'list') {
+          await record({ kind: 'scan', tabId, ok: false, summary: `${action} saved scan "${name}": ${(error as Error).message}` });
+        }
         return fail(error);
       }
     },
@@ -694,7 +710,8 @@ export function createServer(bridge: Bridge): McpServer {
         }
         if (!address || !type) return fail(new BridgeError('BAD_PARAMS', 'address and type are required for set'));
         const target = addr(address);
-        const parsed = numeric(value) ?? 0;
+        const parsed = numeric(value);
+        if (parsed === undefined) return fail(new BridgeError('BAD_PARAMS', 'value is required for set'));
         const entry = await page<FreezeEntry>(tabId, 'page.freeze.set', { address: target, type, value: parsed });
         return ok(entry);
       } catch (error) {
@@ -822,13 +839,13 @@ export function createServer(bridge: Bridge): McpServer {
         kind: 'trace',
         tabId,
         ok: true,
-        summary: `watched ${verb} to ${formatted} (${status.hits.length} hit(s))`,
+        summary: `watched ${verb} to ${formatted} (${count(status.hits.length, 'hit')})`,
         detail: { kind, hits: status.hits, installed: status.installed },
       });
       const note = status.installed
         ? status.hits.length > 0
-          ? `${status.functions.length} function(s) ${past} ${formatted}`
-          : `no ${verb} to ${formatted} were seen in ${(wait / 1000).toFixed(0)}s — the page may not touch it until you interact with it`
+          ? `${count(status.functions.length, 'function')} ${past} ${formatted}`
+          : `no ${verb} to ${formatted} were seen in ${(wait / 1000).toFixed(0)}s; the page may not touch it until you interact with it`
         : `the watchpoint never installed${status.note ? `: ${status.note}` : ''}`;
       return ok({ ...status, writers: status.functions }, note);
     } catch (error) {
@@ -841,7 +858,7 @@ export function createServer(bridge: Bridge): McpServer {
     {
       title: 'Find what writes to an address',
       description:
-        "Answers \"which function writes here?\" — Cheat Engine's write breakpoint, for wasm. WebAssembly has no write events, " +
+        "Answers \"which function writes here?\": Cheat Engine's write breakpoint, for wasm. WebAssembly has no write events, " +
         'so the tab is reloaded with an instrumented module: every store then calls back with the function index that made it. ' +
         'Returns every hit with the function that wrote and the value before/after.',
       inputSchema: {
@@ -861,7 +878,7 @@ export function createServer(bridge: Bridge): McpServer {
     {
       title: 'Find what reads an address',
       description:
-        'Answers "which function reads here?" — Cheat Engine\'s read breakpoint, for wasm. Every load in the module gains a small ' +
+        'Answers "which function reads here?": Cheat Engine\'s read breakpoint, for wasm. Every load in the module gains a small ' +
         'guarded call that reports the address it is about to read, so the tab is reloaded once with the instrumented module ' +
         'Reads are the better question for input flags, timers and health checks: the reader ' +
         'is the code that decides what the value means.',
@@ -929,8 +946,8 @@ export function createServer(bridge: Bridge): McpServer {
         }));
         const note =
           paths.length === 0
-            ? `no pointer chain reaches ${formatAddress(target)} within ${maxDepth ?? 3} hop(s) and ${maxOffset ?? 0x400} bytes per hop — raise maxDepth or maxOffset`
-            : `${paths.length} chain(s), shortest first; the first base is the most likely static anchor`;
+            ? `no pointer chain reaches ${formatAddress(target)} within ${count(maxDepth ?? 3, 'hop')} and ${maxOffset ?? 0x400} bytes per hop; raise maxDepth or maxOffset`
+            : `${count(paths.length, 'chain')}, shortest first; the first base is the most likely static anchor`;
         return ok({ address: formatAddress(target), chains }, note);
       } catch (error) {
         return fail(error);
@@ -976,7 +993,7 @@ export function createServer(bridge: Bridge): McpServer {
     {
       title: 'Patch a wasm function body',
       description:
-        "Switches off behaviour the module keeps to itself — a damage routine, a cooldown, a check — which no hook can reach " +
+        "Switches off behaviour the module keeps to itself (a damage routine, a cooldown, a check), which no hook can reach " +
         "because it is neither exported nor imported. `add` stubs a function out (`mode: 'stub'` returns `value`, default 0; " +
         "`mode: 'empty'` is for void functions) and reloads the tab so the module is rewritten as it loads: the stub is in the " +
         "binary itself, so every caller is affected and no JS object is involved. `target` is an export name or " +
@@ -1024,7 +1041,7 @@ export function createServer(bridge: Bridge): McpServer {
         const applied = fresh.applied;
         const installed = applied
           ? `${target} now returns ${entry.value ?? 0} to every caller`
-          : `${target} is patched for the next instantiation${reload === false ? ' (reload the tab to install it)' : ' — no instance has been created since'}`;
+          : `${target} is patched for the next instantiation${reload === false ? ' (reload the tab to install it)' : '; no instance has been created since'}`;
         return ok({ patch: fresh, patches: list }, installed);
       } catch (error) {
         return fail(error);
@@ -1085,7 +1102,7 @@ export function createServer(bridge: Bridge): McpServer {
         'Export hooks are live: the body is compiled as `function(args, ctx)` and replaces what the app calls. ' +
         'Inside it, `args` is the argument array and `ctx.call(nextArgs?)` invokes the original; return a value to override it, ' +
         'return nothing (or do not call ctx.call) to pass the original result through.\n' +
-        'Import hooks apply to the *next* instantiation of a module importing that name ("env.log") — WebAssembly binds imports ' +
+        'Import hooks apply to the *next* instantiation of a module importing that name ("env.log"); WebAssembly binds imports ' +
         'at instantiation, so an already-running instance cannot be re-patched (the response says pending: true).\n' +
         'Every add/remove is audited. If the page forbids eval, pass `fallback` for a declarative behaviour.',
       inputSchema: {

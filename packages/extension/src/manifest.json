@@ -2,9 +2,9 @@
   "manifest_version": 3,
   "name": "WasmCheat",
   "version": "0.1.0",
-  "description": "Cheat Engine-style memory tool for WebAssembly, driven by an MCP agent. Nothing touches a tab until you approve it.",
+  "description": "Cheat Engine-style memory tool for WebAssembly, driven by an MCP agent or the DevTools panel. Every change is audited.",
   "minimum_chrome_version": "116",
-  "permissions": ["scripting", "tabs", "storage", "activeTab"],
+  "permissions": ["scripting", "tabs", "storage", "activeTab", "alarms"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "web_accessible_resources": [
     {

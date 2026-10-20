@@ -1,7 +1,7 @@
 /*
  * WasmCheat panel.
  *
- * The panel is a workbench over one live process: pick a tab, find an address, change it. The
+ * The panel is a workbench over one live process: the tab it was opened on. Find an address, change it. The
  * layout is a single readable column so the document order is the order you work in, with a sticky
  * header that states what you are attached to and a sticky status bar that states the last thing
  * that happened. Nothing moves on its own.
@@ -12,7 +12,7 @@
  */
 
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
 
@@ -38,26 +38,7 @@
 }
 
 
-/* The theme button writes data-theme on <html>; without a stored choice the media query above wins. */
-:root[data-theme="light"] {
-  color-scheme: light;
-  --paper: #faf9f7;
-  --surface: #ffffff;
-  --surface-2: #f4f2ee;
-  --line: #e3ded5;
-  --line-strong: #cec7bb;
-  --ink: #1a1917;
-  --ink-2: #5b564d;
-  --ink-3: #6b665c;
-  --accent: #0d7461;
-  --accent-ink: #ffffff;
-  --accent-soft: #e7f1ee;
-  --danger: #ad382b;
-  --danger-soft: #fbeceb;
-  --warn: #7d5200;
-  --warn-soft: #fdf3e2;
-}
-
+/* Light is the default (DESIGN.md: the panel does not follow prefers-color-scheme); T writes data-theme="dark". */
 :root[data-theme="dark"] {
   color-scheme: dark;
   --paper: #131312;
@@ -200,7 +181,7 @@ a {
 .versions {
   color: var(--ink-3);
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 /* ------------------------------------------------------------------ target */
@@ -224,7 +205,7 @@ a {
 .eyebrow {
   display: block;
   color: var(--ink-3);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 550;
   letter-spacing: 0.01em;
 }
@@ -342,7 +323,7 @@ a {
   margin-left: auto;
   color: var(--ink-3);
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .tokenbox[open] > summary::after {
@@ -366,12 +347,6 @@ a {
 }
 
 /* ------------------------------------------------------------------ cards */
-
-.columns {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
 
 .top {
   display: grid;
@@ -536,7 +511,7 @@ fieldset.group--wide {
 
 .field > span {
   color: var(--ink-3);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 550;
 }
 
@@ -675,7 +650,7 @@ button.ghost {
   border: 1px solid var(--line);
   border-radius: 999px;
   color: var(--ink-2);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 button.ghost:hover {
@@ -757,6 +732,10 @@ button:disabled {
   background: var(--surface);
 }
 
+.list:empty {
+  display: none;
+}
+
 .list > li {
   display: flex;
   flex-wrap: wrap;
@@ -786,38 +765,9 @@ button:disabled {
   max-width: 60ch;
 }
 
-.list .empty::before {
-  content: "— ";
-}
-
-.list--tabs > li,
 .list--events > li,
 .list--hits > li {
   align-items: flex-start;
-}
-
-.list--tabs {
-  max-height: 300px;
-}
-
-.list--tabs .tab {
-  cursor: pointer;
-}
-
-.list--tabs .tab b {
-  color: var(--ink);
-  font-weight: 600;
-}
-
-.tab {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.tab.is-target {
-  background: var(--accent-soft);
-  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .list--found {
@@ -839,7 +789,7 @@ button:disabled {
   padding: 0 10px 4px;
   border-bottom: 1px solid var(--line);
   color: var(--ink-3);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -889,7 +839,6 @@ button:disabled {
   max-height: 320px;
 }
 
-.out--error,
 .out.is-error {
   border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
   background: var(--danger-soft);
@@ -906,7 +855,7 @@ table.table {
 table.table th {
   color: var(--ink-3);
   font-family: var(--font);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   text-align: left;
   padding: 4px 8px;
@@ -1040,7 +989,7 @@ table.table td {
   margin-left: auto;
   color: var(--ink-3);
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .palette__foot {
@@ -1049,7 +998,7 @@ table.table td {
   padding: 8px 14px;
   border-top: 1px solid var(--line);
   color: var(--ink-3);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 kbd {
@@ -1059,7 +1008,7 @@ kbd {
   border-radius: 5px;
   background: var(--surface-2);
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--ink-2);
 }
 

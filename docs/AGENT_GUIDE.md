@@ -22,7 +22,7 @@ npm install && npm run build      # builds protocol, wasm-instrument, page agent
 ```
 
 The extension dials the server on `ws://127.0.0.1:7331/extension`, so start the MCP client *after* the
-extension is loaded (or wait a second — it reconnects on its own).
+extension is loaded (or wait a second: it reconnects on its own).
 
 The bridge is authenticated, and the token stays out of your way: the extension pairs with the server
 on first connect and stores what it gets. You only touch the field when pairing is off
@@ -30,12 +30,12 @@ on first connect and stores what it gets. You only touch the field when pairing 
 
 The human also has a front-end: DevTools → **WasmCheat** exposes every tool as a form, plus a raw RPC
 console and a live event and audit log. It talks to the same dispatcher as the agent, so the two never
-drift — it is the fastest way to check what the agent sees.
+drift. It is the fastest way to check what the agent sees.
 
 ## 2. What the agent may and may not do
 
 There is no approval prompt to ask for. `tabId` is optional on every tool: omit it and the extension
-acts on the tab in front — the page the human has open. Ask only when the human names a second tab.
+acts on the tab in front, the page the human has open. Ask only when the human names a second tab.
 
 You still do not guess. `wasmcheat_list_tabs` tells you what is open; `attach` tells you what the
 agent can see. If the human's page is a game, work there; if it is a bank, ask before touching
@@ -63,7 +63,7 @@ flowchart LR
 
 No `tabId` means the tab in front. `wasmcheat_list_tabs` returns `tabId`, `title`, `url`, `active`,
 `agentAttached` and `frames`
-(so you can see a game inside an iframe). `attach` returns `pageAgent` info including `evalAllowed` — if
+(so you can see a game inside an iframe). `attach` returns `pageAgent` info including `evalAllowed`. If
 that is `false` the page's CSP blocks `new Function`, so free-form hook bodies will fail and you must use
 declarative hook fallbacks.
 
@@ -86,8 +86,10 @@ cross-origin flag, canvases, `.wasm` URLs found in the HTML, and a hint. The thr
 ### 3.3 List instances
 
 `wasmcheat_list_instances` returns each instance with `id` (`w1`), `moduleHash`, memory size, exports and
-`importPatchability`. `id: "latest"` resolves to the most recent instance at call time — use it when the
-game re-instantiates and ids change under you.
+`importPatchability`. `id: "latest"` resolves to the most recent instance at call time; use it when the
+game re-instantiates and ids change under you. A freeze or watch created with `latest` pins the
+instance it resolved to at that moment and keeps that id, so a newer instance cannot take it over; a
+bookmark keeps `latest` as typed and resolves it each time you use it.
 
 ### 3.4 Scan
 
@@ -99,7 +101,7 @@ First pass, exact value:
 
 Unknown value: omit `value` with `mode` defaulting to `changed`, do something in the game, then narrow.
 A narrowing pass repeats the same tool with the `scanId` the previous pass returned (plus `tabId`, the
-`instanceId` and the `type` — the server validates all four):
+`instanceId` and the `type`; the server validates all four):
 
 ```json
 { "tabId": 1310636703, "instanceId": "w1", "type": "i32", "scanId": "s1", "mode": "changed" }
@@ -115,7 +117,7 @@ Available modes: `exact`, `not-equal`, `less`, `greater`, `less-or-equal`, `grea
 Text and byte search: `wasmcheat_scan_text` with `"encoding": "ascii" | "utf8" | "bytes"` (bytes wants
 even-length hex like `"deadbeef"`).
 
-**Save the list before anything reloads the page.** A scan lives in page memory and dies on reload — and
+**Save the list before anything reloads the page.** A scan lives in page memory and dies on reload, and
 you will reload, because `find_writes`, `find_reads` and function patches all need it. Once a scan is
 narrow enough to be useful, `wasmcheat_saved {action: "save", name: "score", scanId}` freezes it in the
 tab's own `sessionStorage`; after the reload, `{action: "open", name: "score"}` returns a fresh `scanId`
@@ -155,7 +157,7 @@ you found, not just one.
 ```
 
 It arms a watchpoint, reloads the tab (a store cannot be hooked after compilation), re-attaches, and then
-**waits on hit events** — it returns as soon as the game writes, naming `mine` or `wasm-function[12]` and
+**waits on hit events**: it returns as soon as the game writes, naming `mine` or `wasm-function[12]` and
 the old/new values. `wasmcheat_find_reads` is the same for loads.
 
 Attribution comes from the rewritten module, so a function index is always correct; the *name* only exists
@@ -169,7 +171,7 @@ if the function is exported. Unnamed functions are still identifiable by index a
 ```
 
 Script hooks are the reversible option: `disable` and `remove` restore the original behaviour with no
-reload. Import hooks can only apply at the next instantiation — `hook` reports `pending: true` for a live
+reload. Import hooks can only apply at the next instantiation. `hook` reports `pending: true` for a live
 instance, and this is a WebAssembly fact, not a limitation of this tool.
 
 Function patches (`wasmcheat_patch`) rewrite the body itself (`stub`, `empty`) and take effect when the

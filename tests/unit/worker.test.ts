@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type {
   InstanceInfo,
   ReadResult,
@@ -154,6 +154,24 @@ describe('worker agent', () => {
     expect(reply.error?.code).toBe('NO_INSTANCE');
     expect(reply.error?.message).toContain('k1-9');
   });
+
+  it('says plainly that saved scans, bookmarks and watchpoints need storage a worker lacks', async () => {
+    const harness = makeWorker();
+    await instantiateStoreModule();
+    value(await replyTo(harness, 'page.scan.begin', { instanceId: 'k1-1', type: 'i32', mode: 'exact', value: 2 }));
+
+    const refused = [
+      await replyTo(harness, 'page.saved.save', { scanId: 'k1-s1', name: 'hp' }),
+      await replyTo(harness, 'page.bookmark.add', { label: 'hp', address: 'k1-1:0x20' }),
+      await replyTo(harness, 'page.trace.arm', { address: 'k1-1:0x20' }),
+    ];
+    expect(refused.map((reply) => reply.error?.code)).toEqual(['UNSUPPORTED', 'UNSUPPORTED', 'UNSUPPORTED']);
+    expect(refused.map((reply) => reply.error?.message.split(':')[0])).toEqual([
+      'saving a scan is not available for worker instances yet',
+      'bookmarking an address is not available for worker instances yet',
+      'a watchpoint (find_writes/find_reads) is not available for worker instances yet',
+    ]);
+  });
 });
 
 describe('page routing to workers', () => {
@@ -254,6 +272,28 @@ describe('page routing to workers', () => {
 
     await page.runtime.handle('page.speed.set', { scale: 1 });
     expect(page.sent.filter((message) => message.method === 'page.speed.set')).toHaveLength(2);
+  });
+
+  it('hands the current speed to a worker started after the change', () => {
+    const page = makePage();
+    page.runtime.speed.set(2);
+    const sent: WorkerMessage[] = [];
+    page.runtime.addWorker({ id: 'k2', url: 'http://localhost:4174/late.worker.js', type: 'classic', post: (message) => sent.push(message) });
+    expect(sent.find((message) => message.__wasmcheat === 'call')).toMatchObject({ method: 'page.speed.set', params: { scale: 2 } });
+  });
+
+  it('probes silent workers in parallel, so a listing costs one probe timeout and keeps worker order', async () => {
+    vi.useFakeTimers();
+    try {
+      const page = makePage(); // k1 never answers: a pthread worker parked in Atomics.wait
+      page.runtime.addWorker({ id: 'k2', url: 'http://localhost:4174/pool.worker.js', type: 'classic', post: () => undefined });
+      let workers: { id: string }[] | null = null;
+      void page.runtime.listWorkers().then((listed) => (workers = listed));
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(workers!.map((worker) => worker.id)).toEqual(['k1', 'k2']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('times out instead of hanging when a worker never answers', async () => {

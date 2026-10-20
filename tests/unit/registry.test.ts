@@ -39,6 +39,23 @@ describe('WasmRegistry', () => {
     expect(tracked.moduleHash).toMatch(/^[0-9a-f]{8}$/);
   });
 
+  it('still answers instantiate(Module) with an Instance when an instrumenter rewrites the bytes', async () => {
+    const module = await WebAssembly.compile(buildDemoModule());
+    // An identity rewrite is enough: what matters is that the call goes through bytes, not the Module.
+    registry.setInstrumenter({
+      modes: { reads: false, writes: false },
+      rewrite: (bytes) => ({ bytes, importModule: '__wasmcheat', importField: 'on_store', readField: 'on_read', armExport: '__wc_arm' }),
+      onStore: () => undefined,
+    });
+    try {
+      const instance = await WebAssembly.instantiate(module, imports());
+      expect(instance).toBeInstanceOf(WebAssembly.Instance);
+      expect(registry.list().at(-1)!.instance).toBe(instance);
+    } finally {
+      registry.setInstrumenter(null);
+    }
+  });
+
   it('captures `new WebAssembly.Instance(...)`', async () => {
     const module = await WebAssembly.compile(buildDemoModule());
     const instance = new WebAssembly.Instance(module, imports());
