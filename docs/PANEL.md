@@ -14,22 +14,24 @@ tab picker, because the tab you are inspecting is the tab you mean.
 
 | Element | Meaning |
 | --- | --- |
-| **Target** | The tab the panel is bound to (`tab 1310636703 · Foundry`). `no tab attached` means the panel could not resolve one (no web page open). |
+| **This page** | The title and address of the tab the panel is bound to, with **Reload page** beside it for a game that started before WasmCheat did. `No page to analyze` means DevTools is open on a page WasmCheat cannot run in (`chrome://`, an extension page). |
 | **Now** | `Foundry · w1 · 0x408`. Tab, then instance, then the address in the forms. Updates as you click. It answers "what am I about to write to?" |
-| `bridge` pill | The extension's WebSocket to the MCP server: `bridge live`, `bridge offline (retrying)`, `token refused`, `waiting for pairing`. |
-| `tab-state` pill | `this tab`: the panel targets the tab it lives on. |
-| `agent` pill | `agent ready`, `agent ready · scripts blocked` (the page's CSP forbids hook bodies, so use a declarative fallback), or `not attached yet`. |
-| Steps strip | `1 Attach to this tab`, `2 Scan for a value`, `3 Change it`. The current step is outlined, so the strip tells you where you are rather than listing three links. |
+| `agent` pill | What the page runs: `1 wasm module`, `3 wasm modules`, or `no wasm`; ` · scripts blocked` is added when the page's CSP forbids hook bodies (use a declarative fallback). |
+| `bridge` pill | The optional MCP server: `MCP off` (neutral: the panel does not need it), `MCP live`, `MCP needs a token` or `MCP token refused`. The token field appears only for the last two. |
+| Steps strip | `1 Scan for a value`, `2 Narrow it down`, `3 Change it`. The current step is outlined, so the strip tells you where you are rather than listing three links. |
 | **Help** / **Theme** | The same help sheet as <kbd>?</kbd>, and a light/dark switch that is remembered. |
 
-The three chips under the header are the workflow: **1 Attach to this tab**, **2 Scan for a value**,
+The three chips under the header are the workflow: **1 Scan for a value**, **2 Narrow it down**,
 **3 Change it**. Each jumps to the card that does that job.
 
-On most pages there is nothing to set up: the page agent was injected when the page loaded, so the
-panel lists the wasm on its own, fills the Scan card's Instance field and puts the strip on step 2.
-**Attach** is highlighted only when there is no wasm to scan yet. It installs the page agent
-(reloading the tab once if the page started before the extension) and quotes **Diagnose** when it
-still finds nothing. There is nothing to approve.
+There is nothing to set up, attach or approve. Opening the panel on a tab is the choice: the page
+agent was injected when the page loaded, so the panel lists the wasm on its own and fills the Scan
+card's Instance field. A page that was open before WasmCheat was installed is reloaded once, and the
+panel says so.
+
+When the page has no WebAssembly the panel shows **Nothing to analyze in this tab** instead of the
+scan cards, with **Reload page** and **Why is it empty?** (which runs Diagnose). It keeps watching:
+a game that loads its wasm on a click switches the panel to the scan cards by itself.
 
 ## Cards
 
@@ -44,7 +46,7 @@ thing, so a human and an agent are never using different mechanisms.
 
 | Card | What it does | MCP tool |
 | --- | --- | --- |
-| **Attach / Reload & attach / Detach** | Attach injects the agent and heals a page that started before it existed (one reload, reported in the output). Detach forgets the tab; the next call re-attaches on its own. | `wasmcheat_attach`, `wasmcheat_detach` |
+| **Reload page** | Reloads the tab so the agent is in place before the game starts, then reports how many wasm modules it found (or quotes Diagnose). The panel does the first start on its own. | `wasmcheat_attach` with `reload` |
 | **Instances** | Wasm instances in the target: id, exports, memory size, `page` or `worker`, `importPatchability`. | `wasmcheat_list_instances` |
 | **Diagnose** | Why the instance list is empty: `WebAssembly.*` call counts, iframes (cross-origin flagged), canvases, `.wasm` URLs in the HTML, `evalAllowed`. | `wasmcheat_diagnose` |
 | **Scan** | Value, type, mode, the instance, plus a **More options** fold holding the byte range, alignment and result limit (the defaults are right until a scan is too slow or too broad). The upper bound appears only for `between`, and the value is labelled optional for the delta modes. **First Scan** starts a list; **Next Scan** narrows it, the filled button is always the next step, and <kbd>Enter</kbd> in a value field runs it. | `wasmcheat_scan`, `wasmcheat_scan_results`, `wasmcheat_scan_drop` |
@@ -97,10 +99,10 @@ the forms"; the panel fills it in for you. Inside workers the same shape carries
 
 | Symptom | What to do |
 | --- | --- |
-| Panel says `no tab attached` | DevTools must be open on a web page; extension pages and `chrome://` tabs cannot be inspected |
-| `NO_AGENT` in an output block | Press **Attach** (or **Reload & attach** when the game starts on a click) |
-| `NO_AGENT` | **Detach**, then **Attach**; if it repeats, **Reload & attach** |
-| Instances empty | **Diagnose**; all-zero call counts mean the module was compiled before the agent; reload and attach |
+| Panel says `No page to analyze` | DevTools must be open on a web page; extension pages and `chrome://` tabs cannot be inspected |
+| `Nothing to analyze in this tab` | The page has loaded no WebAssembly yet. Start the game if it waits for a click; if it was already running before WasmCheat, press **Reload page** |
+| `NO_AGENT` in an output block | Press **Reload page** |
+| Instances empty | **Why is it empty?** (Diagnose); all-zero call counts mean the module was compiled before the agent, so press **Reload page** |
 | A hook call returns `HOOK_EVAL_BLOCKED` | The page forbids `new Function`; use a declarative fallback |
 | `freeze` does not stick | The app rewrites the value outside the 16 ms pass, or the address is a copy; try the mirror address a scan also found |
 | Watchpoint status says `installed: false` | The module was already compiled; the panel reloads to arm it, so retry and let the reload finish |

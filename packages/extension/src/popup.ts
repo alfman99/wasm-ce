@@ -35,13 +35,14 @@ function setPill(text: string, tone: 'idle' | 'live' | 'warn' | 'bad'): void {
 }
 
 function renderBridge(info: PopupState): void {
-  if (info.bridgeRejected) setPill('token refused', 'bad');
-  else if (info.bridgeConnected && info.tokenSource !== 'none') setPill('bridge live', 'live');
-  else if (info.pairingHint) setPill('waiting for bridge', 'warn');
-  else setPill('bridge offline', 'warn');
+  // The panel works without the MCP server, so "off" is neutral; only a server that refuses us is a
+  // problem, and only then does the token field appear.
+  if (info.bridgeRejected) setPill('MCP token refused', 'bad');
+  else if (info.pairingHint) setPill('MCP needs a token', 'warn');
+  else if (info.bridgeConnected) setPill('MCP live', 'live');
+  else setPill('MCP off', 'idle');
 
-  // The token field is a repair tool, not a step: show it only when the bridge is unhappy about it.
-  const needsToken = info.bridgeRejected || (!info.tokenConfigured && !info.pairingHint);
+  const needsToken = info.bridgeRejected || Boolean(info.pairingHint);
   tokenBox.hidden = !needsToken;
   tokenTitle.textContent = info.tokenSource === 'paired' ? 'Bridge · paired' : 'Bridge token';
   tokenHint.textContent = info.bridgeRejected
@@ -81,7 +82,7 @@ async function refresh(): Promise<void> {
   target.textContent = tab.title || tab.url;
   stateLine.textContent = tab.agentAttached
     ? 'Page agent running. Open DevTools → WasmCheat to scan.'
-    : 'Nothing attached yet. Open DevTools → WasmCheat on this tab and press Attach.';
+    : 'WasmCheat is not in this page yet. Open DevTools → WasmCheat on this tab: it reloads the page once to get in.';
   hint.textContent =
     'Scan for a number you can see, narrow the list, then write or freeze it. The panel works on the tab you open it on.';
   note.textContent = `tab ${tab.tabId}`;

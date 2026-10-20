@@ -12,7 +12,7 @@ come from. Read this before changing any of the three surfaces.
 | Demo (Foundry) | Be a plausible target: state in linear memory, a number on screen you can watch move. |
 
 The panel is not a dashboard. It has no stat row, no activity feed and no invented numbers. Its
-layout follows the order you work: what you are attached to → the scan beside the hits → an editor
+layout follows the order you work: the page → the scan beside the hits → an editor
 under the hit you clicked (Write, Freeze) → what you keep (freezes, watches, bookmarks) → More tools →
 the raw escape hatch. The editor is tinted with the accent because it is where the answer is.
 
@@ -67,7 +67,8 @@ headlines.
 
 - **Empty** states name the cause and the next action (`list .empty`): "No hits yet. Run First Scan
   with a value you can see on screen." Never a bare "No data".
-- **Waiting** states (pairing, an attach in flight) are a warning pill on the header, never a spinner that ends nowhere.
+- **Waiting** states (the agent starting, a server that needs a token) are a pill on the header, never a spinner that ends nowhere. A stopped MCP server is `MCP off`, a neutral pill: the panel does not need it.
+- **Nothing to analyze**: a page with no WebAssembly replaces the scan cards with one card that says so, why, and what to try (Reload page, Why is it empty?). The panel keeps watching and swaps to the scan cards when wasm appears.
 - **Refused** (`NO_AGENT`, `HOOK_EVAL_BLOCKED`, `BAD_PARAMS`) shows the code and the sentence that
   fixes it, because those codes are the ones a human hits first.
 - **Error** output is tinted with `--danger` and keeps the text on screen; a failed call must not
@@ -93,7 +94,7 @@ Two rules: never invent a fact, and never use a word you would not say out loud 
 | --- | --- |
 | "Seamlessly unlock the full power of WebAssembly memory" | "Read and write a running WebAssembly module's memory." |
 | "No data" | "No hits yet. Run First Scan with a value you can see on screen." |
-| "An error occurred" | "`NO_AGENT`: the page agent is not running. Detach, then Attach." |
+| "An error occurred" | "`NO_AGENT`: WasmCheat is not in the page. Press Reload page." |
 | "Blazing fast scans" | "Scans run inside the page, so only matches cross the bridge." |
 
 Banned outright: unlock/elevate/empower/seamless/robust, significance inflation ("the future of"),

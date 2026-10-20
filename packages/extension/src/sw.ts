@@ -251,11 +251,29 @@ async function pairWithBridge(timeoutMs = 4_000): Promise<string> {
 /** Last explanation of why pairing did not work, shown in the panel next to the token field. */
 let processHint = '';
 
+let probing = false;
+
 async function connect(): Promise<void> {
+  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+  if (probing) return;
+  probing = true;
+  let url: string;
+  try {
+    url = await bridgeUrl();
+    // Chrome logs every refused WebSocket as an error on the extension's Errors page and in its
+    // console, and no script can catch it. A refused fetch is silent, so ask first whether anything
+    // listens (the bridge answers a plain GET with 426) and dial only when something does.
+    await fetch(url.replace(/^ws/, 'http'), { mode: 'no-cors', cache: 'no-store', signal: AbortSignal.timeout(2_000) });
+  } catch {
+    probing = false;
+    scheduleReconnect();
+    return;
+  }
+  probing = false;
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
   let ws: WebSocket;
   try {
-    ws = new WebSocket(await bridgeUrl());
+    ws = new WebSocket(url);
   } catch {
     scheduleReconnect();
     return;

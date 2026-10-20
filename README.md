@@ -12,7 +12,9 @@ Point it at programs you own or have written permission to test. See [Policy](#p
 ![The DevTools panel: target and status on top, the found list beside the scan controls, then the
 tools for one address](docs/img/panel.png)
 
-The panel is the human front end for the same calls an agent makes: attach, scan, narrow, change.
+The panel is the human front end for the same calls an agent makes: scan, narrow, change. Open it on
+the game's tab and it is already pointed at the game's wasm; on a page without any it says there is
+nothing to analyze.
 
 ## The fastest path
 
@@ -121,9 +123,11 @@ the server was started with `WASMCHEAT_PAIRING=off` or with `WASMCHEAT_TOKEN` se
 `cat ~/.wasmcheat/token`. Pinning a token is the way to make the loopback socket useless to anything
 else on the machine.
 
-The panel pill says `bridge live · paired` when pairing worked, `token refused` with a red `!` badge
-when the server rejected the stored token or the program on the port could not prove it holds it, and
-`waiting for pairing` when the server is not up yet.
+The panel pill says `MCP live` when the server is connected, `MCP token refused` when the server
+rejected the stored token or the program on the port could not prove it holds it, and `MCP off` when
+no server is running. `MCP off` is neutral: the panel works without the server, and the extension
+checks the port with a silent request before dialing, so a stopped server leaves no errors in the
+extensions page or the console.
 
 ## Point an MCP client at it
 
@@ -265,10 +269,10 @@ Open DevTools → **WasmCheat**. The panel is a second front end on the same dis
 uses (`wasmcheat.panel.call` → `handleBridgeRequest`), so it cannot skip
 the audit log. The service worker answers that message only from the extension's own pages.
 
-It follows the order you work in: what you are attached to, the scan, the hits, what you can do to one
-address, then the advanced tooling and the raw console. The header keeps the three facts you need on
-screen (target, tab, agent), and the `Now` line reads tab → instance → address, so a write is
-never aimed at something you have forgotten about.
+It follows the order you work in: the page, the scan, the hits, what you can do to one address, then
+the advanced tooling and the raw console. The header keeps two facts on screen (how many wasm modules
+the page runs, and whether an MCP server is connected), and the `Now` line reads tab → instance →
+address, so a write is never aimed at something you have forgotten about.
 
 - The first screen is the loop (tab, scan, hits, one address). Clicking a hit opens an editor under
   the list with **Write** and **Freeze**, and the scan card hides the fields the chosen mode does not
@@ -321,9 +325,10 @@ page, in DevTools, on purpose. Everything follows from that:
 - **Tools default to the tab in front.** `tabId` is optional on every MCP tool: an agent that does
   not pass one gets the tab you are looking at, and `wasmcheat_list_tabs` exists only for the rare
   case of a second tab.
-- **Attach is one click, and it can heal itself.** If the page has no agent yet, attach injects it;
-  if the app started before the agent existed, attach reloads the tab once, says so in its note,
-  and keeps going.
+- **Nothing to attach in the panel, and the MCP attach heals itself.** The panel starts the agent
+  on the tab it is opened on. For an agent, `wasmcheat_attach` injects it if the page has none; if
+  the app started before the agent existed, it reloads the tab once, says so in its note, and keeps
+  going.
 - **The audit log is the record.** Every mutation is reported by the extension from a single
   funnel (`callTab`), so a human clicking Freeze and an agent calling `wasmcheat_freeze` produce the
   same line: tab, address, and `before -> after` for writes. Writes, freeze set/clear, watch
@@ -616,7 +621,7 @@ that is not moving. The automated test does exactly that.
 ## Tests
 
 ```bash
-npm test           # build → vitest (154 unit) → playwright (22 end-to-end)
+npm test           # build → vitest (154 unit) → playwright (23 end-to-end)
 npm run test:unit  # page agent: memory, registry, scanner, hooks, trace, rewriter (no browser)
 npm run test:e2e   # real Chromium, real extension, real MCP stdio client
 ```
@@ -652,6 +657,10 @@ serves the demo, connects a real MCP client to `dist/bin.js`, and then, in order
     worker hops: list it, click Mine, write to its memory, watch the page repaint, then scan it;
 22. wipes the stored token and proves the extension pairs with the bridge again on its own, with no
     paste and no human step.
+
+`tests/e2e/quiet.spec.ts` then runs with no MCP server at all: the panel finds the demo's wasm with
+no Attach step, shows **Nothing to analyze in this tab** on a plain page, switches to the scan cards
+when that page instantiates a module, and the extensions page and every console stay free of errors.
 
 Costs and gotchas: one browser and one bridge port, so the suite runs with a single worker and
 fails fast if the port is already taken (it picks `7399` by default so it does not collide with a

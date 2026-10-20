@@ -4,14 +4,15 @@ Last verified from a clean tree on 2026-10-20 (`rm -rf packages/*/dist`, `npm ci
 
 - `npm ci` clean, `npm run build` 0 errors, `npm run typecheck` 0 errors
 - `npx vitest run` **154 passed** (15 files)
-- `npx playwright test` **22 passed, 0 skipped** (~29 s, real Chromium, real extension, no mocks)
+- `npx playwright test` **23 passed, 0 skipped** (~39 s, real Chromium, real extension, no mocks)
 - `npm audit --omit=dev` 0 vulnerabilities. The full audit flags 6 in test tooling only (vitest 2,
   the esbuild inside vite); fixing them needs a vitest major upgrade.
 
 ## Proven end to end (real browser, real tab)
 
-- Attach with no approval step: the panel is bound to its tab and every tool defaults to the tab in
-  front. Every **mutation** ends up in one audit funnel. The extension reports these page methods from `callTab` (`describeAction` in
+- No attach step in the panel: it starts the page agent on the tab it is opened on, shows
+  **Nothing to analyze in this tab** when the page has no WebAssembly, and switches to the scan cards
+  when a module appears. Every MCP tool defaults to the tab in front, with no approval step. Every **mutation** ends up in one audit funnel. The extension reports these page methods from `callTab` (`describeAction` in
   `packages/extension/src/sw.ts`): `page.write`, `page.freeze.set|clear`, `page.watch.add|remove`,
   `page.scan.begin|next|drop|text`, `page.pointer.scan`, `page.hook.add|setEnabled|remove`,
   `page.patch.add|remove|clear`, `page.trace.arm|stop|clear`, `page.bookmark.add|remove|clear`,
@@ -60,6 +61,9 @@ Last verified from a clean tree on 2026-10-20 (`rm -rf packages/*/dist`, `npm ci
   the popup/panel can say `paired` instead of asking for a paste.
 - Attaching to a page that predates the agent reloads that tab once, on its own, and reports
   `autoReloaded` so an agent knows every address it had is stale.
+- No errors while the MCP server is down: the service worker probes the port with a silent `fetch`
+  and dials the WebSocket only when something answers, because Chrome logs every refused WebSocket
+  as an extension error. `tests/e2e/quiet.spec.ts` asserts zero extension and console errors.
 - Service-worker suspension: the bridge state survives it, tool calls wait out the reconnect
   (`WASMCHEAT_RECONNECT_GRACE_MS`, default 8000), and `page.hello` retries when a document is being
   replaced by a reload.

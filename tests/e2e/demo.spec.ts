@@ -715,14 +715,16 @@ test('the DevTools panel drives the tab without an agent', async () => {
   await panel.locator('#advanced > summary').click();
 
   // The panel targets the tab it lives on. Opened as a plain page it takes the tab in front, which is
-  // this one, so a human never picks a tab at all.
-  await expect(panel.locator('#tab-state')).toContainText('this tab', { timeout: 20_000 });
+  // this one, so a human never picks a tab at all, and it finds the wasm without an Attach click.
+  await expect(panel.locator('#target')).toContainText('Foundry', { timeout: 20_000 });
+  await expect(panel.locator('#agent')).toContainText('wasm module', { timeout: 20_000 });
+  await expect(panel.locator('#nothing')).toBeHidden();
 
   const rawMethod = panel.locator('#raw-method');
   const rawParams = panel.locator('#raw-params');
   const rawOut = panel.locator('#raw-out');
 
-  // Attach is the whole gate: one click, no approval prompt, because the human is already here.
+  // The test hook still attaches explicitly, which must be a no-op on a page the agent is already in.
   const attaching = await panel.evaluate(() => {
     const hooks = (window as unknown as { __panel: { attach: (tabId?: number) => Promise<unknown> } }).__panel;
     return hooks.attach();

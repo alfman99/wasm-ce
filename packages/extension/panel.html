@@ -18,9 +18,8 @@
         </div>
         <span class="topbar__spacer"></span>
         <div class="topbar__state">
-          <span id="bridge" class="pill pill--idle">bridge ?</span>
-          <span id="tab-state" class="pill pill--idle">no tab</span>
-          <span id="agent" class="pill pill--idle">agent ?</span>
+          <span id="agent" class="pill pill--idle">looking for wasm…</span>
+          <span id="bridge" class="pill pill--idle">MCP ?</span>
         </div>
         <div class="targetbar__actions">
           <button id="refresh-status" type="button" class="quiet" title="Re-read the tab and the bridge">Refresh</button>
@@ -31,29 +30,40 @@
 
       <div class="targetbar" id="card-attach">
         <div class="targetbar__main">
-          <span class="eyebrow">Target</span>
-          <p id="target" class="process process--empty">no tab attached</p>
+          <span class="eyebrow">This page</span>
+          <p id="target" class="process process--empty">reading the page…</p>
         </div>
         <div class="targetbar__actions">
-          <button id="attach" type="button" class="primary">Attach</button>
-          <button id="attach-reload" type="button">Reload &amp; attach</button>
-          <button id="detach" type="button">Detach</button>
+          <button id="attach-reload" type="button" title="Reload the page with WasmCheat already in it, for a game that started before WasmCheat did">Reload page</button>
         </div>
       </div>
 
+      <!-- Shown instead of the workbench when the page gives the panel nothing to work on. -->
+      <section class="nothing" id="nothing" hidden aria-live="polite">
+        <h2 id="nothing-title">Nothing to analyze in this tab</h2>
+        <p id="nothing-text">This page has not loaded any WebAssembly. WasmCheat works on pages that run it, such as browser games built with Unity, Godot or Emscripten.</p>
+        <p id="nothing-hint" class="note">If the game starts on a click, start it: this panel notices on its own. If it was already running before WasmCheat loaded, reload the page.</p>
+        <div class="row row--buttons" id="nothing-actions">
+          <button id="nothing-reload" type="button" class="primary">Reload page</button>
+          <button id="nothing-diagnose" type="button">Why is it empty?</button>
+        </div>
+        <pre id="nothing-out" class="out"></pre>
+      </section>
+
+      <div class="workbench" id="workbench">
       <div class="crumbs">
         <span class="eyebrow">Now</span>
-        <span id="crumbs" class="crumbs__text">no tab attached</span>
+        <span id="crumbs" class="crumbs__text">reading the page…</span>
       </div>
 
       <nav class="steps" aria-label="The three steps this panel is built around">
-        <a href="#card-attach" data-step="1">Attach to this tab</a>
-        <a href="#card-scan" data-step="2">Scan for a value</a>
+        <a href="#card-scan" data-step="1">Scan for a value</a>
+        <a href="#card-scan" data-step="2">Narrow it down</a>
         <a href="#card-found" data-step="3">Change it</a>
       </nav>
 
       <details class="tokenbox" id="token-box" hidden>
-        <summary id="token-summary">Bridge token</summary>
+        <summary id="token-summary">The MCP server needs a token</summary>
         <div class="tokenbox__body">
           <label class="field">
             <span>Token from ~/.wasmcheat/token</span>
@@ -278,6 +288,8 @@
           <pre id="bookmark-out" class="out"></pre>
           <ul id="bookmark-list-out" class="list list--hits"></ul>
         </fieldset>
+      </div>
+
       </div>
 
       <!-- Everything else, grouped like the extra windows of a memory scanner. -->
@@ -630,7 +642,7 @@
           </div>
           <div class="sheet__body">
             <ol>
-              <li><b>Attach.</b> The panel works on the tab you opened it on. Attach starts the page agent there; a page that loaded before the agent is reloaded once so its wasm is captured.</li>
+              <li><b>Open the panel on the game's page.</b> That is the whole setup: the panel finds the WebAssembly by itself. If the page was open before WasmCheat loaded, it reloads it once to get in.</li>
               <li><b>No instance?</b> The game may not have started, or it lives in a frame or a worker. Open More tools, then Instances, and press Diagnose: it says which.</li>
               <li><b>Scan.</b> Pick a type and a value you can see on screen, then First Scan. Play, watch the number change, type the new value and Next Scan. Repeat until one address is left.</li>
               <li><b>Change it.</b> Click an address in Found, type the new value, and press Write, or Freeze to hold it there. Games redraw a number when they change it, so the screen can lag behind memory.</li>
@@ -659,7 +671,7 @@
             </p>
 
             <h3>When something is refused</h3>
-            <p><code>NO_AGENT</code> means the page agent is not running; Detach then Attach, or use Reload &amp; attach. <code>HOOK_EVAL_BLOCKED</code> means the page forbids <code>new Function</code>, so use a declarative fallback instead of a hook body.</p>
+            <p><code>NO_AGENT</code> means WasmCheat is not in the page; press Reload page. <code>HOOK_EVAL_BLOCKED</code> means the page forbids <code>new Function</code>, so use a declarative fallback instead of a hook body.</p>
 
             <h3>Full documentation</h3>
             <p><a href="https://github.com/alfman99/wasm-ce/blob/main/docs/PANEL.md" target="_blank" rel="noreferrer">Panel tour</a> · <a href="https://github.com/alfman99/wasm-ce/blob/main/docs/QUICKSTART.md" target="_blank" rel="noreferrer">Quick start</a> · <a href="https://github.com/alfman99/wasm-ce/blob/main/docs/AGENT_GUIDE.md" target="_blank" rel="noreferrer">Agent guide</a> · <a href="https://github.com/alfman99/wasm-ce/blob/main/README.md" target="_blank" rel="noreferrer">README</a></p>

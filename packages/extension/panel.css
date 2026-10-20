@@ -389,6 +389,33 @@ a {
   font-weight: 600;
 }
 
+/* A wrapper the empty state can hide in one go; open, its children stay in the column's flex gap. */
+.workbench {
+  display: contents;
+}
+
+/* The empty state: one sentence of fact, one of what to do, and the two buttons that do it. */
+.nothing {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 28px 24px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+}
+
+.nothing h2 {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.nothing p {
+  max-width: 68ch;
+  color: var(--ink-2);
+}
+
 .top__right {
   display: flex;
   flex-direction: column;

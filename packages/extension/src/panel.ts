@@ -485,76 +485,137 @@ async function refreshStatus(): Promise<void> {
   statusOut.hidden = true;
   statusOut.classList.remove('is-error');
 
-  const ping = await swCall<PingReply>('ext.ping');
-  setPill(
-    'bridge',
-    ping.bridgeConnected ? 'bridge live' : 'bridge offline (retrying)',
-    ping.bridgeConnected ? 'live' : 'idle',
-  );
-  el('versions').textContent = `extension ${ping.extension} · protocol ${ping.protocol}`;
-  // The token is meant to be invisible: pairing fetches it on first connect. Only say anything when
-  // the human actually has to act.
-  const summary = el('token-summary');
-  summary.textContent =
-    ping.tokenSource === 'paired'
-      ? 'Bridge · paired with this machine (nothing to paste; open only to override)'
-      : 'Bridge token';
-  if (ping.bridgeRejected) setPill('bridge', 'token refused', 'bad');
-  else if (ping.tokenSource === 'paired') setPill('bridge', 'bridge live', 'live');
-  else if (!ping.tokenConfigured) setPill('bridge', 'waiting for pairing', 'warn');
-  if (ping.pairingHint && !ping.bridgeConnected) setPill('bridge', ping.pairingHint, 'warn');
-  // Same rule as the popup: the token field is a repair tool, shown only when the bridge needs it.
-  el('token-box').hidden = !(ping.bridgeRejected || (!ping.tokenConfigured && !ping.pairingHint));
+  // A reload the panel did on its own is news the human must keep seeing, even after the refresh the
+  // reload itself triggers.
+  if (startNotice) report(statusOut, startNotice, false);
 
-  if (targetTabId === undefined) {
-    const front = await frontTab();
-    if (front) {
-      targetTabId = front.tabId;
-      frontTabInfo = front;
-    }
-  }
+  const ping = await swCall<PingReply>('ext.ping');
+  el('versions').textContent = `extension ${ping.extension} · protocol ${ping.protocol}`;
+  // The panel talks to the extension directly; the MCP server only matters to an agent. So "off" is
+  // a neutral state, and the token field shows only when a running server refuses this extension.
+  if (ping.bridgeRejected) setPill('bridge', 'MCP token refused', 'bad');
+  else if (ping.pairingHint) setPill('bridge', 'MCP needs a token', 'warn');
+  else if (ping.bridgeConnected) setPill('bridge', 'MCP live', 'live');
+  else setPill('bridge', 'MCP off', 'idle');
+  el('bridge').title = ping.bridgeConnected
+    ? 'An MCP client can drive this tab too.'
+    : 'The panel works without it. Start the MCP server to let an agent drive this tab.';
+  el('token-box').hidden = !(ping.bridgeRejected || ping.pairingHint);
+
+  const front = await frontTab();
+  if (targetTabId === undefined && front) targetTabId = front.tabId;
+  if (front && front.tabId === targetTabId) frontTabInfo = front;
   const tabId = targetTabId;
   if (tabId === undefined) {
-    el('target').textContent = 'no inspected tab: open this panel from DevTools on the page you want';
-    setPill('tab-state', 'no tab', 'idle');
-    setPill('agent', 'agent ?', 'idle');
-    markStep(1);
+    el('target').textContent = 'no web page';
+    setPill('agent', 'no page', 'idle');
+    showNothing(
+      'No page to analyze',
+      'WasmCheat works on http and https pages. Open DevTools on the page with the game, then choose WasmCheat.',
+      false,
+    );
     return;
   }
-  setPill('tab-state', 'this tab', 'live');
   if (frontTabInfo) {
     el('target').textContent = `${frontTabInfo.title || frontTabInfo.url} · ${frontTabInfo.url}`;
     el('target').classList.remove('process--empty');
   }
 
+  let info: PageAgentInfo | undefined;
   try {
-    const info = await swCall<PageAgentInfo>('ext.call', {
-      tabId,
-      method: 'page.hello',
-      params: {},
-    });
-    setPill(
-      'agent',
-      info.evalAllowed ? 'agent ready' : 'agent ready · scripts blocked',
-      info.evalAllowed ? 'live' : 'warn',
-    );
-    // The agent is injected at document_start, so on most pages it is already here: list the wasm
-    // now and the human can scan without pressing Attach first.
-    if (knownInstances.length === 0) await refreshInstances().catch(() => undefined);
+    info = await swCall<PageAgentInfo>('ext.call', { tabId, method: 'page.hello', params: {} });
   } catch {
-    setPill('agent', 'not attached yet', 'idle');
-    report(statusOut, 'this tab has no page agent yet: press Attach', false);
+    info = await startAgent(tabId, statusOut);
   }
-  // Attach is the one thing to press until there is wasm to scan; after that it is a retry.
-  const ready = knownInstances.length > 0;
-  el('attach').classList.toggle('primary', !ready);
-  markStep(!ready ? 1 : activeScanId === undefined ? 2 : 3);
+  if (!info) {
+    showNothing('WasmCheat cannot run in this page', 'Some pages (the Chrome Web Store, browser settings) do not let extensions in.', true);
+    return;
+  }
+  if (knownInstances.length === 0) await refreshInstances().catch(() => undefined);
+  const wasm = knownInstances.length === 0 ? 'no wasm' : count(knownInstances.length, 'wasm module');
+  setPill(
+    'agent',
+    info.evalAllowed ? wasm : `${wasm} · scripts blocked`,
+    knownInstances.length > 0 && info.evalAllowed ? 'live' : 'idle',
+  );
+  if (knownInstances.length === 0) {
+    showNothing(
+      'Nothing to analyze in this tab',
+      'This page has not loaded any WebAssembly. WasmCheat works on pages that run it, such as browser games built with Unity, Godot or Emscripten.',
+      true,
+    );
+    return;
+  }
+  showWorkbench();
+  markStep(activeScanId === undefined ? 1 : 2);
+}
+
+let watchForWasm: number | undefined;
+
+/**
+ * The page has nothing to work on, so the forms would only invite errors: say so, offer the two
+ * things that can change it, and keep looking, because a game that starts on a click instantiates
+ * its wasm later and there is no event for that.
+ */
+function showNothing(title: string, text: string, canRetry: boolean): void {
+  el('nothing-title').textContent = title;
+  el('nothing-text').textContent = text;
+  el('nothing-hint').hidden = !canRetry;
+  el('nothing-actions').hidden = !canRetry;
+  el('nothing').hidden = false;
+  el('workbench').hidden = true;
+  if (canRetry && watchForWasm === undefined) {
+    watchForWasm = window.setInterval(() => {
+      void instanceList()
+        .then((instances) => {
+          if (instances.length > 0) void refreshStatus().catch(reportStatusError);
+        })
+        .catch(() => undefined);
+    }, 1500);
+  }
+}
+
+function showWorkbench(): void {
+  if (watchForWasm !== undefined) window.clearInterval(watchForWasm);
+  watchForWasm = undefined;
+  el('nothing').hidden = true;
+  el('workbench').hidden = false;
+}
+
+/** Tabs the panel already tried to start the agent in, so a page that refuses is not reloaded in a loop. */
+const startedIn = new Set<number>();
+let startNotice = '';
+
+/**
+ * Opening the panel on a tab is the whole setup. The agent is normally in the page already (it is
+ * injected at document_start); when it is not, because the page was open before WasmCheat loaded,
+ * start it here, which reloads the page once so the game instantiates with the agent present.
+ */
+async function startAgent(tabId: number, statusOut: HTMLElement): Promise<PageAgentInfo | undefined> {
+  if (startedIn.has(tabId)) {
+    setPill('agent', 'not in this page', 'warn');
+    return undefined;
+  }
+  startedIn.add(tabId);
+  setPill('agent', 'starting…', 'idle');
+  try {
+    const agent = await swCall<PageAgentInfo>('ext.ensureAgent', { tabId });
+    if (agent.autoReloaded) {
+      startNotice = 'WasmCheat was not in this page yet, so the page was reloaded once to let it in.';
+      report(statusOut, startNotice, false);
+    }
+    return agent;
+  } catch (error) {
+    setPill('agent', 'not in this page', 'warn');
+    report(statusOut, describeError(error), true);
+    return undefined;
+  }
 }
 
 /**
- * Attach, then say what the human can do next. "Attached" alone is useless: the question everyone
- * has after attaching is "where is the game", so the instance table is filled and, when it is empty,
- * Diagnose is quoted instead of making them press another button.
+ * Reload the page with the agent already in it, for a game that instantiated before WasmCheat
+ * arrived, then say what came of it. When there is still no wasm, Diagnose is quoted instead of
+ * making the human press another button.
  */
 function attachAndReport(reload: boolean): () => Promise<string> {
   return async () => {
@@ -562,16 +623,15 @@ function attachAndReport(reload: boolean): () => Promise<string> {
     const agent = await swCall<PageAgentInfo>('ext.ensureAgent', { tabId, reload });
     await refreshStatus();
     await refreshInstances();
-    const reloaded = agent.autoReloaded === true && !reload;
     const lines = [
-      `agent ${agent.version} attached to tab ${tabId} · eval ${
-        agent.evalAllowed ? 'allowed' : 'blocked by page CSP'
-      }${reload ? ' · after a reload' : reloaded ? ' · the tab was reloaded for you' : ''}`,
-      `instances: ${knownInstances.length === 0 ? 'none yet' : knownInstances.map((instance) => instance.id).join(', ')}`,
+      knownInstances.length === 0
+        ? 'Reloaded. Still no WebAssembly in this page.'
+        : `Reloaded. Found ${count(knownInstances.length, 'wasm module')}: ${knownInstances.map((instance) => instance.id).join(', ')}.`,
     ];
+    if (!agent.evalAllowed) lines.push('This page blocks scripts, so hooks need a declarative fallback.');
     if (knownInstances.length === 0) {
       lines.push('', await diagnose().catch((error: unknown) => String(error)));
-      lines.push('', 'If the game only starts on a click, start it and press Reload & attach.');
+      lines.push('', 'If the game only starts on a click, start it first, then press Reload page.');
     }
     return lines.join('\n');
   };
@@ -1002,6 +1062,7 @@ function syncScanFields(): void {
 function renderScanSummary(summary: ScanSummary): void {
   activeScanId = summary.scanId;
   markScanStep('narrow');
+  markStep(2);
   el('scan-id').textContent = `scan ${summary.scanId} · ${count(summary.matchCount, 'match', 'matches')}`;
   const items = [...summary.sample]
     .sort((a, b) => a.address.offset - b.address.offset)
@@ -1070,6 +1131,7 @@ async function scanDrop(): Promise<string> {
   activeScanId = undefined;
   el('scan-id').textContent = 'no scan';
   markScanStep('first');
+  markStep(1);
   renderList(el('scan-hits'), [], NO_SCAN_YET);
   return dropped ? `${id} dropped` : `${id} was already closed`;
 }
@@ -1470,7 +1532,7 @@ function openEvents(): void {
     logEvent(payload.event, payload.data);
     if (payload.event === 'bridge.unauthorized') {
       const data = payload.data as { hint?: string } | null;
-      setPill('bridge', 'token refused', 'bad');
+      setPill('bridge', 'MCP token refused', 'bad');
       report(el('status-out'), data?.hint ?? 'the bridge refused this extension: paste the bridge token');
     }
     if (payload.event === 'tabs.changed') scheduleStatusRefresh();
@@ -1515,8 +1577,9 @@ function wire(): void {
     await refreshStatus();
     return '';
   });
-  bind('attach', statusOut, attachAndReport(false));
   bind('attach-reload', statusOut, attachAndReport(true));
+  bind('nothing-reload', el('nothing-out'), attachAndReport(true));
+  bind('nothing-diagnose', el('nothing-out'), diagnose);
   bind('token-save', statusOut, async () => {
     const token = el<HTMLInputElement>('bridge-token').value.trim();
     if (!token) throw new BridgeError('BAD_PARAMS', 'paste the contents of ~/.wasmcheat/token first');
