@@ -87,7 +87,7 @@ process.stderr.write(
       ? '[wasmcheat] bridge token: from WASMCHEAT_TOKEN\n'
       : `[wasmcheat] bridge token: ${tokenPath}. Paste it into the WasmCheat panel (or open the popup) once\n`,
 );
-process.stderr.write('[wasmcheat] load packages/extension as an unpacked extension, then let an agent in\n');
+process.stderr.write('[wasmcheat] load packages/extension/dist as an unpacked extension, then let an agent in\n');
 
 bridge.on('bridge.disconnected', () => {
   process.stderr.write('[wasmcheat] waiting for the extension to reconnect\n');

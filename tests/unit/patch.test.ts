@@ -55,6 +55,33 @@ describe('PatchStore', () => {
     }
   });
 
+  it('a frame with no sessionStorage takes the patches the extension kept, once', () => {
+    // A sandboxed iframe (YouTube Playables) throws on sessionStorage, so its own copy is gone.
+    vi.stubGlobal('sessionStorage', {
+      getItem: () => {
+        throw new DOMException('denied', 'SecurityError');
+      },
+      setItem: () => {
+        throw new DOMException('denied', 'SecurityError');
+      },
+      removeItem: () => undefined,
+    });
+    try {
+      let wired = 0;
+      const patches = new PatchStore(() => void wired++);
+      expect(patches.list()).toEqual([]);
+      const adopted = patches.adopt([{ target: 'wasm-function[10]', mode: 'empty', note: 'gravity' }]);
+      expect(adopted.map((entry) => [entry.target, entry.mode, entry.note])).toEqual([['wasm-function[10]', 'empty', 'gravity']]);
+      expect(wired).toBe(1);
+      // A second delivery (another frame announcing, a re-sent copy) must not double the list.
+      patches.adopt([{ target: 'wasm-function[10]', mode: 'empty' }]);
+      expect(patches.list()).toHaveLength(1);
+      expect(patches.adopt('not a list')).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('understands the wasm-function[N] spelling that list_instances uses', () => {
     const patches = new PatchStore(() => undefined);
     patches.add({ target: 'wasm-function[12]', mode: 'stub' });

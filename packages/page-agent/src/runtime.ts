@@ -899,6 +899,8 @@ export class PageRuntime {
         return this.patches.remove((p as { patchId: string }).patchId);
       case 'page.patch.clear':
         return this.patches.clear();
+      case 'page.patch.restore':
+        return this.patches.adopt((p as { patches?: unknown }).patches);
       default:
         throw new BridgeError('BAD_PARAMS', `unknown page method "${method}"`);
     }

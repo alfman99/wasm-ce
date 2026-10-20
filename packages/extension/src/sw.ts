@@ -14,6 +14,8 @@ import {
   type BridgeErrorShape,
   type PageAgentInfo,
   type PageDiagnostics,
+  type PatchEntry,
+  type PatchSpec,
   type TabInfo,
   formatAddress,
   type ValueType,
@@ -129,6 +131,20 @@ interface PendingTrace {
 const pendingTraces = new Map<number, PendingTrace>();
 
 /**
+ * Function patches, kept per tab with the origin of the frame they were added in. A patch only takes
+ * effect on the reload after it is added, and the page agent writes it to `sessionStorage` to carry
+ * it there; a sandboxed frame (every YouTube Playables game) has no `sessionStorage`, so without this
+ * copy the patch vanished on the very reload that was meant to install it. Each new frame of that
+ * origin gets the copy when it announces itself; one that kept its own ignores it.
+ */
+interface KeptPatches {
+  origin: string | null;
+  patches: PatchSpec[];
+}
+const tabPatches = new Map<number, KeptPatches>();
+const PATCH_MUTATIONS = new Set(['page.patch.add', 'page.patch.remove', 'page.patch.clear']);
+
+/**
  * Everything above is in memory, which an MV3 worker loses whenever Chrome suspends it — and a
  * suspension costs the human a re-attach and the agent a scan session. So the routing state
  * (which frames exist, which one owns the wasm, what watchpoint is pending) is mirrored into
@@ -148,6 +164,7 @@ interface SessionState {
   frames: Record<string, Record<string, string>>;
   documents: Record<string, string>;
   traces: Record<string, PendingTrace>;
+  patches?: Record<string, KeptPatches>;
 }
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -163,6 +180,7 @@ function persistSession(): void {
       ),
       documents: Object.fromEntries(topDocument),
       traces: Object.fromEntries(pendingTraces),
+      patches: Object.fromEntries(tabPatches),
     };
     void chrome.storage.session.set({ [SESSION_KEY]: state }).catch(() => undefined);
   }, 100);
@@ -178,6 +196,7 @@ async function restoreSession(): Promise<void> {
     }
     for (const [tabId, id] of Object.entries(stored.documents ?? {})) topDocument.set(Number(tabId), id);
     for (const [tabId, trace] of Object.entries(stored.traces ?? {})) pendingTraces.set(Number(tabId), trace);
+    for (const [tabId, kept] of Object.entries(stored.patches ?? {})) tabPatches.set(Number(tabId), kept);
   } catch {
     // A fresh window has no session state; nothing to restore.
   }
@@ -757,12 +776,18 @@ async function resolveFrame(tabId: number): Promise<number> {
     return only;
   }
 
-  let best: { frameId: number; instances: number } | null = null;
+  // Before any frame has an instance (the game frame right after a reload), the frame that looks like
+  // a game, with a canvas or a .wasm reference, beats the host page around it: a patch or watchpoint
+  // sent in that window has to land where the module will load.
+  let best: { frameId: number; instances: number; game: boolean } | null = null;
   for (const [frameId, url] of frames) {
     if (!/^https?:/i.test(url)) continue;
     try {
       const info = await sendToTab<PageDiagnostics>(tabId, 'page.diagnose', {}, 4_000, frameId);
-      if (!best || info.instances > best.instances) best = { frameId, instances: info.instances };
+      const game = info.canvases > 0 || info.wasmReferences.length > 0;
+      if (!best || info.instances > best.instances || (info.instances === best.instances && game && !best.game)) {
+        best = { frameId, instances: info.instances, game };
+      }
     } catch {
       // Frame raced away or has no relay; ignore it.
     }
@@ -1094,6 +1119,7 @@ async function callTab(
   const attempt = async (frameId: number): Promise<unknown> => {
     try {
       const result = await sendToTab(params.tabId, params.method, params.params ?? {}, timeoutMs, frameId);
+      await keepPatches(params.tabId, params.method, frameId);
       await report(result, undefined);
       return result;
     } catch (error) {
@@ -1132,8 +1158,35 @@ async function callTab(
     attachedTabs.add(params.tabId);
     return attempt(await resolveFrame(params.tabId));
   }
+  await keepPatches(params.tabId, params.method, frameId);
   await report(result, undefined);
   return result;
+}
+
+/**
+ * Awaited, not fired: the patch tool reloads the tab right after `add`, and the copy must exist
+ * before the new frame announces itself.
+ */
+async function keepPatches(tabId: number, method: string, frameId: number): Promise<void> {
+  if (!PATCH_MUTATIONS.has(method)) return;
+  try {
+    const list = await sendToTab<PatchEntry[]>(tabId, 'page.patch.list', {}, 4_000, frameId);
+    if (list.length === 0) tabPatches.delete(tabId);
+    else {
+      tabPatches.set(tabId, {
+        origin: originOf(tabFrames.get(tabId)?.get(frameId)),
+        patches: list.map(({ target, mode, value, note }) => ({
+          target,
+          mode,
+          ...(value !== undefined ? { value } : {}),
+          ...(note ? { note } : {}),
+        })),
+      });
+    }
+    persistSession();
+  } catch {
+    // The frame went away between the change and the read; its own storage is all there is.
+  }
 }
 
 async function sendToTab<T>(
@@ -1304,6 +1357,11 @@ function onRelayReady(tabId: number, sender: chrome.runtime.MessageSender, annou
     // and the trace status reports that honestly.
     void sendToTab(tabId, 'page.trace.arm', pending.options, 5_000, frameId).catch(() => undefined);
   }
+  const kept = tabPatches.get(tabId);
+  if (kept && kept.origin !== null && kept.origin === originOf(url)) {
+    // Same race as the trace above: the module usually streams in well after the frame announces.
+    void sendToTab(tabId, 'page.patch.restore', { patches: kept.patches }, 5_000, frameId).catch(() => undefined);
+  }
 }
 
 /** Extension pages only (panel, popup, the panel opened as a tab), never a content script. */
@@ -1321,6 +1379,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   forgetDocument(tabId);
   topDocument.delete(tabId);
   pendingTraces.delete(tabId);
+  tabPatches.delete(tabId);
 });
 
 // A new document means new frames and a new page agent, so forget the routing and re-probe on the

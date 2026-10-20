@@ -11,7 +11,8 @@ import type { FunctionPatch } from '@wasmcheat/wasm-instrument';
  * Patches live in `sessionStorage` for the same reason watchpoints do: a function body can only be
  * replaced before the engine compiles the module, so a patch is written down, the tab is reloaded,
  * and the page agent re-applies it while the module streams past. `sessionStorage` is per-origin,
- * survives exactly the reload we own, and disappears when the tab closes.
+ * survives exactly the reload we own, and disappears when the tab closes. A sandboxed frame has none,
+ * so the extension also keeps a copy per tab and hands it back through `adopt`.
  */
 const STORAGE_KEY = 'wasmcheat.patches';
 
@@ -123,8 +124,19 @@ export class PatchStore {
       if (stored.length === 0) sessionStorage.removeItem(STORAGE_KEY);
       else sessionStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
     } catch {
-      // A page that denies storage still gets a working session; it just cannot survive a reload.
+      // A page that denies storage (a sandboxed iframe) keeps its patches through `adopt` instead.
     }
+  }
+
+  /**
+   * Patches the extension kept for this tab, handed over when the frame starts. A frame with no
+   * `sessionStorage` (a sandboxed iframe, which is what YouTube Playables runs every game in) loses
+   * its patches on the reload that installs them, so the service worker holds a copy. A frame that
+   * restored its own list already has them and ignores the copy.
+   */
+  adopt(stored: unknown): PatchEntry[] {
+    if (this.entries.length === 0 && this.load(stored)) this.onWiringChange();
+    return this.list();
   }
 
   private restore(): void {
@@ -136,24 +148,28 @@ export class PatchStore {
     }
     if (!raw) return;
     try {
-      const stored = JSON.parse(raw) as StoredPatch[];
-      if (!Array.isArray(stored)) return;
-      for (const item of stored) {
-        if (!item?.target || !PATCH_MODES.includes(item.mode)) continue;
-        this.entries.push({
-          id: `p${this.nextId++}`,
-          target: item.target,
-          mode: item.mode,
-          ...(typeof item.value === 'number' ? { value: item.value } : {}),
-          ...(item.note ? { note: item.note } : {}),
-          applied: false,
-          applications: 0,
-          createdAt: Date.now(),
-        });
-      }
+      this.load(JSON.parse(raw));
     } catch {
       sessionStorage.removeItem(STORAGE_KEY);
     }
+  }
+
+  private load(stored: unknown): boolean {
+    if (!Array.isArray(stored)) return false;
+    for (const item of stored as StoredPatch[]) {
+      if (!item?.target || !PATCH_MODES.includes(item.mode)) continue;
+      this.entries.push({
+        id: `p${this.nextId++}`,
+        target: item.target,
+        mode: item.mode,
+        ...(typeof item.value === 'number' ? { value: item.value } : {}),
+        ...(item.note ? { note: item.note } : {}),
+        applied: false,
+        applications: 0,
+        createdAt: Date.now(),
+      });
+    }
+    return this.entries.length > 0;
   }
 }
 

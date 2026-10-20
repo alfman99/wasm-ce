@@ -602,7 +602,9 @@ watchpoints use:
 - The stub lives in the binary, so it also reaches callers that cached an export reference, which is
   the one thing a JS hook can never do.
 - Patches persist across reloads (`sessionStorage`, per origin, exactly like arming a watchpoint) and
-  stay until `remove` / `clear`, which reload the tab so the original body comes back.
+  stay until `remove` / `clear`, which reload the tab so the original body comes back. The extension
+  keeps a copy per tab too, so a sandboxed game frame with no `sessionStorage` (every YouTube
+  Playable) gets its patches back after the reload.
 - `applied` is false until a module has been instantiated with the patch: a compiled module can never
   be edited. The tool waits for the instantiation the reload triggers, so `applied: true` means the
   code you are talking to is the code you patched.

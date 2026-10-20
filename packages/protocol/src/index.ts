@@ -739,6 +739,7 @@ export const Methods = {
   pagePatchList: 'page.patch.list',
   pagePatchRemove: 'page.patch.remove',
   pagePatchClear: 'page.patch.clear',
+  pagePatchRestore: 'page.patch.restore',
 } as const;
 
 /** Events the service worker pushes to the MCP server. */
