@@ -47,9 +47,9 @@ const RPC_TIMEOUT_MS = 30_000;
 /** A frame that has not answered hello in this long is treated as gone, not as slow. */
 const FRAME_PROBE_TIMEOUT_MS = 1_500;
 /**
- * MV3 terminates an idle service worker after 30s, and a wait on a human click is exactly that:
- * timers do not count as activity, so a long approval wait would die mid-poll and the bridge would
- * time out. Pinging a trivial extension API every 15s keeps the worker alive while we wait.
+ * MV3 terminates an idle service worker after 30s. A tab that is still loading (or a wait for a
+ * page reload during attach) looks exactly like idleness to Chrome, and the bridge would then find
+ * no socket. Pinging a trivial extension API every 15s keeps the worker alive while work is pending.
  */
 const KEEPALIVE_MS = 15_000;
 
@@ -105,6 +105,9 @@ const pendingTraces = new Map<number, { address: string; type?: string; maxHits?
  * The chosen frame is deliberately *not* persisted: which frame owns the wasm can change between
  * documents, and a restored answer from the previous document is worse than re-probing.
  */
+/** Restoring routing state is a storage read; a request that arrives first must wait for it. */
+let sessionReady: Promise<void> = Promise.resolve();
+
 const SESSION_KEY = 'wasmcheat.session';
 interface SessionState {
   attached: number[];
@@ -142,7 +145,7 @@ async function restoreSession(): Promise<void> {
     // A fresh window has no session state; nothing to restore.
   }
 }
-void restoreSession();
+sessionReady = restoreSession();
 
 // ---------------------------------------------------------------- bridge socket
 
@@ -392,6 +395,7 @@ function onBridgeEvent(event: string, data: unknown): void {
 }
 
 async function handleBridgeRequest(method: string, params: unknown): Promise<unknown> {
+  await sessionReady;
   switch (method) {
     case 'ext.ping':
       // `bridgeConnected` lets the DevTools status bar say whether the host is actually listening;
@@ -1030,9 +1034,9 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse: (v
   }
 
   if (msg.type === 'wasmcheat.panel.call') {
-    // The DevTools panel goes through the very dispatcher the WebSocket uses, so the approval
-    // gate, frame routing, worker routing and error shapes are identical: a panel is a second
-    // front-end, not a trust bypass.
+    // The DevTools panel goes through the very dispatcher the WebSocket uses, so frame routing,
+    // worker routing, auditing and error shapes are identical: a panel is a second front-end,
+    // not a second implementation.
     const call = msg as unknown as { method?: unknown; params?: unknown };
     void (async () => {
       if (typeof call.method !== 'string') {
