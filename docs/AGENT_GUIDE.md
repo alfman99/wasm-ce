@@ -65,7 +65,8 @@ No `tabId` means the tab in front. `wasmcheat_list_tabs` returns `tabId`, `title
 `agentAttached` and `frames`
 (so you can see a game inside an iframe). `attach` returns `pageAgent` info including `evalAllowed`. If
 that is `false` the page's CSP blocks `new Function`, so free-form hook bodies will fail and you must use
-declarative hook fallbacks.
+declarative hook fallbacks. It is absent until the first hook with a body: checking earlier is itself a
+violation on a page that enforces Trusted Types.
 
 ### 3.2 Diagnose an empty instance list
 

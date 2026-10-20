@@ -386,8 +386,11 @@ export interface PageAgentInfo {
   url: string;
   /** Frame the extension routed this call to; absent on the top frame's own answer. */
   frameId?: number;
-  /** True when the page realm allows `new Function`, i.e. free-form hook scripts work. */
-  evalAllowed: boolean;
+  /**
+   * Whether the page realm allows `new Function`, i.e. free-form hook scripts work. Absent until the
+   * first hook needed it: probing earlier is itself a violation on a Trusted Types page.
+   */
+  evalAllowed?: boolean;
 }
 
 export type WorkerType = 'classic' | 'module';

@@ -46,7 +46,7 @@ import { ScanStore, scanText } from './scanner.js';
 import { TimeMachine } from './speed.js';
 import { deleteSaved, listSaved, loadSaved, saveScan } from './saved-scans.js';
 import { addBookmark, clearBookmarks, listBookmarks, removeBookmark } from './bookmarks.js';
-import { HookStore, detectEvalAllowed } from './hooks.js';
+import { HookStore } from './hooks.js';
 import { TraceStore } from './trace.js';
 import { PatchStore } from './patch.js';
 import { pointerResolve, pointerScan } from './pointer.js';
@@ -138,7 +138,7 @@ export class PageRuntime {
       onInstrumented: (tracked) => this.trace.onInstrumented(tracked),
       onMissedInstrumentation: (tracked) => this.trace.onMissedInstrumentation(tracked),
     });
-    this.hooks = new HookStore(this.registry, detectEvalAllowed());
+    this.hooks = new HookStore(this.registry);
     this.trace = new TraceStore(
       this.registry,
       (bytes, modes) => this.rewriteBinary(bytes, modes),

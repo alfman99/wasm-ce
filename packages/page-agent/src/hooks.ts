@@ -59,14 +59,24 @@ export class HookStore {
   private readonly wrapperCache = new Map<string, CachedWrapper>();
   private version = 0;
   private nextId = 1;
-  readonly evalAllowed: boolean;
+  /**
+   * Unknown until a hook body needs compiling. Probing at start-up cost an error in
+   * chrome://extensions on every page that enforces Trusted Types (YouTube is one): the probe is
+   * itself a violation there, reported whether or not anyone ever writes a hook.
+   */
+  private evalState: boolean | undefined;
 
   constructor(
     private readonly registry: WasmRegistry,
-    evalAllowed: boolean,
+    evalAllowed?: boolean,
   ) {
-    this.evalAllowed = evalAllowed;
+    this.evalState = evalAllowed;
     this.registry.setExportResolver((instanceId, name, original) => this.resolveExport(instanceId, name, original));
+  }
+
+  /** Whether hook bodies compile here; undefined until the first hook asked. */
+  get evalAllowed(): boolean | undefined {
+    return this.evalState;
   }
 
   list(): HookEntry[] {
@@ -186,7 +196,8 @@ export class HookStore {
   }
 
   private compile(spec: HookSpec): ((args: unknown[], ctx: HookContext) => unknown) | null {
-    if (!this.evalAllowed) return null;
+    this.evalState ??= detectEvalAllowed();
+    if (!this.evalState) return null;
     try {
       // eslint-disable-next-line no-new-func
       return new Function('args', 'ctx', `"use strict";\n${spec.body}`) as (

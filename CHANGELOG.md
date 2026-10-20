@@ -13,6 +13,9 @@
 - When a page's only WebAssembly is a physics engine (Ammo.js, Box2D, Rapier, Havok, Jolt, PhysX),
   the panel, `diagnose` and `attach` say so: the game is JavaScript, so its score and coins are in
   no memory WasmCheat can scan.
+- A page that enforces Trusted Types (YouTube itself) no longer leaves an error on the extension.
+  The check for whether hook bodies can compile there now runs on the first hook that has one,
+  instead of on every page load.
 - Diagnosing a page, which the extension does for every frame when it picks one, takes milliseconds
   instead of seconds on pages with large minified inline scripts (YouTube, PlayCanvas games).
 
