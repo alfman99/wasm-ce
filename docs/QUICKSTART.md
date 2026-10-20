@@ -24,18 +24,18 @@ can find a wasm-capable clang (see [README](../README.md#requirements)); otherwi
 That folder is the extension root: it holds `manifest.json`, the service worker, the page agent and
 the DevTools panel. Reload the extension after every rebuild.
 
-## 3. Copy the bridge token
+## 3. Nothing to paste
 
-```bash
-cat ~/.wasmcheat/token
-```
+The extension pairs with the MCP server on its first connection and keeps the token it receives, so
+the popup/panel pill goes from `waiting for pairing` to `bridge live · paired` on its own. There is
+no copy-paste step.
 
-The MCP server mints this file on first start and prints its path, never the token itself. Open the
-WasmCheat popup (or the panel) and paste it into **Bridge token**. The pill in the popup turns to
-`bridge connected` once it is accepted.
+Two cases still use the field, and both are in the panel and the popup: the server runs with
+`WASMCHEAT_PAIRING=off` (or `WASMCHEAT_TOKEN`), or another process already holds the bridge. Then paste
+`cat ~/.wasmcheat/token`.
 
-Why a token exists: the bridge listens on `ws://127.0.0.1:7331`, and without a secret any local
-process could claim to be the extension and answer the server's calls with invented data.
+Why a token exists at all: the bridge listens on `ws://127.0.0.1:7331`, and without a secret any local
+process could answer this server's tool calls with made-up data.
 
 ## 4. Start the target
 
@@ -88,8 +88,9 @@ DevTools toolbar. If the panel is not listed, reload the extension and reopen De
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| Popup says `bridge offline` | No MCP server running, or a wrong port | Start the server, or save the right token; the popup retries with backoff |
-| Popup says `token refused` | The saved token does not match `~/.wasmcheat/token` | Paste the current file contents and save |
+| Popup says `bridge offline` | No MCP server running, or a wrong port | Start the server; the popup retries with backoff |
+| Popup says `token refused` | Pairing is off and the saved token does not match `~/.wasmcheat/token` | Paste the current file contents and save |
+| Panel says `waiting for pairing` | The server is not up yet, or its port differs from the extension's | Start it, and check `WASMCHEAT_PORT` |
 | `NEED_APPROVAL` | The human has not approved this tab and site | Press **Approve** in the popup or the panel |
 | `NO_AGENT` | The page agent is not in the page (loaded after it, or the tab was replaced) | **Detach**, then **Attach**; use **Reload & attach** if it still fails |
 | Instances empty, Diagnose says `calls.*` are all `0` | The app instantiated its module before the agent existed | **Reload & attach** |

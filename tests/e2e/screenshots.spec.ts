@@ -21,6 +21,8 @@ test('screenshots', async () => {
   const worker =
     browser.context.serviceWorkers()[0] ?? (await browser.context.waitForEvent('serviceworker'));
   await worker.evaluate((port) => chrome.storage.local.set({ wasmcheatPort: port }), BRIDGE_PORT);
+  // Show what a real first run looks like: no token, so the extension pairs for one.
+  await worker.evaluate(() => chrome.storage.local.set({ bridgeToken: '', bridgeTokenSource: 'none' }));
   const mcp = await connectMcp();
   try {
     await waitForBridge(mcp);

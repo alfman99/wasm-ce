@@ -22,7 +22,8 @@
     "test": "npm run build && vitest run && playwright test",
     "test:unit": "vitest run",
     "test:e2e": "playwright test",
-    "start": "node packages/mcp-server/dist/bin.js"
+    "start": "node packages/mcp-server/dist/bin.js",
+    "demo": "node scripts/demo.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",

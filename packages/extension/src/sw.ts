@@ -1,9 +1,11 @@
 import {
+  BRIDGE_PAIR,
   BridgeError,
   Events,
   PROTOCOL_VERSION,
   isEvent,
   isRequest,
+  isResponse,
   makeErrorResponse,
   makeResponse,
   type ApprovalState,
@@ -43,6 +45,8 @@ async function bridgeUrl(): Promise<string> {
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 10_000;
 const RPC_TIMEOUT_MS = 30_000;
+/** A frame that has not answered hello in this long is treated as gone, not as slow. */
+const FRAME_PROBE_TIMEOUT_MS = 1_500;
 const APPROVAL_POLL_MS = 400;
 /**
  * MV3 terminates an idle service worker after 30s, and a wait on a human click is exactly that:
@@ -211,7 +215,10 @@ async function refreshBadge(approvals?: Approvals): Promise<void> {
  * it survives a service-worker restart. The MCP server mints it into `~/.wasmcheat/token`.
  */
 const TOKEN_KEY = 'bridgeToken';
+const TOKEN_SOURCE_KEY = 'bridgeTokenSource';
 let bridgeRejected = false;
+/** Set while a `bridge.pair` request is in flight, keyed by message id. */
+const pairWaiters = new Map<string, (message: unknown) => void>();
 
 async function bridgeToken(): Promise<string> {
   const stored = await chrome.storage.local.get(TOKEN_KEY);
@@ -219,17 +226,69 @@ async function bridgeToken(): Promise<string> {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+async function tokenSource(): Promise<'paired' | 'pasted' | 'none'> {
+  const stored = await chrome.storage.local.get([TOKEN_KEY, TOKEN_SOURCE_KEY]);
+  if (typeof stored[TOKEN_KEY] !== 'string' || (stored[TOKEN_KEY] as string).trim() === '') return 'none';
+  return stored[TOKEN_SOURCE_KEY] === 'paired' ? 'paired' : 'pasted';
+}
+
+/**
+ * Fetches the token from the bridge instead of asking the human to copy a file into a password box.
+ *
+ * The token exists to keep *another machine* (or another user) from answering this server's calls;
+ * a process running as the same user can read `~/.wasmcheat/token` anyway, so pairing over the
+ * loopback socket grants nothing that user did not already have. `WASMCHEAT_PAIRING=off` turns it
+ * into a manual secret again, and the panel's token field still works either way.
+ */
+async function pairWithBridge(timeoutMs = 4_000): Promise<string> {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return '';
+  const id = `pair${Date.now()}`;
+  return new Promise<string>((resolve) => {
+    const timer = setTimeout(() => {
+      pairWaiters.delete(id);
+      resolve('');
+    }, timeoutMs);
+    pairWaiters.set(id, (message) => {
+      clearTimeout(timer);
+      pairWaiters.delete(id);
+      const reply = message as { result?: { token?: unknown }; error?: { message?: string } };
+      const token = reply.result?.token;
+      if (typeof token === 'string' && token.length > 0) {
+        // Await the write: the hello that follows asks where the token came from, and a set that is
+        // still in flight would make a paired token look pasted.
+        void chrome.storage.local.set({ [TOKEN_KEY]: token, [TOKEN_SOURCE_KEY]: 'paired' }).then(() => resolve(token));
+        return;
+      }
+      processHint = reply.error?.message ?? 'pairing failed';
+      resolve('');
+    });
+    send({ v: PROTOCOL_VERSION, kind: 'req', id, method: BRIDGE_PAIR, params: {} });
+  });
+}
+
+/** Last explanation of why pairing did not work, shown in the panel next to the token field. */
+let processHint = '';
+
 async function connect(): Promise<void> {
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+  let ws: WebSocket;
   try {
-    socket = new WebSocket(await bridgeUrl());
+    ws = new WebSocket(await bridgeUrl());
   } catch {
     scheduleReconnect();
     return;
   }
+  socket = ws;
 
-  socket.addEventListener('open', async () => {
+  // Every listener closes over its own socket. A late 'close' from a socket we already replaced must
+  // not null out, or schedule work for, the one that is now connecting: that race silently orphans
+  // the fresh socket and the bridge never comes back.
+  ws.addEventListener('open', async () => {
+    if (socket !== ws) return;
     reconnectDelay = RECONNECT_BASE_MS;
+    let token = await bridgeToken();
+    if (token === '') token = await pairWithBridge();
+    if (socket !== ws) return;
     send({
       v: PROTOCOL_VERSION,
       kind: 'evt',
@@ -237,24 +296,28 @@ async function connect(): Promise<void> {
       data: {
         extension: chrome.runtime.getManifest().version,
         protocol: PROTOCOL_VERSION,
-        token: await bridgeToken(),
+        token,
+        paired: token !== '' && (await tokenSource()) === 'paired',
       },
     });
   });
 
-  socket.addEventListener('message', (event) => {
+  ws.addEventListener('message', (event) => {
     void onBridgeMessage(event.data);
   });
 
-  socket.addEventListener('close', (event) => {
+  ws.addEventListener('close', (event) => {
+    if (socket !== ws) return;
     socket = null;
     if (event.code === 1008) {
       // The server refused the token. Retrying fast would only spam the log, so back right off and
-      // tell the panel what to do; a changed token reconnects immediately below.
+      // tell the panel what to do; a changed token reconnects immediately.
       bridgeRejected = true;
       reconnectDelay = RECONNECT_MAX_MS;
       const hint =
-        'the bridge refused this extension: paste the token from ~/.wasmcheat/token into the WasmCheat panel';
+        processHint !== ''
+          ? `the bridge refused this extension: ${processHint}`
+          : 'the bridge refused this extension: pairing failed, so paste the token from ~/.wasmcheat/token into the WasmCheat panel';
       emit('bridge.unauthorized', { hint });
       void chrome.action.setBadgeBackgroundColor({ color: '#c92a2a' });
       void chrome.action.setBadgeText({ text: '!' });
@@ -264,8 +327,8 @@ async function connect(): Promise<void> {
     scheduleReconnect();
   });
 
-  socket.addEventListener('error', () => {
-    socket?.close();
+  ws.addEventListener('error', () => {
+    ws.close();
   });
 }
 
@@ -373,6 +436,10 @@ async function onBridgeMessage(raw: unknown): Promise<void> {
     onBridgeEvent(parsed.event, parsed.data);
     return;
   }
+  if (isResponse(parsed)) {
+    pairWaiters.get(parsed.id)?.(parsed);
+    return;
+  }
   if (!isRequest(parsed)) return;
 
   try {
@@ -400,6 +467,8 @@ async function handleBridgeRequest(method: string, params: unknown): Promise<unk
         bridgeConnected: socket?.readyState === WebSocket.OPEN,
         bridgeRejected,
         tokenConfigured: (await bridgeToken()).length > 0,
+        tokenSource: await tokenSource(),
+        pairingHint: processHint,
       };
     case 'ext.listTabs':
       return listTabs();
@@ -682,26 +751,47 @@ async function traceArm(params: {
 }
 
 async function ensureAgent(params: { tabId: number; reload?: boolean; frameId?: number }): Promise<PageAgentInfo> {
-  const tab = await getTab(params.tabId);
-  if (params.reload) {
-    await chrome.tabs.reload(params.tabId);
-    const ready = await waitFor(() => attachedTabs.has(params.tabId), 15_000);
-    if (!ready) {
-      throw new BridgeError('NO_AGENT', `tab ${params.tabId} did not re-attach after reload`);
-    }
-  } else if (!attachedTabs.has(params.tabId)) {
-    await injectAgent(params.tabId);
-  }
+  await getTab(params.tabId);
+  let reloaded = false;
 
-  // Re-resolve every attach: a reloaded page may instantiate its wasm somewhere else.
-  activeFrame.delete(params.tabId);
-  if (params.frameId !== undefined) {
-    activeFrame.set(params.tabId, params.frameId);
-    persistSession();
+  const attachOnce = async (reload: boolean): Promise<PageAgentInfo> => {
+    if (reload) {
+      await chrome.tabs.reload(params.tabId);
+      reloaded = true;
+      const ready = await waitFor(() => attachedTabs.has(params.tabId), 15_000);
+      if (!ready) {
+        throw new BridgeError('NO_AGENT', `tab ${params.tabId} did not re-attach after reload`);
+      }
+    } else if (!attachedTabs.has(params.tabId)) {
+      await injectAgent(params.tabId);
+    }
+
+    // Re-resolve every attach: a reloaded page may instantiate its wasm somewhere else.
+    activeFrame.delete(params.tabId);
+    if (params.frameId !== undefined) {
+      activeFrame.set(params.tabId, params.frameId);
+      persistSession();
+    }
+    const frameId = params.frameId ?? (await resolveFrame(params.tabId));
+    const info = await helloWithRetry(params.tabId, frameId);
+    return frameId === undefined ? info : { ...info, frameId };
+  };
+
+  try {
+    const info = await attachOnce(params.reload === true);
+    return reloaded ? { ...info, autoReloaded: true } : info;
+  } catch (error) {
+    // The one failure worth fixing without asking: a page that was open before the extension was
+    // installed has no relay and never will, and "reload the tab yourself, then call me again" is
+    // the step where people stop. Reload once, automatically, and report that it happened.
+    const missingRelay =
+      error instanceof BridgeError &&
+      error.code === 'NO_AGENT' &&
+      /needs a reload|no WasmCheat relay/i.test(error.message);
+    if (!missingRelay || reloaded || params.reload === false) throw error;
+    const info = await attachOnce(true);
+    return { ...info, autoReloaded: true };
   }
-  const frameId = params.frameId ?? (await resolveFrame(params.tabId));
-  const info = await helloWithRetry(params.tabId, frameId);
-  return frameId === undefined ? info : { ...info, frameId };
 }
 
 /**
@@ -731,7 +821,17 @@ async function helloWithRetry(tabId: number, frameId: number | undefined): Promi
  */
 async function resolveFrame(tabId: number): Promise<number | undefined> {
   const cached = activeFrame.get(tabId);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) {
+    // Frame ids are per document and a page made of iframes throws them away constantly (YouTube
+    // Playables re-creates its game frame on every ad break). Trusting the cache blindly is how a
+    // live tab reports NO_AGENT, so ask the frame whether it is still there.
+    try {
+      await sendToTab<PageAgentInfo>(tabId, 'page.hello', {}, FRAME_PROBE_TIMEOUT_MS, cached);
+      return cached;
+    } catch {
+      activeFrame.delete(tabId);
+    }
+  }
 
   const frames = tabFrames.get(tabId);
   if (!frames || frames.size === 0) return undefined;
@@ -1023,6 +1123,24 @@ async function callTab(params: {
     await reportAction(params.tabId, params.method, params.params, result, undefined);
     return result;
   } catch (error) {
+    // The right realm can change without the page reloading: a Playables game boots inside a frame
+    // that did not exist when we picked one, and the request lands where the instance id is unknown.
+    // Re-probe (the frame with the most instances wins) and ask again, once.
+    if (error instanceof BridgeError && (error.code === 'NO_INSTANCE' || error.code === 'NO_MEMORY')) {
+      activeFrame.delete(params.tabId);
+      persistSession();
+      const probed = await resolveFrame(params.tabId);
+      if (probed !== frameId) {
+        try {
+          const result = await sendToTab(params.tabId, params.method, params.params ?? {}, timeoutMs, probed);
+          await reportAction(params.tabId, params.method, params.params, result, undefined);
+          return result;
+        } catch (retryError) {
+          await reportAction(params.tabId, params.method, params.params, undefined, retryError);
+          throw retryError;
+        }
+      }
+    }
     if (!(error instanceof BridgeError) || error.code !== 'NO_AGENT') {
       await reportAction(params.tabId, params.method, params.params, undefined, error);
       throw error;
@@ -1048,20 +1166,37 @@ async function sendToTab<T>(
   timeoutMs: number,
   frameId?: number,
 ): Promise<T> {
-  let response: unknown;
-  try {
-    const message = { type: 'wasmcheat.rpc', method, params };
-    response = await withTimeout(
-      frameId === undefined ? chrome.tabs.sendMessage(tabId, message) : chrome.tabs.sendMessage(tabId, message, { frameId }),
+  const message = { type: 'wasmcheat.rpc', method, params };
+  const send = (toFrame?: number): Promise<unknown> =>
+    withTimeout(
+      toFrame === undefined ? chrome.tabs.sendMessage(tabId, message) : chrome.tabs.sendMessage(tabId, message, { frameId: toFrame }),
       timeoutMs,
       method,
     );
+  let response: unknown;
+  try {
+    response = await send(frameId);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (/Receiving end does not exist|Could not establish connection|No frame with id/i.test(message)) {
+    const text = error instanceof Error ? error.message : String(error);
+    const lostFrame = /Receiving end does not exist|Could not establish connection|No frame with id/i.test(text);
+    if (lostFrame && frameId !== undefined) {
+      // The frame we routed to is gone; every frame gets the call and the first relay that answers
+      // wins. The next call re-probes instead of reusing the dead id.
+      activeFrame.delete(tabId);
+      try {
+        response = await send(undefined);
+      } catch (retryError) {
+        const retryText = retryError instanceof Error ? retryError.message : String(retryError);
+        if (/Receiving end does not exist|Could not establish connection|No frame with id/i.test(retryText)) {
+          throw new BridgeError('NO_AGENT', `no WasmCheat relay in tab ${tabId}; the page needs a reload`);
+        }
+        throw retryError;
+      }
+    } else if (lostFrame) {
       throw new BridgeError('NO_AGENT', `no WasmCheat relay in tab ${tabId}; the page needs a reload`);
+    } else {
+      throw error;
     }
-    throw error;
   }
 
   const payload = response as { result?: unknown; error?: { code?: string; message?: string } } | undefined;
@@ -1173,6 +1308,8 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse: (v
         bridgeConnected: socket?.readyState === WebSocket.OPEN,
         bridgeRejected,
         tokenConfigured: (await bridgeToken()).length > 0,
+        tokenSource: await tokenSource(),
+        pairingHint: processHint,
       });
     })();
     return true;

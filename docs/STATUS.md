@@ -3,8 +3,8 @@
 Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`):
 
 - `npm ci` clean, `npm run build` 0 errors, `npm run typecheck` 0 errors
-- `npx vitest run` **123 passed** (13 files)
-- `npx playwright test` **21 passed, 0 skipped** (21 s, real Chromium, real extension, no mocks)
+- `npx vitest run` **127 passed** (13 files)
+- `npx playwright test` **23 passed, 0 skipped** (~26 s, real Chromium, real extension, no mocks)
 
 ## Proven end to end (real browser, real tab)
 
@@ -47,7 +47,12 @@ Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`
   two mirrored copies at 99,999,999 and the game showed it. See "Two WebAssembly facts" in the
   README for why i32 scans missed it.
 - Bridge authentication: token minted into `$WASMCHEAT_HOME/token` (or `WASMCHEAT_TOKEN`), required
-  in `bridge.hello`, wrong token closed with `1008 bad bridge token`.
+  in `bridge.hello`, wrong token closed with `1008 bad bridge token`. The extension pairs for it on
+  first connect (`bridge.pair`, answered only while no live socket is authenticated); pairing is off
+  when the token is pinned or `WASMCHEAT_PAIRING=off`. A paired token is stored with its source, so
+  the popup/panel can say `paired` instead of asking for a paste.
+- Attaching to a page that predates the agent reloads that tab once, on its own, and reports
+  `autoReloaded` so an agent knows every address it had is stale.
 - Service-worker suspension: the bridge state survives it, tool calls wait out the reconnect
   (`WASMCHEAT_RECONNECT_GRACE_MS`, default 8000), and `page.hello` retries when a document is being
   replaced by a reload.

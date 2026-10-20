@@ -90,7 +90,9 @@ export async function launchBrowser(): Promise<LaunchedBrowser> {
   if (!worker) worker = await context.waitForEvent('serviceworker', { timeout: 20_000 });
   const extensionId = new URL(worker.url()).host;
   await worker.evaluate(async (token: string) => {
-    await chrome.storage.local.set({ bridgeToken: token });
+    // The suite pastes the token like a human would, and says so, because a token with no recorded
+    // source would be reported as pasted anyway and the UI copy would be a guess.
+    await chrome.storage.local.set({ bridgeToken: token, bridgeTokenSource: 'pasted' });
   }, BRIDGE_TOKEN);
   return {
     context,
@@ -113,6 +115,9 @@ export async function connectMcp(): Promise<Mcp> {
   }
   env.WASMCHEAT_PORT = String(BRIDGE_PORT);
   env.WASMCHEAT_TOKEN = BRIDGE_TOKEN;
+  // A pinned token turns pairing off, and one test proves the pairing handshake itself, so ask for
+  // pairing explicitly instead of inheriting the production default.
+  env.WASMCHEAT_PAIRING = 'on';
   env.WASMCHEAT_HOME = home;
 
   const transport = new StdioClientTransport({

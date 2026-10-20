@@ -14,6 +14,16 @@ tools for one address](docs/img/panel.png)
 
 The panel is the human front end for the same calls an agent makes: attach, scan, narrow, change.
 
+## The fastest path
+
+```bash
+npm install && npm run build
+npm run demo        # serves and opens the demo game, prints the two things you need
+```
+
+Then load `packages/extension/dist` as an unpacked extension, open DevTools on the demo tab, and press
+**Attach** in the WasmCheat panel. Approve the tab; everything else is forms.
+
 ## Start here
 
 | If you want to | Read |
@@ -71,14 +81,25 @@ The extension connects to the MCP server on `ws://127.0.0.1:7331/extension` and 
 backoff if the server is not running yet. The port is baked in at build time, so to use another
 one: `WASMCHEAT_PORT=7400 npm run build` and start the server with the same value.
 
-## The bridge token
+## The bridge, and why there is no token to paste
 
-The bridge is a local WebSocket, so it is authenticated: the MCP server mints a random token into
-`$WASMCHEAT_HOME/token` on first run (or takes `WASMCHEAT_TOKEN`), the extension sends it in its
-`bridge.hello`, and a connection that cannot present it is closed with `1008 bad bridge token` and
-never used for a request. Paste it once — `cat ~/.wasmcheat/token` into **Save token** in the
-DevTools panel (or the token box in the toolbar popup) — and it survives restarts. A wrong token
-shows `token refused` in the panel plus a red `!` badge; saving the right one reconnects at once.
+The MCP server listens on a local WebSocket and the extension dials it. That socket needs to know
+which extension is real, so it is authenticated with a token the server mints into
+`$WASMCHEAT_HOME/token` on first run.
+
+You never see it. On the first connection the extension asks the server for the token over that same
+socket (pairing), stores it, and presents it from then on. The pair request is only answered while no
+live socket is authenticated, so a second process cannot take over a running bridge; a wrong token is
+still refused with `1008 bad bridge token` and never used for a request.
+
+Two cases need the field anyway, and both are in the panel and the popup:
+
+- **Pairing is off.** `WASMCHEAT_PAIRING=off` (or a server started with `WASMCHEAT_TOKEN`) makes the
+  token the only way in. Paste `cat ~/.wasmcheat/token`.
+- **Something else already holds the bridge.** Same fix: paste the token.
+
+The panel pill says `bridge live · paired` when pairing worked, `token refused` with a red `!` badge
+when the server rejected the stored token, and `waiting for pairing` when the server is not up yet.
 
 ## Point an MCP client at it
 
@@ -125,7 +146,8 @@ Environment knobs:
 | `WASMCHEAT_PORT` | `7331` | WebSocket port the extension dials. Must match the extension build. |
 | `WASMCHEAT_HOST` | `127.0.0.1` | Bind address. Keep it on loopback. |
 | `WASMCHEAT_HOME` | `~/.wasmcheat` | Where `audit.jsonl` and `token` live. |
-| `WASMCHEAT_TOKEN` | read from `$WASMCHEAT_HOME/token` | Shared secret the extension must present. Minted on first run with mode `0600`. |
+| `WASMCHEAT_TOKEN` | read from `$WASMCHEAT_HOME/token` | Shared secret the extension must present. Minted on first run with mode `0600`. Setting it turns pairing off. |
+| `WASMCHEAT_PAIRING` | `on` (`off` when `WASMCHEAT_TOKEN` is set) | `off` refuses pairing, so only a pasted token connects. |
 | `WASMCHEAT_RECONNECT_GRACE_MS` | `8000` | How long a tool call waits for the extension to dial back in before reporting `NO_AGENT`. MV3 suspends the service worker after ~30s idle, so the first call after a pause usually arrives mid-reconnect. |
 | `WASMCHEAT_CLANG` | auto-detected | LLVM used to compile `packages/demo-app/src/game.c`. |
 
@@ -574,7 +596,7 @@ that is not moving — the automated test does exactly that.
 ## Tests
 
 ```bash
-npm test           # build → vitest (123 unit) → playwright (22 end-to-end)
+npm test           # build → vitest (127 unit) → playwright (23 end-to-end)
 npm run test:unit  # page agent: memory, registry, scanner, hooks, trace, rewriter — no browser
 npm run test:e2e   # real Chromium, real extension, real MCP stdio client
 ```
@@ -609,7 +631,9 @@ serves the demo, connects a real MCP client to `dist/bin.js`, and then, in order
 21. opens `nested.html`, where a worker starts the game worker, and drives `k1n1-1` through two
     worker hops: list it, click Mine, write to its memory, watch the page repaint, then scan it;
 22. trusts the demo origin from the popup, attaches to a second tab there with no prompt, then
-    forgets the site and proves the prompt comes back.
+    forgets the site and proves the prompt comes back;
+23. wipes the stored token and proves the extension pairs with the bridge again on its own, with no
+    paste and no human step.
 
 Costs and gotchas: one browser and one bridge port, so the suite runs with a single worker and
 fails fast if the port is already taken (it picks `7399` by default so it does not collide with a
@@ -618,6 +642,8 @@ server you have running).
 ## Layout
 
 ```
+scripts/demo.mjs                    `npm run demo`: serves and opens the demo, prints what to do next
+scripts/wasmcheat-cli.mjs           drive the tools from a shell, no agent
 packages/protocol/src/index.ts      shared contract: envelopes, errors, every tool's types
 packages/page-agent/src/            registry (capture), memory, scanner, hooks, trace, workers, runtime
 packages/extension/src/             sw.ts (approval + bridge), relay.ts, popup, panel + panel-help, devtools
@@ -628,7 +654,6 @@ packages/demo-app/src/game.c        the demo target, compiled to prebuilt/game.w
 packages/demo-app/framed.html       the demo inside a cross-origin iframe (subframe test)
 packages/demo-app/worker.html       the demo instantiated inside a Web Worker (worker test)
 packages/demo-app/nested.html       the demo inside a worker started by another worker (nested test)
-scripts/wasmcheat-cli.mjs           one command per tool, for a shell without an agent
 docs/QUICKSTART.md PANEL.md AGENT_GUIDE.md STATUS.md DESIGN.md, docs/img/*.png
 tests/unit/                         vitest: memory, registry, scanner, hooks, trace, workers, bridge, bookmarks
 tests/e2e/                          playwright: harness.ts, demo.spec.ts, screenshots.spec.ts

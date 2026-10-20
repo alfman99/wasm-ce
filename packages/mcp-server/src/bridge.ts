@@ -1,8 +1,12 @@
 import { WebSocketServer, type WebSocket } from 'ws';
 import {
+  BRIDGE_PAIR,
   BridgeError,
   Events,
   PROTOCOL_VERSION,
+  isRequest,
+  makeErrorResponse,
+  makeResponse,
   isEvent,
   isResponse,
   makeRequest,
@@ -35,6 +39,13 @@ export interface BridgeOptions {
    * a unit test.
    */
   token?: string;
+  /**
+   * Allow an extension on this machine to fetch the token over the loopback socket instead of being
+   * given it by hand. This is trust-on-first-use between processes of the same user: whoever
+   * connects first gets the token, which is the same authority as reading the file on disk. Set to
+   * false (`WASMCHEAT_PAIRING=off`) when the token is a deliberate secret.
+   */
+  pairing?: boolean;
 }
 
 interface Pending {
@@ -54,6 +65,12 @@ export class Bridge {
   private extensionVersion: string | null = null;
   /** Sockets that have presented the token. A socket that has not is never used for requests. */
   private readonly authenticated = new WeakSet<object>();
+  /**
+   * The socket that currently holds the token. Pairing is offered only while no live socket is
+   * authenticated, so a process cannot take over a running bridge, while an extension that dropped
+   * its own socket (a restart, a reinstall, a wiped token) can still ask for the token again.
+   */
+  private authenticatedSocket: WebSocket | null = null;
   readonly requestTimeoutMs: number;
 
   constructor(readonly options: BridgeOptions) {
@@ -192,6 +209,7 @@ export class Bridge {
     socket.on('close', () => {
       if (this.socket !== socket) return;
       this.socket = null;
+      if (this.authenticatedSocket === socket) this.authenticatedSocket = null;
       this.extensionVersion = null;
       this.rejectAll(new BridgeError('NO_AGENT', 'the extension disconnected from the bridge'));
       this.emit(Events.disconnected, { at: Date.now() });
@@ -220,6 +238,11 @@ export class Bridge {
       return;
     }
 
+    if (isRequest(parsed)) {
+      this.onRequest(parsed.id, parsed.method, parsed.params);
+      return;
+    }
+
     if (isEvent(parsed)) {
       if (parsed.event === 'bridge.hello') {
         const data = parsed.data as { extension?: string; token?: unknown } | null;
@@ -236,6 +259,7 @@ export class Bridge {
           return;
         }
         this.authenticated.add(this.socket as object);
+        this.authenticatedSocket = this.socket;
         this.extensionVersion = data?.extension ?? 'unknown';
         process.stderr.write('[wasmcheat] extension authenticated\n');
         const waiters = this.waiters;
@@ -243,6 +267,44 @@ export class Bridge {
         for (const waiter of waiters) waiter();
       }
       this.emit(parsed.event, parsed.data);
+    }
+  }
+
+  /**
+   * The extension is the client, so a request from it is unusual: pairing is the only one. It is
+   * answered once per socket and refuses once anything is authenticated, so a second process cannot
+   * take over a bridge that is already in use.
+   */
+  private onRequest(id: string, method: string, _params: unknown): void {
+    if (method !== BRIDGE_PAIR) {
+      this.reply(id, makeErrorResponse(id, new BridgeError('UNSUPPORTED', `unknown request "${method}"`)));
+      return;
+    }
+    const allowed = this.options.pairing !== false && this.authenticatedSocket === null;
+    if (!allowed || !this.options.token) {
+      this.reply(
+        id,
+        makeErrorResponse(
+          id,
+          new BridgeError(
+            'UNSUPPORTED',
+            this.options.pairing === false
+              ? 'pairing is disabled on this server; paste the token from ~/.wasmcheat/token into the WasmCheat panel'
+              : 'this bridge is already paired with another extension',
+          ),
+        ),
+      );
+      return;
+    }
+    process.stderr.write('[wasmcheat] an extension paired over the loopback socket\n');
+    this.reply(id, makeResponse(id, { token: this.options.token, paired: true }));
+  }
+
+  private reply(id: string, message: unknown): void {
+    try {
+      this.socket?.send(JSON.stringify(message));
+    } catch {
+      // The socket died between the request and the answer; 'close' handles the rest.
     }
   }
 

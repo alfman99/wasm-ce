@@ -13,6 +13,7 @@ interface PopupState {
   trusted: TrustedSite[];
   bridgeConnected: boolean;
   tokenConfigured: boolean;
+  tokenSource?: 'paired' | 'pasted' | 'none';
 }
 
 const tabsList = document.getElementById('tabs') as HTMLUListElement;
@@ -25,6 +26,10 @@ const trustedEmpty = document.getElementById('trusted-empty') as HTMLSpanElement
 const bridgePill = document.getElementById('bridge') as HTMLSpanElement;
 const hint = document.getElementById('hint') as HTMLSpanElement;
 const refresh = document.getElementById('refresh') as HTMLButtonElement;
+const tokenInput = document.getElementById('bridge-token') as HTMLInputElement;
+const tokenSave = document.getElementById('token-save') as HTMLButtonElement;
+const tokenHint = document.getElementById('token-hint') as HTMLSpanElement;
+const tokenTitle = document.getElementById('token-title') as HTMLLabelElement;
 
 function send<T>(message: Record<string, unknown>): Promise<T> {
   return chrome.runtime.sendMessage(message) as Promise<T>;
@@ -162,6 +167,28 @@ function renderTrusted(sites: TrustedSite[]): void {
   }
 }
 
+/**
+ * The token is normally invisible: the service worker pairs with the local bridge on first connect.
+ * The field stays for the one setup where pairing is switched off, and it must actually save — an
+ * input that looks editable and does nothing is worse than no input.
+ */
+async function renderToken(state: PopupState): Promise<void> {
+  const stored = await chrome.storage.local.get('bridgeToken');
+  const saved = typeof stored.bridgeToken === 'string' ? (stored.bridgeToken as string) : '';
+  if (document.activeElement !== tokenInput && tokenInput.value === '') tokenInput.value = saved;
+  // When pairing did its job the field is not needed, so it is not shown: an empty-looking form asks
+  // a question the human does not have to answer.
+  const paired = state.tokenSource === 'paired';
+  tokenInput.hidden = paired;
+  tokenSave.hidden = paired;
+  tokenTitle.textContent = paired ? 'Bridge' : 'Bridge token';
+  tokenHint.textContent = paired
+    ? 'Paired with this machine. Nothing to paste.'
+    : state.tokenSource === 'pasted'
+      ? 'Token saved. The bridge reconnects by itself.'
+      : 'The server pairs with this extension on its own. Paste a token only if pairing is off.';
+}
+
 async function render(): Promise<void> {
   const state = await send<PopupState>({ type: 'popup.state' });
   bridgePill.textContent = state.bridgeConnected ? 'bridge connected' : 'bridge offline';
@@ -184,6 +211,7 @@ async function render(): Promise<void> {
   for (const tab of others) otherList.append(renderTab(tab));
 
   renderTrusted(state.trusted);
+  await renderToken(state);
 
   const pending = state.tabs.filter((tab) => tab.approval === 'pending').length;
   const granted = state.tabs.filter((tab) => tab.approval === 'granted').length;
@@ -196,6 +224,16 @@ async function render(): Promise<void> {
           ? 'Bridge is up. Nothing is approved yet.'
           : 'Start the MCP server to connect the bridge.';
 }
+
+tokenSave.addEventListener('click', async () => {
+  const token = tokenInput.value.trim();
+  if (token === '') {
+    tokenHint.textContent = 'Paste the contents of ~/.wasmcheat/token first.';
+    return;
+  }
+  await chrome.storage.local.set({ bridgeToken: token, bridgeTokenSource: 'pasted' });
+  tokenHint.textContent = 'Token saved. The bridge reconnects by itself.';
+});
 
 refresh.addEventListener('click', () => void render());
 void render();

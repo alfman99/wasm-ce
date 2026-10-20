@@ -1184,7 +1184,22 @@ test('a trusted site attaches without a second prompt, and forgetting it brings 
 
   // The human approves this tab and, with the same click, trusts the site.
   const popup = await browser.context.newPage();
-  await popup.goto(`chrome-extension://${browser.extensionId}/popup.html`);
+  const popupUrl = `chrome-extension://${browser.extensionId}/popup.html`;
+  // Right after a reload the extension is briefly unloadable, so wait for the page instead of
+  // treating the first blocked navigation as a product failure.
+  await expect
+    .poll(
+      async () => {
+        try {
+          await popup.goto(popupUrl, { timeout: 5_000 });
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { timeout: 30_000, intervals: [500, 1_000] },
+    )
+    .toBe(true);
   const row = popup.locator(`li.tab[data-tab-id="${firstTab!.tabId}"]`);
   await row.waitFor({ state: 'visible', timeout: 20_000 });
   await row.getByRole('button', { name: 'Always allow this site', exact: true }).click();
@@ -1224,4 +1239,32 @@ test('a trusted site attaches without a second prompt, and forgetting it brings 
   await first.close();
   await second.close();
   await third.close();
+});
+
+test('an extension with no token pairs with the bridge by itself', async () => {
+  const worker = browser.context.serviceWorkers()[0];
+  expect(worker, 'no service worker').toBeDefined();
+
+  // Wiping the token is the fresh-install case. Touching the key also makes the service worker drop
+  // its authenticated socket and dial again, so this exercises the real handshake and not a mock.
+  await worker!.evaluate(() => chrome.storage.local.set({ bridgeToken: '', bridgeTokenSource: 'none' }));
+
+  await expect
+    .poll(
+      async () => {
+        const listed = await call<TabRow[]>(mcp, 'wasmcheat_list_tabs', {});
+        return listed.isError ? listed.text : 'ok';
+      },
+      { timeout: 30_000, intervals: [500, 1_000, 2_000] },
+    )
+    .toBe('ok');
+
+  const popup = await browser.context.newPage();
+  await popup.goto(`chrome-extension://${browser.extensionId}/popup.html`);
+  const stored = await popup.evaluate(async () => chrome.storage.local.get(['bridgeToken', 'bridgeTokenSource']));
+  expect(typeof stored.bridgeToken).toBe('string');
+  expect((stored.bridgeToken as string).length).toBeGreaterThan(20);
+  expect(stored.bridgeTokenSource).toBe('paired');
+  await expect(popup.locator('#token-hint')).toContainText('Paired with this machine');
+  await popup.close();
 });

@@ -91,3 +91,86 @@ describe('reconnect while a call is in flight', () => {
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 });
+
+function pair(port: number): Promise<{ socket: WebSocket; reply: Promise<Record<string, unknown>> }> {
+    return new Promise((resolve, reject) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/extension`);
+      const reply = new Promise<Record<string, unknown>>((done) => {
+        socket.once('message', (raw) => done(JSON.parse(String(raw)) as Record<string, unknown>));
+      });
+      socket.once('error', reject);
+      socket.once('open', () => {
+        socket.send(JSON.stringify({ v: 1, kind: 'req', id: 'p1', method: 'bridge.pair', params: {} }));
+        resolve({ socket, reply });
+      });
+    });
+}
+
+describe('pairing', () => {
+  
+
+  it('hands the token to an extension that asks before anything is authenticated', async () => {
+    const bridge = await startBridge('pair-me');
+    const { socket, reply } = await pair(bridge.port);
+    const answer = await reply;
+
+    expect((answer.result as { token?: string }).token).toBe('pair-me');
+    // Having the token is not the same as being trusted: the hello still has to present it.
+    expect(bridge.connected).toBe(false);
+    socket.send(
+      JSON.stringify({ v: 1, kind: 'evt', event: 'bridge.hello', data: { extension: 'test', token: 'pair-me' } }),
+    );
+    await expect.poll(() => bridge.connected, { timeout: 2_000 }).toBe(true);
+    socket.close();
+  });
+
+  it('refuses to pair a second time, so one process cannot take over a live bridge', async () => {
+    const bridge = await startBridge('pair-me');
+    const first = await pair(bridge.port);
+    await first.reply;
+    first.socket.send(
+      JSON.stringify({ v: 1, kind: 'evt', event: 'bridge.hello', data: { extension: 'test', token: 'pair-me' } }),
+    );
+    await expect.poll(() => bridge.connected, { timeout: 2_000 }).toBe(true);
+
+    const second = await pair(bridge.port);
+    const answer = await second.reply;
+    expect(answer.result).toBeUndefined();
+    expect((answer.error as { message?: string }).message).toMatch(/already paired/);
+    second.socket.close();
+    first.socket.close();
+  });
+
+  it('can be turned off, which leaves the token as the only way in', async () => {
+    const bridge = new Bridge({ host: '127.0.0.1', port: 0, token: 'secret', pairing: false });
+    await bridge.start();
+    openBridges.push(bridge);
+
+    const { socket, reply } = await pair(bridge.port);
+    const answer = await reply;
+    expect((answer.error as { message?: string }).message).toMatch(/pairing is disabled/);
+    socket.close();
+  });
+});
+
+describe('pairing again after a dropped socket', () => {
+  it('offers the token to an extension that reconnects with no token saved', async () => {
+    const bridge = await startBridge('re-pair');
+    const first = await pair(bridge.port);
+    await first.reply;
+    first.socket.send(
+      JSON.stringify({ v: 1, kind: 'evt', event: 'bridge.hello', data: { extension: 'test', token: 're-pair' } }),
+    );
+    await expect.poll(() => bridge.connected, { timeout: 2_000 }).toBe(true);
+
+    // The extension dropped its socket (a restart) and forgot the token: it must be able to ask again,
+    // otherwise wiping a token would lock the human out of their own bridge for good.
+    first.socket.close();
+    await expect.poll(() => bridge.connected, { timeout: 2_000 }).toBe(false);
+
+    const second = await pair(bridge.port);
+    const answer = await second.reply;
+    expect((answer.result as { token?: string }).token).toBe('re-pair');
+    second.socket.close();
+  });
+});

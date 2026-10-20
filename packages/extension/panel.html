@@ -58,7 +58,7 @@
       </nav>
 
       <details class="tokenbox">
-        <summary>Bridge token</summary>
+        <summary id="token-summary">Bridge token</summary>
         <div class="tokenbox__body">
           <label class="field">
             <span>Token from ~/.wasmcheat/token</span>
@@ -111,34 +111,37 @@
             </div>
             <div class="row">
               <label class="field">
-                <span>Start:</span>
-                <input id="scan-start" type="text" placeholder="0x0" spellcheck="false" />
-              </label>
-              <label class="field">
-                <span>Stop:</span>
-                <input id="scan-end" type="text" placeholder="end of memory" spellcheck="false" />
-              </label>
-              <label class="field">
-                <span>Alignment:</span>
-                <select id="scan-alignment">
-                  <option value="">auto</option>
-                  <option value="1">1</option>
-                  <option value="2">2</option>
-                  <option value="4">4</option>
-                  <option value="8">8</option>
-                </select>
-              </label>
-            </div>
-            <div class="row">
-              <label class="field">
                 <span>Instance:</span>
                 <input id="scan-instance" type="text" placeholder="from Instances" spellcheck="false" />
               </label>
-              <label class="field">
-                <span>Max results:</span>
-                <input id="scan-max" type="number" min="1" placeholder="1000" />
-              </label>
             </div>
+            <details class="advanced">
+              <summary>More options: range, alignment, result limit</summary>
+              <div class="row">
+                <label class="field">
+                  <span>Start:</span>
+                  <input id="scan-start" type="text" placeholder="0x0" spellcheck="false" />
+                </label>
+                <label class="field">
+                  <span>Stop:</span>
+                  <input id="scan-end" type="text" placeholder="end of memory" spellcheck="false" />
+                </label>
+                <label class="field">
+                  <span>Alignment:</span>
+                  <select id="scan-alignment">
+                    <option value="">auto</option>
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                    <option value="4">4</option>
+                    <option value="8">8</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Max results:</span>
+                  <input id="scan-max" type="number" min="1" placeholder="1000" />
+                </label>
+              </div>
+            </details>
             <div class="row row--buttons">
               <button id="scan-begin" type="button" class="primary">First Scan</button>
               <button id="scan-narrow" type="button">Next Scan</button>

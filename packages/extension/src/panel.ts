@@ -91,6 +91,8 @@ interface PingReply {
   /** The server closed us with 1008: the token it expected is not the one stored here. */
   bridgeRejected?: boolean;
   tokenConfigured?: boolean;
+  tokenSource?: 'paired' | 'pasted' | 'none';
+  pairingHint?: string;
 }
 
 /** One transport for both families: `page.*` goes through `ext.call`, `ext.*` goes direct. */
@@ -192,7 +194,9 @@ function clock(at: number): string {
 function report(out: HTMLElement, text: string, isError = false): void {
   out.textContent = text;
   out.classList.toggle('is-error', isError);
-  out.hidden = false;
+  // An empty report means "the action worked and has nothing to say", which is the common case for
+  // a refresh. An empty line of grey text is noise, so hide the line entirely.
+  out.hidden = text.trim() === '';
 }
 
 /**
@@ -406,8 +410,17 @@ async function refreshStatus(): Promise<void> {
     ping.bridgeConnected ? 'live' : 'idle',
   );
   el('versions').textContent = `extension ${ping.extension} · protocol ${ping.protocol}`;
+  // The token is meant to be invisible: pairing fetches it on first connect. Only say anything when
+  // the human actually has to act.
+  const summary = el('token-summary');
+  summary.textContent =
+    ping.tokenSource === 'paired'
+      ? 'Bridge · paired with this machine (nothing to paste; open only to override)'
+      : 'Bridge token';
   if (ping.bridgeRejected) setPill('bridge', 'token refused', 'bad');
-  else if (!ping.tokenConfigured) setPill('bridge', 'no token saved', 'warn');
+  else if (ping.tokenSource === 'paired') setPill('bridge', 'bridge live · paired', 'live');
+  else if (!ping.tokenConfigured) setPill('bridge', 'waiting for pairing', 'warn');
+  if (ping.pairingHint && !ping.bridgeConnected) setPill('bridge', ping.pairingHint, 'warn');
 
   const target = targetTabId === undefined ? undefined : tabs.find((tab) => tab.tabId === targetTabId);
   setDecisionButtons(target?.approval);
@@ -519,6 +532,11 @@ async function requestAccess(
   return { approval: 'granted', agent };
 }
 
+/**
+ * Attach, then say what the human can do next. "Attached" alone is useless: the question everyone
+ * has after attaching is "where is the game", so the instance table is filled and, when it is empty,
+ * Diagnose is quoted instead of making them press another button.
+ */
 function attachAndReport(reload: boolean): () => Promise<string> {
   return async () => {
     const tabId = requireTab();
@@ -526,9 +544,19 @@ function attachAndReport(reload: boolean): () => Promise<string> {
     if (result.approval !== 'granted' || !result.agent) {
       return `approval ${result.approval}: click Approve here or in the toolbar popup`;
     }
-    return `agent ${result.agent.version} attached to tab ${tabId}${reload ? ' after reload' : ''} · eval ${
-      result.agent.evalAllowed ? 'allowed' : 'blocked by page CSP'
-    }`;
+    const reloaded = result.agent.autoReloaded === true && !reload;
+    await refreshInstances();
+    const lines = [
+      `agent ${result.agent.version} attached to tab ${tabId} · eval ${
+        result.agent.evalAllowed ? 'allowed' : 'blocked by page CSP'
+      }${reload ? ' · after a reload' : reloaded ? ' · the tab was reloaded for you' : ''}`,
+      `instances: ${knownInstances.length === 0 ? 'none yet' : knownInstances.map((instance) => instance.id).join(', ')}`,
+    ];
+    if (knownInstances.length === 0) {
+      lines.push('', await diagnose().catch((error: unknown) => String(error)));
+      lines.push('', 'If the game only starts on a click, start it and press Reload & attach.');
+    }
+    return lines.join('\n');
   };
 }
 
@@ -1454,7 +1482,7 @@ function wire(): void {
   const statusOut = el('status-out');
   bind('refresh-status', statusOut, async () => {
     await refreshStatus();
-    return 'status refreshed';
+    return '';
   });
   bind('attach', statusOut, attachAndReport(false));
   bind('attach-reload', statusOut, attachAndReport(true));
@@ -1494,7 +1522,7 @@ function wire(): void {
     const token = el<HTMLInputElement>('bridge-token').value.trim();
     if (!token) throw new BridgeError('BAD_PARAMS', 'paste the token printed by the MCP server first');
     // Saving is what fixes a refused bridge: the service worker watches this key and reconnects.
-    await chrome.storage.local.set({ bridgeToken: token });
+    await chrome.storage.local.set({ bridgeToken: token, bridgeTokenSource: 'pasted' });
     await refreshStatus();
     return 'token saved; reconnecting to the bridge';
   });

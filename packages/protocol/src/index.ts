@@ -6,6 +6,13 @@
 
 export const PROTOCOL_VERSION = 1;
 
+/**
+ * The one control message the extension sends as a *request*: it asks the bridge for the token it
+ * has to present. Pairing exists because the token lives in a file the browser cannot read, and
+ * typing `~/.wasmcheat/token` into a password box is the step where a normal person gives up.
+ */
+export const BRIDGE_PAIR = 'bridge.pair';
+
 /** Value types a scan, read or write can use. Matches wasm's numeric types. */
 export const VALUE_TYPES = [
   'i8',
@@ -338,6 +345,8 @@ export interface HookEntry {
 }
 
 export interface PageAgentInfo {
+  /** True when the extension reloaded the tab itself, because the page predated the agent. */
+  autoReloaded?: boolean;
   version: string;
   url: string;
   /** Frame the extension routed this call to; absent on the top frame's own answer. */

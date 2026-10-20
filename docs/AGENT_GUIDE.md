@@ -24,9 +24,9 @@ npm install && npm run build      # builds protocol, wasm-instrument, page agent
 The extension dials the server on `ws://127.0.0.1:7331/extension`, so start the MCP client *after* the
 extension is loaded (or wait a second — it reconnects on its own).
 
-The bridge is authenticated: the server mints a token into `$WASMCHEAT_HOME/token` on first run. Paste it
-once into **Save token** in the DevTools panel (or the token box in the popup); it survives restarts. A
-wrong token shows `token refused`, and saving the right one reconnects immediately.
+The bridge is authenticated, and the token stays out of your way: the extension pairs with the server
+on first connect and stores what it gets. You only touch the field when pairing is off
+(`WASMCHEAT_PAIRING=off`, or a server started with `WASMCHEAT_TOKEN`).
 
 The human also has a front-end: DevTools → **WasmCheat** exposes every tool as a form, plus a raw RPC
 console and a live event and audit log. It talks to the same dispatcher as the agent, so it cannot bypass
@@ -80,7 +80,7 @@ cross-origin flag, canvases, `.wasm` URLs found in the HTML, and a hint. The thr
 
 | `diagnose` says | meaning | fix |
 |---|---|---|
-| `calls.* == 0`, no iframes | the extension was not in the page before the game booted | `attach` with `"reload": true` |
+| `calls.* == 0`, no iframes | the extension was not in the page before the game booted | `attach` reloads the tab once on its own; if it still says `no relay`, pass `"reload": true` |
 | cross-origin iframe listed | the game lives in a subframe | the extension already routes into frames; if not, pass `frameId` from `list_tabs` |
 | `instances: 0`, `wasmReferences` has URLs | the game is a worker or WebGL build | check `wasmcheat_list_workers` (nested workers appear as `k1n1`) |
 

@@ -463,6 +463,21 @@ fieldset.group--wide {
   font-weight: 600;
 }
 
+.advanced {
+  margin: 2px 0 6px;
+}
+
+.advanced > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--ink-2);
+  padding: 3px 0;
+}
+
+.advanced > summary:hover {
+  color: var(--accent);
+}
+
 .row {
   display: flex;
   flex-wrap: wrap;

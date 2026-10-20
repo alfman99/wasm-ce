@@ -39,7 +39,15 @@ const { token, from, path: tokenPath } = resolveToken();
 
 const reconnectGraceMs = Number(process.env.WASMCHEAT_RECONNECT_GRACE_MS ?? 8_000);
 
-const bridge = new Bridge({ host, port, requestTimeoutMs: 30_000, token, reconnectGraceMs });
+// Pairing (WASMCHEAT_PAIRING=off disables it) lets the extension fetch the token over the loopback
+// socket, which removes the copy-the-file-into-a-password-box step. Same authority either way: a
+// process running as this user can read the file.
+// Pairing hands this server's token to whoever asks first, which is fine on a machine where the
+// extension is the only thing dialling. It is off when the human pinned the token themselves: an
+// explicit secret is a decision that nothing should be able to fetch it.
+const pairing = (process.env.WASMCHEAT_PAIRING ?? (process.env.WASMCHEAT_TOKEN ? 'off' : 'on')).toLowerCase() !== 'off';
+
+const bridge = new Bridge({ host, port, requestTimeoutMs: 30_000, token, reconnectGraceMs, pairing });
 
 try {
   await bridge.start();
@@ -56,9 +64,11 @@ try {
 process.stderr.write(`[wasmcheat] bridge listening on ws://${host}:${port}/extension\n`);
 process.stderr.write(`[wasmcheat] audit log: ${auditPath()}\n`);
 process.stderr.write(
-  from === 'env'
-    ? '[wasmcheat] bridge token: from WASMCHEAT_TOKEN\n'
-    : `[wasmcheat] bridge token: ${tokenPath} — paste it into the WasmCheat panel (or open the popup) once\n`,
+  pairing
+    ? `[wasmcheat] pairing is open: the extension pairs by itself (token file ${tokenPath}; WASMCHEAT_PAIRING=off requires it by hand)\n`
+    : from === 'env'
+      ? '[wasmcheat] bridge token: from WASMCHEAT_TOKEN\n'
+      : `[wasmcheat] bridge token: ${tokenPath} — paste it into the WasmCheat panel (or open the popup) once\n`,
 );
 process.stderr.write('[wasmcheat] load packages/extension as an unpacked extension, then let an agent in\n');
 

@@ -264,6 +264,11 @@ export function createServer(bridge: Bridge): McpServer {
             // A grant that arrived without a round trip means a trusted site answered instead of the
             // human. Say so, so the agent does not claim a human approved this particular tab.
             asked.state === 'granted' ? 'Granted from the trusted-site list, so no prompt was shown.' : undefined,
+            // The extension reloads a page that predates the agent on its own; the agent should know
+            // the document is new, because every address it had is gone.
+            info.autoReloaded
+              ? 'The extension reloaded the tab to install the page agent, so any scan or address from before is stale.'
+              : undefined,
           ]
             .filter(Boolean)
             .join(' '),
