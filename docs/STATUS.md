@@ -30,6 +30,11 @@ Last verified from a clean tree on 2026-10-20 (`rm -rf packages/*/dist`, `npm ci
   wasm is re-checked every 2 s (e2e: cross-origin iframe instantiating after 4 s). A page that was
   open before WasmCheat and already runs a game (a canvas or a `.wasm` reference, no instance the
   injected agent can see) is reloaded once with a notice; a plain page is not.
+- Real sites (2026-10-20): WASM-4 carts on wasm4.org found and scanned with no step and no error;
+  the Godot web .NET prototype (a threaded build whose threads share one 218 MiB memory) is found,
+  the page's instance is picked on its own, an exact scan takes ~250 ms, an unknown-value scan
+  ~150 ms and its first narrowing ~380 ms. Pages that load their engine on a click (the Godot web
+  editor, js-dos) show "Nothing to analyze" until then, as intended.
 - Scan speed on 256 MiB (Node, M-series): exact i32 ~80 ms, f32 ~120 ms, i64 ~45 ms, greater i32
   ~95 ms, unaligned (alignment 1) ~260 ms. Each type and mode family has its own loop; a unit test
   pins every loop to the reference predicate for every type, mode and alignment.
