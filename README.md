@@ -650,7 +650,7 @@ that is not moving. The automated test does exactly that.
 ## Tests
 
 ```bash
-npm test           # build → vitest (158 unit) → playwright (26 end-to-end)
+npm test           # build → vitest (159 unit) → playwright (26 end-to-end)
 npm run test:unit  # page agent: memory, registry, scanner, hooks, trace, rewriter (no browser)
 npm run test:e2e   # real Chromium, real extension, real MCP stdio client
 ```

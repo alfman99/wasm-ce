@@ -13,4 +13,5 @@ First public release.
 - Watchpoints (which function wrote this address), function patches, export and import hooks,
   pointer chains, a speed hack, saved scans and bookmarks.
 - An optional MCP server so an AI agent can do all of the above, over an authenticated local socket.
-  Every change, from the panel or an agent, lands in one audit log.
+  Every change, from the panel or an agent, lands in one audit log, and an agent reading the log
+  right after an action always sees that action.

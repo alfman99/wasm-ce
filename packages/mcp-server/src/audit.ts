@@ -76,8 +76,21 @@ export function auditPath(): string {
   return join(auditDir(), 'audit.jsonl');
 }
 
-export async function record(entry: AuditEntry): Promise<void> {
+/**
+ * Every write, in the order it was asked for. Lines reported by the extension are recorded without
+ * awaiting (the event has no reply), so a `tail` right after the tool call that caused one has to
+ * wait for the queue, or a fast agent reads the log before its own action is in it.
+ */
+let writes: Promise<void> = Promise.resolve();
+
+export function record(entry: AuditEntry): Promise<void> {
   const payload: AuditLine = { at: new Date().toISOString(), ...entry };
+  const done = writes.then(() => write(payload));
+  writes = done;
+  return done;
+}
+
+async function write(payload: AuditLine): Promise<void> {
   const line = JSON.stringify(payload) + '\n';
   try {
     // What the agent touched is the human's business only: owner-only, like the token beside it.
@@ -98,6 +111,7 @@ export async function record(entry: AuditEntry): Promise<void> {
 }
 
 export async function tail(limit = 50): Promise<string[]> {
+  await writes;
   try {
     const text = await readFile(auditPath(), 'utf8');
     const lines = text.split('\n').filter((line) => line.trim().length > 0);

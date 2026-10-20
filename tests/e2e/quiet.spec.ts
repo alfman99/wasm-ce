@@ -135,6 +135,14 @@ test('the panel keeps scan hits, the picked address and bookmarks live', async (
     await game.click('#mine');
     await expect(panel.locator('#pick-now')).not.toHaveText(now ?? '');
 
+    // Write, then Undo puts the value from before the write back.
+    await panel.fill('#pick-value', '42');
+    await panel.click('#pick-write');
+    await expect(panel.locator('#pick-out')).toContainText('-> 42');
+    await panel.click('#pick-undo');
+    await expect(panel.locator('#pick-out')).toContainText('undone');
+    await expect(panel.locator('#pick-undo')).toBeHidden();
+
     await panel.fill('#bookmark-label', 'score');
     await panel.click('#bookmark-add');
     const bookmark = panel.locator('#bookmark-list-out li', { hasText: 'score' });

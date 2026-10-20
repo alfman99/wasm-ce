@@ -341,11 +341,41 @@ function requireInstance(): string {
   return instanceFrom('scan-instance');
 }
 
-function fillSelect(select: HTMLSelectElement, values: readonly string[], selected?: string): void {
+/** What each type is for, in the scan form where the choice is made; the value stays the wire name. */
+const TYPE_LABELS: Record<string, string> = {
+  i8: 'i8 · small whole number',
+  u8: 'u8 · byte, 0 to 255',
+  i16: 'i16 · whole number',
+  u16: 'u16 · whole number, 0 up',
+  i32: 'i32 · whole number (most values)',
+  u32: 'u32 · whole number, 0 up',
+  i64: 'i64 · big whole number (coins)',
+  u64: 'u64 · big whole number, 0 up',
+  f32: 'f32 · decimal (bars, speed)',
+  f64: 'f64 · precise decimal (money)',
+};
+
+const MODE_LABELS: Record<string, string> = {
+  exact: 'Exact value',
+  'not-equal': 'Not this value',
+  less: 'Less than',
+  greater: 'Greater than',
+  'less-or-equal': 'At most',
+  'greater-or-equal': 'At least',
+  between: 'Between',
+  changed: 'Changed',
+  unchanged: 'Stayed the same',
+  increased: 'Went up',
+  decreased: 'Went down',
+  'increased-by': 'Went up by',
+  'decreased-by': 'Went down by',
+};
+
+function fillSelect(select: HTMLSelectElement, values: readonly string[], selected?: string, labels?: Record<string, string>): void {
   for (const value of values) {
     const option = document.createElement('option');
     option.value = value;
-    option.textContent = value;
+    option.textContent = labels?.[value] ?? value;
     select.append(option);
   }
   if (selected !== undefined) select.value = selected;
@@ -419,6 +449,9 @@ function selectAddress(text: string, value?: string, type?: ValueType): void {
   const input = el<HTMLInputElement>('pick-value');
   input.value = value ?? '';
   el('pick-out').textContent = '';
+  // Undo belongs to the address it was written to; picking another one starts over.
+  lastWrite = undefined;
+  el('pick-undo').hidden = true;
   el('pick-now').textContent = value === undefined ? '' : `now ${value}`;
   el('pick').hidden = false;
   input.focus();
@@ -446,13 +479,27 @@ async function syncPickFreeze(entries?: FreezeEntry[]): Promise<void> {
   el('pick-freeze').textContent = pickedFreeze(list) ? 'Unfreeze' : 'Freeze';
 }
 
+/** The last write from the editor, so one click puts the old value back. */
+let lastWrite: { address: Address; type: ValueType; before: number } | undefined;
+
 async function pickWrite(): Promise<string> {
   const result = await pageCall<WriteResult>('page.write', {
     address: pickAddress(),
     type: pickType,
     value: fieldNum('pick-value', 'new value'),
   });
+  lastWrite = { address: result.address, type: result.type, before: result.before };
+  el('pick-undo').hidden = false;
   return `${formatAddress(result.address)} ${result.type}: ${result.before} -> ${result.after}`;
+}
+
+async function pickUndo(): Promise<string> {
+  if (!lastWrite) throw new BridgeError('BAD_PARAMS', 'nothing to undo yet');
+  const undo = lastWrite;
+  const result = await pageCall<WriteResult>('page.write', { address: undo.address, type: undo.type, value: undo.before });
+  lastWrite = undefined;
+  el('pick-undo').hidden = true;
+  return `undone: ${formatAddress(result.address)} ${result.type}: ${result.before} -> ${result.after}`;
 }
 
 async function pickFreeze(): Promise<string> {
@@ -1807,8 +1854,8 @@ function wire(): void {
   fillSelect(selectOf('freeze-type'), VALUE_TYPES, 'i32');
   fillSelect(selectOf('watch-type'), VALUE_TYPES, 'i32');
   fillSelect(selectOf('bookmark-type'), VALUE_TYPES, 'i32');
-  fillSelect(selectOf('scan-type'), VALUE_TYPES, 'i32');
-  fillSelect(selectOf('scan-mode'), SCAN_MODES, 'exact');
+  fillSelect(selectOf('scan-type'), VALUE_TYPES, 'i32', TYPE_LABELS);
+  fillSelect(selectOf('scan-mode'), SCAN_MODES, 'exact', MODE_LABELS);
   fillSelect(selectOf('trace-kind'), TRACE_KINDS, 'write');
   fillSelect(selectOf('patch-mode'), PATCH_MODES, 'stub');
 
@@ -1832,6 +1879,7 @@ function wire(): void {
   bind('instances-refresh', el('instances-out'), refreshInstances);
   bind('pick-write', el('pick-out'), pickWrite);
   bind('pick-freeze', el('pick-out'), pickFreeze);
+  bind('pick-undo', el('pick-out'), pickUndo);
   el<HTMLInputElement>('pick-value').addEventListener('keydown', (event) => {
     if ((event as KeyboardEvent).key === 'Enter') el<HTMLButtonElement>('pick-write').click();
   });
