@@ -478,7 +478,8 @@ export function createServer(bridge: Bridge): McpServer {
     'wasmcheat_scan_results',
     {
       title: 'Read scan hits',
-      description: 'Page through the hits of a scan (current memory values, not the snapshot).',
+      description:
+        'Page through the hits of a scan: value is current memory, previous is the value at the last scan pass (they differ for addresses that moved since).',
       inputSchema: {
         tabId: TAB_ID,
         scanId: z.string(),
@@ -489,14 +490,14 @@ export function createServer(bridge: Bridge): McpServer {
     async ({ tabId: askedTab, scanId, offset, limit }) => {
       const tabId = await resolveTab(bridge, askedTab);
       try {
-        const result = await page<{ hits: { address: Address; value: number }[]; total: number }>(
+        const result = await page<{ hits: { address: Address; value: number; previous?: number }[]; total: number }>(
           tabId,
           'page.scan.results',
           { scanId, offset, limit },
         );
         return ok({
           ...result,
-          hits: result.hits.map((hit) => ({ address: formatAddress(hit.address), value: hit.value })),
+          hits: result.hits.map((hit) => ({ address: formatAddress(hit.address), value: hit.value, previous: hit.previous })),
         });
       } catch (error) {
         return fail(error);

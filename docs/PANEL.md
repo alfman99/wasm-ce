@@ -44,6 +44,13 @@ you jump to one of its cards.
 Every card is a set of forms over one page method; the MCP column names the tool that does the same
 thing, so a human and an agent are never using different mechanisms.
 
+Nothing on the first screen needs a refresh button. Four times a second the panel reads the Found
+list, the picked address, the freezes, watches and bookmarks, and the memory view while More tools
+is open. Rows update in place (the same element keeps its position and its click), lists that are
+empty are asked once a second, and all of it stops while another DevTools tab is in front. A tick
+is a handful of calls of 2 to 5 ms each. A reload of the page clears the Found list with a sentence
+saying so, because the scan lived in the page that went away.
+
 | Card | What it does | MCP tool |
 | --- | --- | --- |
 | **Reload page** | Reloads the tab so the agent is in place before the game starts, then reports how many wasm modules it found (or quotes Diagnose). The panel does the first start on its own. | `wasmcheat_attach` with `reload` |
@@ -51,10 +58,10 @@ thing, so a human and an agent are never using different mechanisms.
 | **Diagnose** | Why the instance list is empty: `WebAssembly.*` call counts, iframes (cross-origin flagged), canvases, `.wasm` URLs in the HTML, `evalAllowed`. | `wasmcheat_diagnose` |
 | **Scan** | Value, type, mode, the instance, plus a **More options** fold holding the byte range, alignment and result limit (the defaults are right until a scan is too slow or too broad). The upper bound appears only for `between`, and the value is labelled optional for the delta modes. **First Scan** starts a list; **Next Scan** narrows it, the filled button is always the next step, and <kbd>Enter</kbd> in a value field runs it. | `wasmcheat_scan`, `wasmcheat_scan_results`, `wasmcheat_scan_drop` |
 | **Text scan** | ASCII, UTF-8 or a hex byte pattern, case-sensitive or not. | `wasmcheat_scan_text` |
-| **Found** | The current candidate list. Click an address and an editor opens under it with the current value: **Write** (or <kbd>Enter</kbd>) changes it and prints `before -> after`; **Freeze** holds it at the typed value and turns into **Unfreeze**. The click also fills every other form and jumps the memory view. | `wasmcheat_scan_results`, `wasmcheat_write`, `wasmcheat_freeze` |
+| **Found** | The current candidate list, up to 100 rows, read live. **Value** is memory now, **Previous** the value at the last scan, and a value that moved since is marked in the accent: that is what tells you to narrow with changed or unchanged. Click an address and an editor opens under it with the current value: **Write** (or <kbd>Enter</kbd>) changes it and prints `before -> after`; **Freeze** holds it at the typed value and turns into **Unfreeze**. The click also fills every other form and jumps the memory view. | `wasmcheat_scan_results`, `wasmcheat_write`, `wasmcheat_freeze` |
 | **Read and write** | One value, N values, or raw hex bytes; **Write** is audited with old and new value. | `wasmcheat_read`, `wasmcheat_write` |
-| **Freeze** | Holds an address at a value with a 16 ms page-side timer. List and clear. | `wasmcheat_freeze` |
-| **Watch** | Records changes to an address; **Poll** drains the buffer (200 events per watch). | `wasmcheat_watch` |
+| **Freeze** | Holds an address at a value with a 16 ms page-side timer. The list is live; each row has its own Clear. | `wasmcheat_freeze` |
+| **Watch** | Records changes to an address. The list shows each value now; **Show changes** drains the recorded changes (200 per watch), so it is a button and never automatic: an MCP agent may be reading the same buffer. | `wasmcheat_watch` |
 | **Memory view** | Hex dump, 16 bytes per row. **Follow pointer** reads a u32 at the address and jumps there. | `wasmcheat_read` with `length` |
 | **Watchpoints** | Which function wrote or read an address. Rewrites the module and reloads the tab, because a store cannot be observed after compilation. | `wasmcheat_find_writes`, `wasmcheat_find_reads`, `wasmcheat_trace` |
 | **Patches** | Replace a function body (`stub` returns immediately, `empty` writes no instructions). | `wasmcheat_patch` |
@@ -63,7 +70,7 @@ thing, so a human and an agent are never using different mechanisms.
 | **Speed hack** | Scales `performance.now`, `Date.now` and `requestAnimationFrame` in the page and in every worker. `0` stops time. | `wasmcheat_speed` |
 | **Workers** | Wasm inside Web Workers, including a worker started by a worker. | `wasmcheat_list_workers` |
 | **Saved scans** | Candidate lists kept in the page's `sessionStorage`, so a reload does not lose the narrowing. | `wasmcheat_saved` |
-| **Bookmarks** | Labelled addresses kept in `localStorage`. | `wasmcheat_bookmark` |
+| **Bookmarks** | Labelled addresses kept in `localStorage`, with a type so each row shows its value now. | `wasmcheat_bookmark` |
 | **Audit** | Every change made through the extension, from the panel or from an agent. | `wasmcheat_audit` |
 | **Raw console and events** | Any page method with JSON parameters, plus a live log of bridge and page events with **Pause**. | None |
 

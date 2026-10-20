@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { MemoryAccess } from '../../packages/page-agent/src/memory';
-import { ScanStore, scanText } from '../../packages/page-agent/src/scanner';
+import { ScanStore, satisfies, scanText } from '../../packages/page-agent/src/scanner';
 
 const INSTANCE = 'w1';
 
@@ -391,5 +391,46 @@ describe('saved scan round trip', () => {
     const smaller = new MemoryAccess(new WebAssembly.Memory({ initial: 1 }));
     const adopted = new ScanStore().adopt(smaller, data);
     expect(adopted.summary.matchCount).toBe(0);
+  });
+});
+
+// The first pass has one tight loop per type and mode family; this pins every one of them to the
+// reference predicate (`satisfies`), so a speed-up can never change which addresses a scan finds.
+describe('first-pass fast paths', () => {
+  const TYPES = ['i8', 'u8', 'i16', 'u16', 'i32', 'u32', 'i64', 'u64', 'f32', 'f64'] as const;
+  const WIDTH = { i8: 1, u8: 1, i16: 2, u16: 2, i32: 4, u32: 4, i64: 8, u64: 8, f32: 4, f64: 8 } as const;
+  const MODES = ['exact', 'not-equal', 'less', 'greater', 'less-or-equal', 'greater-or-equal', 'between', 'changed', 'increased-by'] as const;
+
+  it('finds exactly what satisfies() accepts, for every type, mode and alignment', () => {
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const bytes = new Uint8Array(memory.buffer, 0, 2048);
+    let seed = 7;
+    for (let i = 0; i < bytes.length; i++) {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      // Mostly small bytes, so equal values actually occur.
+      bytes[i] = seed % 5 === 0 ? 0xff : seed % 7;
+    }
+    const access = new MemoryAccess(memory);
+    for (const type of TYPES) {
+      const width = WIDTH[type];
+      for (const mode of MODES) {
+        for (const alignment of [width, 1]) {
+          for (const value of [0, 3, 2.5, -1, 65535]) {
+            const options = { instanceId: INSTANCE, type, mode, value, value2: value + 300, alignment, range: { start: 0, end: 2048 }, maxResults: 100_000 };
+            const scans = new ScanStore();
+            const summary = scans.pass(access, options);
+            const found = scans.results(summary.scanId, access, 0, 100_000).hits.map((hit) => hit.address.offset);
+            const expected: number[] = [];
+            const isFloat = type === 'f32' || type === 'f64';
+            const tolerance = value === undefined || !isFloat ? 0 : type === 'f32' ? Math.max(Math.abs(value) * 1e-6, 1e-6) : Math.max(Math.abs(value) * 1e-12, 1e-12);
+            for (let offset = 0; offset + width <= 2048; offset += alignment) {
+              const current = access.read(offset, type);
+              if (satisfies(mode, current, undefined, { value, value2: value + 300, tolerance, isFloat })) expected.push(offset);
+            }
+            expect(found, `${type} ${mode} align ${alignment} value ${value}`).toEqual(expected);
+          }
+        }
+      }
+    }
   });
 });

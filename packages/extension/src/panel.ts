@@ -55,7 +55,9 @@ function el<T extends HTMLElement>(id: string): T {
   return found as T;
 }
 
-const ADDRESS_FIELDS = ['mem-address', 'freeze-address', 'watch-address', 'trace-address'];
+const ADDRESS_FIELDS = ['mem-address', 'freeze-address', 'watch-address', 'trace-address', 'bookmark-address', 'ptr-address'];
+/** Picking a hit sets these to its type too, so Freeze or Watch never reads an f32 as an i32. */
+const TYPE_FIELDS = ['mem-type', 'freeze-type', 'watch-type', 'bookmark-type'];
 const INSTANCE_FIELDS = ['scan-instance', 'text-instance', 'hook-instance'];
 
 // ---------------------------------------------------------------- state
@@ -281,7 +283,10 @@ function optionalFieldNum(id: string, label: string): number | undefined {
 
 /** `w1:0x408` passes through; a bare offset borrows the instance picked in the Instances table. */
 function address(field: HTMLInputElement): string {
-  const raw = field.value.trim();
+  return withInstance(field.value.trim());
+}
+
+function withInstance(raw: string): string {
   if (!raw) throw new BridgeError('BAD_PARAMS', 'address is empty');
   if (/^[A-Za-z0-9_-]+:/.test(raw)) return raw;
   if (!selectedInstanceId) {
@@ -358,7 +363,26 @@ function typeOf(id: string): ValueType {
 
 /** `1 match`, `3 matches`: counts in the panel are sentences, not `match(es)`. */
 function count(n: number, one: string, many = `${one}s`): string {
-  return `${n} ${n === 1 ? one : many}`;
+  return `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
+}
+
+/** f32 carries about seven digits; printing the double it widens to (1.100000023841858) is noise. */
+function formatValue(value: number | undefined, type: ValueType): string {
+  if (value === undefined) return '';
+  if (Number.isNaN(value)) return 'unreadable';
+  return type === 'f32' ? String(Number(value.toPrecision(7))) : String(value);
+}
+
+/** Lists that came back empty are asked once a second instead of four times: nothing there ticks. */
+const emptyLists = new Set<string>();
+
+function markEmpty(name: string, rows: number): void {
+  if (rows === 0) emptyLists.add(name);
+  else emptyLists.delete(name);
+}
+
+function setText(node: Element, text: string): void {
+  if (node.textContent !== text) node.textContent = text;
 }
 
 function span(text: string, className?: string): HTMLSpanElement {
@@ -374,7 +398,8 @@ function addressLink(text: string, value?: string, type?: ValueType): HTMLButton
   button.className = 'link';
   button.textContent = text;
   button.title = 'Change this address';
-  button.addEventListener('click', () => selectAddress(text, value, type));
+  // A live row keeps its current value on the <li>, so the editor opens with what memory holds now.
+  button.addEventListener('click', () => selectAddress(text, button.closest('li')?.dataset.value ?? value, type));
   return button;
 }
 
@@ -388,11 +413,13 @@ function selectAddress(text: string, value?: string, type?: ValueType): void {
   fillAddress(text);
   // A hit has the type it was scanned as; a freeze or watch row brings its own.
   pickType = type ?? typeOf('scan-type');
+  for (const id of TYPE_FIELDS) selectOf(id).value = pickType;
   el('pick-address').textContent = text;
   el('pick-type').textContent = pickType;
   const input = el<HTMLInputElement>('pick-value');
   input.value = value ?? '';
   el('pick-out').textContent = '';
+  el('pick-now').textContent = value === undefined ? '' : `now ${value}`;
   el('pick').hidden = false;
   input.focus();
   input.select();
@@ -465,6 +492,38 @@ const NO_SCAN_YET = 'No scan yet. Press First Scan with a value you can see on t
 
 function renderList(host: HTMLElement, items: HTMLLIElement[], emptyText: string): void {
   host.replaceChildren(...(items.length ? items : [listItem([span(emptyText, 'empty')])]));
+  delete host.dataset.keys;
+}
+
+/**
+ * A list whose values tick several times a second. Rows are rebuilt only when the set of rows
+ * changes; otherwise only the text that moved is rewritten, so a row never jumps, flickers or
+ * loses the click that is landing on it.
+ */
+function liveList<T>(
+  host: HTMLElement,
+  rows: T[],
+  key: (row: T) => string,
+  build: (row: T) => HTMLLIElement,
+  update: (item: HTMLLIElement, row: T) => void,
+  emptyText: string,
+  footer = '',
+): void {
+  if (rows.length === 0) {
+    if (host.dataset.keys !== `empty:${emptyText}`) {
+      renderList(host, [], emptyText);
+      host.dataset.keys = `empty:${emptyText}`;
+    }
+    return;
+  }
+  const keys = `${rows.map(key).join('\n')}\n${footer}`;
+  if (host.dataset.keys !== keys) {
+    const items = rows.map(build);
+    if (footer) items.push(listItem([span(footer, 'empty')]));
+    host.replaceChildren(...items);
+    host.dataset.keys = keys;
+  }
+  rows.forEach((row, index) => update(host.children[index] as HTMLLIElement, row));
 }
 
 // ---------------------------------------------------------------- status bar
@@ -521,21 +580,24 @@ async function refreshStatus(): Promise<void> {
     el('target').classList.remove('process--empty');
   }
 
+  // The first look at a tab goes through ensureAgent, which also catches a game that started before
+  // WasmCheat was in the page (and reloads it once); after that a hello is enough.
   let info: PageAgentInfo | undefined;
-  try {
-    info = await swCall<PageAgentInfo>('ext.call', { tabId, method: 'page.hello', params: {} });
-  } catch {
+  if (!startedIn.has(tabId)) {
     info = await startAgent(tabId, statusOut);
+  } else {
+    info = await swCall<PageAgentInfo>('ext.call', { tabId, method: 'page.hello', params: {} }).catch(() => undefined);
   }
   if (!info) {
     showNothing('WasmCheat cannot run in this page', 'Some pages (the Chrome Web Store, browser settings) do not let extensions in.', true);
     return;
   }
-  if (knownInstances.length === 0) await refreshInstances().catch(() => undefined);
+  // Always asked, not only when empty: after a reload the old list describes a page that is gone.
+  await refreshInstances().catch(() => undefined);
   const wasm = knownInstances.length === 0 ? 'no wasm' : count(knownInstances.length, 'wasm module');
   setPill(
     'agent',
-    info.evalAllowed ? wasm : `${wasm} · scripts blocked`,
+    info.evalAllowed || knownInstances.length === 0 ? wasm : `${wasm} · scripts blocked`,
     knownInstances.length > 0 && info.evalAllowed ? 'live' : 'idle',
   );
   if (knownInstances.length === 0) {
@@ -564,6 +626,8 @@ function showNothing(title: string, text: string, canRetry: boolean): void {
   el('nothing-actions').hidden = !canRetry;
   el('nothing').hidden = false;
   el('workbench').hidden = true;
+  // Every tool needs a wasm instance, so the tray would only offer errors; Why is it empty? diagnoses.
+  el('advanced').hidden = true;
   if (canRetry && watchForWasm === undefined) {
     watchForWasm = window.setInterval(() => {
       void instanceList()
@@ -571,7 +635,7 @@ function showNothing(title: string, text: string, canRetry: boolean): void {
           if (instances.length > 0) void refreshStatus().catch(reportStatusError);
         })
         .catch(() => undefined);
-    }, 1500);
+    }, 1000);
   }
 }
 
@@ -580,6 +644,7 @@ function showWorkbench(): void {
   watchForWasm = undefined;
   el('nothing').hidden = true;
   el('workbench').hidden = false;
+  el('advanced').hidden = false;
 }
 
 /** Tabs the panel already tried to start the agent in, so a page that refuses is not reloaded in a loop. */
@@ -592,10 +657,6 @@ let startNotice = '';
  * start it here, which reloads the page once so the game instantiates with the agent present.
  */
 async function startAgent(tabId: number, statusOut: HTMLElement): Promise<PageAgentInfo | undefined> {
-  if (startedIn.has(tabId)) {
-    setPill('agent', 'not in this page', 'warn');
-    return undefined;
-  }
   startedIn.add(tabId);
   setPill('agent', 'starting…', 'idle');
   try {
@@ -772,7 +833,7 @@ function twoDigitHex(byte: number): string {
 async function viewMemory(direction: 0 | -1 | 1 = 0): Promise<string> {
   const rows = Math.min(64, Math.max(1, fieldNum('viewer-rows', 'rows')));
   if (direction === 0 || viewer === null) {
-    const parsed = parseAddress(el<HTMLInputElement>('viewer-address').value.trim());
+    const parsed = addressAt(el('viewer-address'));
     viewer = { instanceId: parsed.instanceId, offset: parsed.offset };
   } else {
     viewer = {
@@ -781,7 +842,10 @@ async function viewMemory(direction: 0 | -1 | 1 = 0): Promise<string> {
     };
     el<HTMLInputElement>('viewer-address').value = formatAddress(viewer);
   }
-  const start = viewer;
+  return dumpMemory(viewer, rows);
+}
+
+async function dumpMemory(start: { instanceId: string; offset: number }, rows: number): Promise<string> {
   const result = await pageCall<ReadResult>('page.read', {
     address: start,
     type: 'u8',
@@ -817,7 +881,7 @@ async function jumpViewer(text: string): Promise<void> {
  * how an address survives a reload: the dump can walk it without an agent.
  */
 async function followPointer(): Promise<string> {
-  const from = viewer ?? parseAddress(el<HTMLInputElement>('viewer-address').value.trim());
+  const from = viewer ?? addressAt(el('viewer-address'));
   const read = await pageCall<ReadResult>('page.read', { address: from, type: 'u32' });
   const next = { instanceId: from.instanceId, offset: (read.values as number[])[0] ?? 0 };
   el<HTMLInputElement>('viewer-address').value = formatAddress(next);
@@ -836,7 +900,7 @@ async function listWorkers(): Promise<string> {
 }
 
 async function scanPointers(): Promise<string> {
-  const target = parseAddress(el<HTMLInputElement>('ptr-address').value.trim());
+  const target = addressAt(el('ptr-address'));
   const maxDepth = Math.min(6, Math.max(1, fieldNum('ptr-depth', 'depth')));
   const maxOffset = Math.max(4, fieldNum('ptr-max-offset', 'max offset'));
   const paths = await pageCall<PointerPath[]>('page.pointer.scan', {
@@ -861,7 +925,7 @@ async function resolvePointer(): Promise<string> {
   const raw = el<HTMLInputElement>('ptr-path').value.trim();
   const [addressText, offsetText = ''] = raw.split(/\s+/);
   if (!addressText) throw new BridgeError('BAD_PARAMS', 'paste a path like "w1:0x2af2730 16,8"');
-  const base = parseAddress(addressText);
+  const base = parseAddressText(withInstance(addressText));
   const offsets = offsetText
     .split(',')
     .map((part) => part.trim())
@@ -898,21 +962,27 @@ async function writeValue(): Promise<string> {
 // ---------------------------------------------------------------- freeze
 
 function renderFreezes(entries: FreezeEntry[]): void {
-  const items = entries.map((entry) =>
-    listItem([
-      entry.id,
-      addressLink(formatAddress(entry.address), String(entry.value), entry.type),
-      `${entry.type}=${entry.value}`,
-      miniButton('Clear', () => {
-        void run(el('freeze-out'), async () => {
-          await pageCall<boolean>('page.freeze.clear', { freezeId: entry.id });
-          renderFreezes(await pageCall<FreezeEntry[]>('page.freeze.list'));
-          return `${entry.id} cleared`;
-        });
-      }),
-    ]),
+  markEmpty('freezes', entries.length);
+  liveList(
+    el('freezes'),
+    entries,
+    (entry) => `${entry.id} ${formatAddress(entry.address)} ${entry.type}=${entry.value}`,
+    (entry) =>
+      listItem([
+        entry.id,
+        addressLink(formatAddress(entry.address), String(entry.value), entry.type),
+        `${entry.type}=${formatValue(entry.value, entry.type)}`,
+        miniButton('Clear', () => {
+          void run(el('freeze-out'), async () => {
+            await pageCall<boolean>('page.freeze.clear', { freezeId: entry.id });
+            renderFreezes(await pageCall<FreezeEntry[]>('page.freeze.list'));
+            return `${entry.id} cleared`;
+          });
+        }),
+      ]),
+    () => undefined,
+    'Nothing frozen. Click an address in Found, then press Freeze.',
   );
-  renderList(el('freezes'), items, 'Nothing frozen. Click an address in Found, then press Set.');
 }
 
 async function freezeSet(): Promise<string> {
@@ -925,38 +995,34 @@ async function freezeSet(): Promise<string> {
   return `frozen ${entry.id} · ${formatAddress(entry.address)} ${entry.type}=${entry.value}`;
 }
 
-async function freezeClear(): Promise<string> {
-  const id = el<HTMLInputElement>('freeze-id').value.trim();
-  if (!id) throw new BridgeError('BAD_PARAMS', 'freeze id is empty');
-  const cleared = await pageCall<boolean>('page.freeze.clear', { freezeId: id });
-  renderFreezes(await pageCall<FreezeEntry[]>('page.freeze.list'));
-  return cleared ? `${id} cleared` : `${id} was not frozen`;
-}
-
-async function freezeList(): Promise<string> {
-  const entries = await pageCall<FreezeEntry[]>('page.freeze.list');
-  renderFreezes(entries);
-  return count(entries.length, 'freeze');
-}
-
 // ---------------------------------------------------------------- watch
 
 function renderWatches(entries: WatchEntry[]): void {
-  const items = entries.map((entry) =>
-    listItem([
-      entry.id,
-      addressLink(formatAddress(entry.address), String(entry.lastValue), entry.type),
-      `${entry.type} last=${entry.lastValue}`,
-      miniButton('Remove', () => {
-        void run(el('watch-out'), async () => {
-          await pageCall<boolean>('page.watch.remove', { watchId: entry.id });
-          renderWatches(await pageCall<WatchEntry[]>('page.watch.list'));
-          return `${entry.id} removed`;
-        });
-      }),
-    ]),
+  markEmpty('watches', entries.length);
+  liveList(
+    el('watches'),
+    entries,
+    (entry) => `${entry.id} ${formatAddress(entry.address)} ${entry.type}`,
+    (entry) =>
+      listItem([
+        entry.id,
+        addressLink(formatAddress(entry.address), undefined, entry.type),
+        span(''),
+        miniButton('Remove', () => {
+          void run(el('watch-out'), async () => {
+            await pageCall<boolean>('page.watch.remove', { watchId: entry.id });
+            renderWatches(await pageCall<WatchEntry[]>('page.watch.list'));
+            return `${entry.id} removed`;
+          });
+        }),
+      ]),
+    (item, entry) => {
+      const value = formatValue(entry.lastValue, entry.type);
+      item.dataset.value = value;
+      setText(item.children[2]!, `${entry.type} now ${value}`);
+    },
+    'No watches. Enter an address and a type, then press Add.',
   );
-  renderList(el('watches'), items, 'No watches. Enter an address and a type, then press Add.');
 }
 
 function renderWatchEvents(events: WatchEvent[]): void {
@@ -969,7 +1035,7 @@ function renderWatchEvents(events: WatchEvent[]): void {
       `${event.before} -> ${event.after}`,
     ]),
   );
-  renderList(el('watch-events'), items, 'No changes recorded. Poll again after the page has run for a moment.');
+  renderList(el('watch-events'), items, 'No changes recorded yet. Press Show changes again after the game has run for a moment.');
 }
 
 async function watchAdd(): Promise<string> {
@@ -981,24 +1047,10 @@ async function watchAdd(): Promise<string> {
   return `watching ${entry.id} · ${formatAddress(entry.address)} ${entry.type} (start ${entry.lastValue})`;
 }
 
-async function watchRemove(): Promise<string> {
-  const id = el<HTMLInputElement>('watch-id').value.trim();
-  if (!id) throw new BridgeError('BAD_PARAMS', 'watch id is empty');
-  const removed = await pageCall<boolean>('page.watch.remove', { watchId: id });
-  renderWatches(await pageCall<WatchEntry[]>('page.watch.list'));
-  return removed ? `${id} removed` : `${id} was not watched`;
-}
-
-async function watchList(): Promise<string> {
-  const entries = await pageCall<WatchEntry[]>('page.watch.list');
-  renderWatches(entries);
-  return count(entries.length, 'watch', 'watches');
-}
-
 async function watchPoll(): Promise<string> {
   const events = await pageCall<WatchEvent[]>('page.watch.poll', {});
   renderWatchEvents(events);
-  return events.length ? `${count(events.length, 'event')}, newest first` : 'no watch events since the last poll';
+  return events.length ? `${count(events.length, 'event')}, newest first` : 'no changes since you last looked';
 }
 
 // ---------------------------------------------------------------- scan
@@ -1059,22 +1111,71 @@ function syncScanFields(): void {
   if (valueField) valueField.classList.toggle('field--optional', optional);
 }
 
+/** How many hits the Found list shows and keeps live; past that, narrowing is the useful move. */
+const FOUND_LIMIT = 100;
+/** The type the open scan was made with: a hit is that type even if the form has changed since. */
+let scanType: ValueType = 'i32';
+
 function renderScanSummary(summary: ScanSummary): void {
   activeScanId = summary.scanId;
+  scanType = summary.type;
   markScanStep('narrow');
   markStep(2);
   el('scan-id').textContent = `scan ${summary.scanId} · ${count(summary.matchCount, 'match', 'matches')}`;
-  const items = [...summary.sample]
-    .sort((a, b) => a.address.offset - b.address.offset)
-    .map((hit) => listItem([addressLink(formatAddress(hit.address), String(hit.value)), String(hit.value)]));
-  renderList(el('scan-hits'), items, 'No hits in this answer. Narrow again with Next Scan, or widen the byte range.');
+  renderScanHits(summary.sample, summary.matchCount);
 }
 
+/**
+ * The Found list, kept live: Value is memory now, Previous is the value at the last scan, and a
+ * value that moved since is marked, which is what tells you whether Next Scan should say changed.
+ */
 function renderScanHits(hits: ScanHit[], total: number): void {
-  const items = [...hits]
-    .sort((a, b) => a.address.offset - b.address.offset)
-    .map((hit) => listItem([addressLink(formatAddress(hit.address), String(hit.value)), String(hit.value)]));
-  renderList(el('scan-hits'), items, `no hits in the first ${hits.length} of ${total}`);
+  const sorted = [...hits].sort((a, b) => a.address.offset - b.address.offset);
+  const hidden = total - sorted.length;
+  liveList(
+    el('scan-hits'),
+    sorted,
+    (hit) => formatAddress(hit.address),
+    (hit) => listItem([addressLink(formatAddress(hit.address), undefined, scanType), span(''), span('', 'hit__previous')]),
+    (item, hit) => {
+      const value = formatValue(hit.value, scanType);
+      item.dataset.value = value;
+      const [, valueCell, previousCell] = item.children;
+      setText(valueCell!, value);
+      setText(previousCell!, formatValue(hit.previous, scanType));
+      const moved = hit.previous !== undefined && !Object.is(hit.value, hit.previous);
+      valueCell!.classList.toggle('hit--moved', moved);
+    },
+    total === 0
+      ? 'No address holds that value. Check the type (coins are often i64 or f64), or start again with First Scan.'
+      : 'No hits in this answer. Narrow again with Next Scan, or widen the byte range.',
+    hidden > 0 ? `${count(hidden, 'more address', 'more addresses')} not shown. Narrow with Next Scan.` : '',
+  );
+}
+
+/** One live read of the Found list. Errors stay quiet here: the buttons report them. */
+async function liveFound(): Promise<void> {
+  const scanId = activeScanId;
+  if (!scanId) return;
+  try {
+    const result = await pageCall<{ hits: ScanHit[]; total: number }>('page.scan.results', { scanId, limit: FOUND_LIMIT });
+    if (activeScanId === scanId) renderScanHits(result.hits, result.total);
+  } catch (error) {
+    if (asBridgeError(error).code === 'SCAN_CLOSED' && activeScanId === scanId) scanGone();
+  }
+}
+
+/** A reload starts the page from scratch, scans included; say so instead of showing dead hits. */
+function scanGone(): void {
+  activeScanId = undefined;
+  el('scan-id').textContent = 'no scan';
+  markScanStep('first');
+  markStep(1);
+  renderList(
+    el('scan-hits'),
+    [],
+    'The page reloaded, so that scan is gone. Run First Scan again (Saved scans under More tools keep one across reloads).',
+  );
 }
 
 function requireScanId(): string {
@@ -1104,6 +1205,7 @@ async function scanBegin(): Promise<string> {
 
   const summary = await pageCall<ScanSummary>('page.scan.begin', params);
   renderScanSummary(summary);
+  await liveFound();
   return scanSummaryLine(summary, 'began');
 }
 
@@ -1113,16 +1215,8 @@ async function scanNarrow(): Promise<string> {
     ...scanCompareParams(selectOf('scan-mode').value as ScanMode),
   });
   renderScanSummary(summary);
+  await liveFound();
   return scanSummaryLine(summary, 'narrowed');
-}
-
-async function scanResults(): Promise<string> {
-  const result = await pageCall<{ hits: ScanHit[]; total: number }>('page.scan.results', {
-    scanId: requireScanId(),
-    limit: 100,
-  });
-  renderScanHits(result.hits, result.total);
-  return `${result.hits.length} of ${count(result.total, 'hit')} shown`;
 }
 
 async function scanDrop(): Promise<string> {
@@ -1139,27 +1233,55 @@ async function scanDrop(): Promise<string> {
 async function bookmarkAdd(): Promise<string> {
   const label = el<HTMLInputElement>('bookmark-label').value.trim();
   const address = el<HTMLInputElement>('bookmark-address').value.trim();
-  const bookmark = await pageCall<Bookmark>('page.bookmark.add', { label, address });
+  const bookmark = await pageCall<Bookmark>('page.bookmark.add', { label, address: withInstance(address), type: typeOf('bookmark-type') });
   await bookmarkList();
   return `bookmarked "${bookmark.label}" -> ${bookmark.address}`;
 }
 
-async function bookmarkList(): Promise<string> {
-  const items = await pageCall<Bookmark[]>('page.bookmark.list');
-  renderList(
+/** Reads every bookmark that names its type, so the list shows what each address holds now. */
+async function bookmarkValues(items: Bookmark[]): Promise<Map<string, string>> {
+  const values = new Map<string, string>();
+  await Promise.all(
+    items.map(async (bookmark) => {
+      if (!bookmark.type) return;
+      try {
+        const read = await pageCall<ReadResult>('page.read', { address: parseAddressText(bookmark.address), type: bookmark.type });
+        values.set(bookmark.id, formatValue(read.values[0] as number, bookmark.type));
+      } catch {
+        values.set(bookmark.id, 'not readable');
+      }
+    }),
+  );
+  return values;
+}
+
+function renderBookmarks(items: Bookmark[], values: Map<string, string>): void {
+  markEmpty('bookmarks', items.length);
+  liveList(
     el('bookmark-list-out'),
-    items.map((bookmark) =>
+    items,
+    (bookmark) => `${bookmark.id} ${bookmark.label} ${bookmark.address} ${bookmark.type ?? ''}`,
+    (bookmark) =>
       listItem([
         span(bookmark.label),
-        addressLink(bookmark.address),
-        span(bookmark.type ?? '', 'empty'),
+        addressLink(bookmark.address, undefined, bookmark.type),
+        span(''),
         miniButton('Forget', () => {
           void pageCall<boolean>('page.bookmark.remove', { id: bookmark.id }).then(bookmarkList);
         }),
       ]),
-    ),
+    (item, bookmark) => {
+      const value = values.get(bookmark.id);
+      if (value !== undefined) item.dataset.value = value;
+      setText(item.children[2]!, bookmark.type ? `${bookmark.type} now ${value ?? ''}` : '');
+    },
     'No bookmarks. Type an address and a label, then press Add bookmark.',
   );
+}
+
+async function bookmarkList(): Promise<string> {
+  const items = await pageCall<Bookmark[]>('page.bookmark.list');
+  renderBookmarks(items, await bookmarkValues(items));
   return items.length === 0 ? 'nothing bookmarked yet' : count(items.length, 'bookmark');
 }
 
@@ -1190,8 +1312,11 @@ async function savedOpen(): Promise<string> {
   const name = requireSavedName();
   const opened = await pageCall<{ scanId: string; summary: ScanSummary }>('page.saved.open', { name });
   activeScanId = opened.scanId;
+  scanType = opened.summary.type;
+  markScanStep('narrow');
+  markStep(2);
   el('scan-id').textContent = `scan ${opened.scanId} · ${count(opened.summary.matchCount, 'match', 'matches')} (from "${name}")`;
-  renderList(el('scan-hits'), [], 'No hits in this answer. Narrow again with Next Scan, or widen the byte range.');
+  await liveFound();
   return `opened "${name}" as ${opened.scanId} · narrow it with the scan form above`;
 }
 
@@ -1535,13 +1660,108 @@ function openEvents(): void {
       setPill('bridge', 'MCP token refused', 'bad');
       report(el('status-out'), data?.hint ?? 'the bridge refused this extension: paste the bridge token');
     }
-    if (payload.event === 'tabs.changed') scheduleStatusRefresh();
+    // A relay announcing itself in the target tab means its page loaded again; other tabs are not ours.
+    const changed = payload.data as { tabId?: number } | null;
+    if (payload.event === 'tabs.changed' && (targetTabId === undefined || changed?.tabId === targetTabId)) {
+      scheduleStatusRefresh();
+    }
   });
   port.onDisconnect.addListener(() => {
     // Reading lastError keeps Chrome from reporting an unchecked runtime error for a closed port.
     void chrome.runtime.lastError;
     logEvent('panel.portclosed', { note: 'service worker went away; reconnecting' });
     window.setTimeout(openEvents, 1000);
+  });
+}
+
+// ---------------------------------------------------------------- live values
+
+/**
+ * Four reads a second keep everything on screen current: the Found list, the picked address, the
+ * freezes, watches and bookmarks, and the memory view when it is open. Each list is one call and
+ * all of them run together, so a tick costs a few milliseconds; it never overlaps the next one,
+ * and it stops while the panel is out of sight.
+ */
+const LIVE_MS = 250;
+/** Every fourth tick also checks whether the page gained or lost a wasm module. */
+const INSTANCE_EVERY = 4;
+let panelShown = true;
+let liveTicks = 0;
+
+function liveActive(): boolean {
+  return panelShown && document.visibilityState === 'visible' && !el('workbench').hidden && targetTabId !== undefined;
+}
+
+async function livePick(): Promise<void> {
+  if (el('pick').hidden) return;
+  const text = el('pick-address').textContent ?? '';
+  const type = pickType;
+  let now: string;
+  try {
+    const read = await pageCall<ReadResult>('page.read', { address: parseAddressText(text), type });
+    now = `now ${formatValue(read.values[0] as number, type)}`;
+  } catch {
+    now = 'not readable now';
+  }
+  if (el('pick-address').textContent === text) setText(el('pick-now'), now);
+}
+
+async function liveFreezes(): Promise<void> {
+  const entries = await pageCall<FreezeEntry[]>('page.freeze.list');
+  renderFreezes(entries);
+  if (!el('pick').hidden) await syncPickFreeze(entries);
+}
+
+async function liveWatches(): Promise<void> {
+  renderWatches(await pageCall<WatchEntry[]>('page.watch.list'));
+}
+
+async function liveBookmarks(): Promise<void> {
+  const items = await pageCall<Bookmark[]>('page.bookmark.list');
+  renderBookmarks(items, await bookmarkValues(items));
+}
+
+async function liveViewer(): Promise<void> {
+  if (!viewer || !el<HTMLDetailsElement>('advanced').open) return;
+  const rows = Math.min(64, Math.max(1, Number(el<HTMLInputElement>('viewer-rows').value) || 16));
+  const start = viewer;
+  const text = await dumpMemory(start, rows);
+  if (viewer === start) setText(el('viewer-out'), text);
+}
+
+/** A module that appears or goes away changes what there is to scan, so the header follows it. */
+async function liveInstances(): Promise<void> {
+  const instances = await instanceList();
+  const ids = instances.map((instance) => instance.id).join(',');
+  if (ids === knownInstances.map((instance) => instance.id).join(',')) return;
+  renderInstances(instances);
+  await refreshStatus();
+}
+
+async function liveTick(): Promise<void> {
+  liveTicks += 1;
+  const slow = liveTicks % INSTANCE_EVERY === 0;
+  const due = (name: string): boolean => slow || !emptyLists.has(name);
+  const jobs = [liveFound(), livePick(), liveViewer()];
+  if (due('freezes')) jobs.push(liveFreezes());
+  if (due('watches')) jobs.push(liveWatches());
+  if (due('bookmarks')) jobs.push(liveBookmarks());
+  if (slow) jobs.push(liveInstances());
+  await Promise.allSettled(jobs);
+}
+
+function startLive(): void {
+  const loop = async (): Promise<void> => {
+    if (liveActive()) await liveTick();
+    window.setTimeout(() => void loop(), LIVE_MS);
+  };
+  void loop();
+  // DevTools keeps a hidden panel's document alive and "visible"; devtools.ts tells us instead.
+  window.addEventListener('wasmcheat:shown', () => {
+    panelShown = true;
+  });
+  window.addEventListener('wasmcheat:hidden', () => {
+    panelShown = false;
   });
 }
 
@@ -1567,6 +1787,7 @@ function wire(): void {
   fillSelect(selectOf('mem-type'), VALUE_TYPES, 'i32');
   fillSelect(selectOf('freeze-type'), VALUE_TYPES, 'i32');
   fillSelect(selectOf('watch-type'), VALUE_TYPES, 'i32');
+  fillSelect(selectOf('bookmark-type'), VALUE_TYPES, 'i32');
   fillSelect(selectOf('scan-type'), VALUE_TYPES, 'i32');
   fillSelect(selectOf('scan-mode'), SCAN_MODES, 'exact');
   fillSelect(selectOf('trace-kind'), TRACE_KINDS, 'write');
@@ -1624,17 +1845,12 @@ function wire(): void {
   bind('ptr-resolve', el('ptr-out'), resolvePointer);
 
   bind('freeze-set', el('freeze-out'), freezeSet);
-  bind('freeze-clear', el('freeze-out'), freezeClear);
-  bind('freeze-list', el('freeze-out'), freezeList);
 
   bind('watch-add', el('watch-out'), watchAdd);
-  bind('watch-remove', el('watch-out'), watchRemove);
-  bind('watch-list', el('watch-out'), watchList);
   bind('watch-poll', el('watch-out'), watchPoll);
 
   bind('scan-begin', el('scan-out'), scanBegin);
   bind('scan-narrow', el('scan-out'), scanNarrow);
-  bind('scan-results', el('scan-out'), scanResults);
   bind('scan-drop', el('scan-out'), scanDrop);
   bind('text-scan', el('text-out'), scanText);
   bind('saved-save', el('saved-out'), savedSave);
@@ -1642,7 +1858,6 @@ function wire(): void {
   bind('saved-open', el('saved-out'), savedOpen);
   bind('saved-delete', el('saved-out'), savedDelete);
   bind('bookmark-add', el('bookmark-out'), bookmarkAdd);
-  bind('bookmark-list', el('bookmark-out'), bookmarkList);
   bind('bookmark-clear', el('bookmark-out'), bookmarkClear);
 
   bind('trace-run', el('trace-out'), traceRun);
@@ -1673,6 +1888,7 @@ function wire(): void {
   renderList(el('scan-hits'), [], NO_SCAN_YET);
   renderList(el('event-log'), [], 'No events yet. Bridge and page events appear here as they happen.');
   openEvents();
+  startLive();
 
   (window as unknown as { __panel: PanelTestHooks }).__panel = {
     attach: panelAttach,

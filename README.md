@@ -238,7 +238,8 @@ Unity wrapper runs in a **cross-origin iframe**, where a content script injected
 document cannot see it. Both content scripts are therefore registered with `all_frames: true`,
 each frame's relay announces itself with its `frameId` and URL, and the service worker picks the
 frame that actually captured a wasm instance (probing each one with `page.diagnose` when it has
-to). `wasmcheat_list_tabs` shows the frames; `wasmcheat_attach` accepts `frameId` to override the
+to). A pick that held no wasm is only a guess and is asked again every two seconds, because the
+game frame usually instantiates after the page (and the panel) opened. `wasmcheat_list_tabs` shows the frames; `wasmcheat_attach` accepts `frameId` to override the
 choice. A call always goes to exactly one frame (the top frame when none is known yet), never to
 every frame at once.
 
@@ -621,7 +622,7 @@ that is not moving. The automated test does exactly that.
 ## Tests
 
 ```bash
-npm test           # build → vitest (154 unit) → playwright (23 end-to-end)
+npm test           # build → vitest (155 unit) → playwright (25 end-to-end)
 npm run test:unit  # page agent: memory, registry, scanner, hooks, trace, rewriter (no browser)
 npm run test:e2e   # real Chromium, real extension, real MCP stdio client
 ```
@@ -661,6 +662,8 @@ serves the demo, connects a real MCP client to `dist/bin.js`, and then, in order
 `tests/e2e/quiet.spec.ts` then runs with no MCP server at all: the panel finds the demo's wasm with
 no Attach step, shows **Nothing to analyze in this tab** on a plain page, switches to the scan cards
 when that page instantiates a module, and the extensions page and every console stay free of errors.
+It also proves the Found list, the editor and bookmarks stay live without a button press, and that a
+cross-origin game frame that instantiates late is found without a reload.
 
 Costs and gotchas: one browser and one bridge port, so the suite runs with a single worker and
 fails fast if the port is already taken (it picks `7399` by default so it does not collide with a

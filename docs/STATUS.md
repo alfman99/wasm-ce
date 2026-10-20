@@ -3,8 +3,8 @@
 Last verified from a clean tree on 2026-10-20 (`rm -rf packages/*/dist`, `npm ci`):
 
 - `npm ci` clean, `npm run build` 0 errors, `npm run typecheck` 0 errors
-- `npx vitest run` **154 passed** (15 files)
-- `npx playwright test` **23 passed, 0 skipped** (~39 s, real Chromium, real extension, no mocks)
+- `npx vitest run` **155 passed** (15 files)
+- `npx playwright test` **25 passed, 0 skipped** (~35 s, real Chromium, real extension, no mocks)
 - `npm audit --omit=dev` 0 vulnerabilities. The full audit flags 6 in test tooling only (vitest 2,
   the esbuild inside vite); fixing them needs a vitest major upgrade.
 
@@ -23,6 +23,16 @@ Last verified from a clean tree on 2026-10-20 (`rm -rf packages/*/dist`, `npm ci
   `$WASMCHEAT_HOME/audit.jsonl`. Reads, `scan_results`, `pointer_resolve`, listing calls and watch
   polls are deliberately not logged: they change nothing, and logging them would bury the writes in
   noise.
+- Live panel: the Found list (with the value at the last scan beside the value now), the picked
+  address, freezes, watches and bookmarks update four times a second, in place, and stop while the
+  panel is hidden (e2e: a hit's value moves with no button press and its row is the same element).
+- A game frame that instantiates after the panel opened is found on its own: a frame pick with no
+  wasm is re-checked every 2 s (e2e: cross-origin iframe instantiating after 4 s). A page that was
+  open before WasmCheat and already runs a game (a canvas or a `.wasm` reference, no instance the
+  injected agent can see) is reloaded once with a notice; a plain page is not.
+- Scan speed on 256 MiB (Node, M-series): exact i32 ~80 ms, f32 ~120 ms, i64 ~45 ms, greater i32
+  ~95 ms, unaligned (alignment 1) ~260 ms. Each type and mode family has its own loop; a unit test
+  pins every loop to the reference predicate for every type, mode and alignment.
 - Scan / narrow (13 modes: exact, not-equal, less, greater, less-or-equal, greater-or-equal,
   between, changed, unchanged, increased, decreased, increased-by, decreased-by), text scan
   (ascii / utf8 / hex bytes), read, write, freeze, watch.

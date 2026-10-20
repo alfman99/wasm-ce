@@ -293,6 +293,8 @@ export interface ScanSummary {
 export interface ScanHit {
   address: Address;
   value: number;
+  /** The value at the end of the last scan pass, so a live list can show what moved since. */
+  previous?: number;
 }
 
 export interface ReadResult {

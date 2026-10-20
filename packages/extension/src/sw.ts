@@ -49,8 +49,6 @@ async function bridgeUrl(): Promise<string> {
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 10_000;
 const RPC_TIMEOUT_MS = 30_000;
-/** A frame that has not answered hello in this long is treated as gone, not as slow. */
-const FRAME_PROBE_TIMEOUT_MS = 1_500;
 /**
  * MV3 terminates an idle service worker after 30s. A tab that is still loading (or a wait for a
  * page reload during attach) looks exactly like idleness to Chrome, and the bridge would then find
@@ -67,6 +65,9 @@ const attachedTabs = new Set<number>();
 const tabFrames = new Map<number, Map<number, string>>();
 /** tabId → the frame that owns the wasm, so page.* calls land in the right realm. */
 const activeFrame = new Map<number, number>();
+/** Tabs whose picked frame held no wasm when it was picked, and since when: see resolveFrame. */
+const emptyFramePick = new Map<number, number>();
+const EMPTY_FRAME_RECHECK_MS = 2_000;
 /**
  * tabId → the top frame's documentId. A relay only announces when its document starts, so an
  * announcement from frame 0 with a new id is a new top document (a reload or a navigation), and the
@@ -623,6 +624,7 @@ function forgetDocument(tabId: number): void {
   attachedTabs.delete(tabId);
   tabFrames.delete(tabId);
   activeFrame.delete(tabId);
+  emptyFramePick.delete(tabId);
   persistSession();
 }
 
@@ -658,6 +660,7 @@ async function traceArm(params: {
 async function ensureAgent(params: { tabId: number; reload?: boolean; frameId?: number }): Promise<PageAgentInfo> {
   await getTab(params.tabId);
   let reloaded = false;
+  let injected = false;
 
   const attachOnce = async (reload: boolean): Promise<PageAgentInfo> => {
     if (reload) {
@@ -670,6 +673,7 @@ async function ensureAgent(params: { tabId: number; reload?: boolean; frameId?: 
       }
     } else if (!attachedTabs.has(params.tabId)) {
       await injectAgent(params.tabId);
+      injected = true;
     }
 
     // Re-resolve every attach: a reloaded page may instantiate its wasm somewhere else.
@@ -682,7 +686,11 @@ async function ensureAgent(params: { tabId: number; reload?: boolean; frameId?: 
   };
 
   try {
-    const info = await attachOnce(params.reload === true);
+    let info = await attachOnce(params.reload === true);
+    // Injected into a page that was already running: a game that instantiated before the agent
+    // arrived is invisible to it until the page starts again. Reload once when the page looks like
+    // one (a canvas or a .wasm reference, but no instance), never for an ordinary page.
+    if (injected && params.reload !== true && (await missedGame(params.tabId))) info = await attachOnce(true);
     return reloaded ? { ...info, autoReloaded: true } : info;
   } catch (error) {
     // The one failure worth fixing without asking: a page that was open before the extension was
@@ -728,17 +736,15 @@ async function helloWithRetry(tabId: number, pinned: number | undefined): Promis
  * that actually captured an instance; fall back to the frame with the most instances.
  */
 async function resolveFrame(tabId: number): Promise<number> {
+  // Trusted without a probe: the panel reads several times a second, and a hello before every call
+  // doubled each one. A frame that went away (YouTube Playables re-creates its game frame on every
+  // ad break) fails fast in sendToTab, which drops it, and callTab picks a frame again. A pick that
+  // held no wasm is only a guess, though: the game frame often instantiates after the panel opened,
+  // so that pick is asked again every couple of seconds until a frame has an instance.
   const cached = activeFrame.get(tabId);
-  if (cached !== undefined) {
-    // Frame ids are per document and a page made of iframes throws them away constantly (YouTube
-    // Playables re-creates its game frame on every ad break). Trusting the cache blindly is how a
-    // live tab reports NO_AGENT, so ask the frame whether it is still there.
-    try {
-      await sendToTab<PageAgentInfo>(tabId, 'page.hello', {}, FRAME_PROBE_TIMEOUT_MS, cached);
-      return cached;
-    } catch {
-      activeFrame.delete(tabId);
-    }
+  const emptySince = emptyFramePick.get(tabId);
+  if (cached !== undefined && (emptySince === undefined || Date.now() - emptySince < EMPTY_FRAME_RECHECK_MS)) {
+    return cached;
   }
 
   // Nothing announced yet (a page from before the install): the top frame is the honest default.
@@ -761,8 +767,28 @@ async function resolveFrame(tabId: number): Promise<number> {
       // Frame raced away or has no relay; ignore it.
     }
   }
-  if (best) activeFrame.set(tabId, best.frameId);
+  if (best) {
+    activeFrame.set(tabId, best.frameId);
+    if (best.instances === 0) emptyFramePick.set(tabId, Date.now());
+    else emptyFramePick.delete(tabId);
+  }
   return best?.frameId ?? 0;
+}
+
+/** Every frame of the tab, asked whether it holds wasm or merely looks like a game that does. */
+async function missedGame(tabId: number): Promise<boolean> {
+  let looksLikeGame = false;
+  for (const [frameId, url] of tabFrames.get(tabId) ?? new Map<number, string>([[0, '']])) {
+    if (url && !/^https?:/i.test(url)) continue;
+    try {
+      const info = await sendToTab<PageDiagnostics>(tabId, 'page.diagnose', {}, 2_000, frameId);
+      if (info.instances > 0) return false;
+      if (info.canvases > 0 || info.wasmReferences.length > 0) looksLikeGame = true;
+    } catch {
+      // A frame without a relay cannot say; the others decide.
+    }
+  }
+  return looksLikeGame;
 }
 
 async function injectAgent(tabId: number): Promise<void> {
@@ -1096,7 +1122,12 @@ async function callTab(
       throw error;
     }
     // NO_AGENT means no live page agent took the call (no relay, a frame that is gone, a document
-    // torn down mid-call), so sending it again after injecting cannot apply it twice.
+    // torn down mid-call), so sending it again cannot apply it twice. A subframe that went away is
+    // not a missing agent: try the frame that holds the wasm now before injecting anything.
+    if (frameId !== 0) {
+      const again = await resolveFrame(params.tabId);
+      if (again !== frameId && tabFrames.get(params.tabId)?.has(again)) return attempt(again);
+    }
     await injectAgent(params.tabId);
     attachedTabs.add(params.tabId);
     return attempt(await resolveFrame(params.tabId));

@@ -51,6 +51,38 @@ export class MemoryAccess {
     }
   }
 
+  /**
+   * A reader for one synchronous pass (a scan), with the view built once and no range check per
+   * call: the caller keeps offsets in bounds. `read` builds a view per call, which is right for one
+   * value and 20x too slow for a 256 MiB scan. Never keep the reader across an await: a grow
+   * detaches the buffer under it.
+   */
+  reader(type: ValueType): (offset: number) => number {
+    const view = this.view();
+    switch (type) {
+      case 'i8':
+        return (offset) => view.getInt8(offset);
+      case 'u8':
+        return (offset) => view.getUint8(offset);
+      case 'i16':
+        return (offset) => view.getInt16(offset, true);
+      case 'u16':
+        return (offset) => view.getUint16(offset, true);
+      case 'i32':
+        return (offset) => view.getInt32(offset, true);
+      case 'u32':
+        return (offset) => view.getUint32(offset, true);
+      case 'i64':
+        return (offset) => Number(view.getBigInt64(offset, true));
+      case 'u64':
+        return (offset) => Number(view.getBigUint64(offset, true));
+      case 'f32':
+        return (offset) => view.getFloat32(offset, true);
+      case 'f64':
+        return (offset) => view.getFloat64(offset, true);
+    }
+  }
+
   write(offset: number, type: ValueType, value: number): void {
     this.assertRange(offset, VALUE_TYPE_BYTES[type]);
     const view = this.view();

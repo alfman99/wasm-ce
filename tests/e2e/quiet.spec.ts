@@ -87,3 +87,90 @@ test('no MCP server: no extension errors, no console errors, and an empty tab sa
     await demo.stop();
   }
 });
+
+// The Found list, the editor and the bookmarks are read four times a second. A value that moved in
+// the game with no button pressed in the panel proves the panel is live, and the same
+// <li> before and after proves it updates in place instead of rebuilding under the cursor.
+test('the panel keeps scan hits, the picked address and bookmarks live', async () => {
+  await assertPortFree(DEAD_BRIDGE_PORT);
+  const demo = await startDemoServer();
+  const browser = await launchBrowser();
+  try {
+    const worker = browser.context.serviceWorkers()[0] ?? (await browser.context.waitForEvent('serviceworker'));
+    await worker.evaluate((port) => chrome.storage.local.set({ wasmcheatPort: port }), DEAD_BRIDGE_PORT);
+    const game = await browser.context.newPage();
+    await game.goto(DEMO_URL);
+    await game.waitForFunction(() => document.querySelector('#status')?.textContent?.includes('wasm ready'));
+    const panel = await browser.context.newPage();
+    await panel.goto(`chrome-extension://${browser.extensionId}/panel.html`);
+    await expect(panel.locator('#scan-instance')).toHaveValue('w1');
+    // The score also climbs on a clock; paused, it moves only when Mine is clicked, so the value
+    // typed into the scan is still the value in memory when the scan runs.
+    await game.evaluate(() => (window as unknown as { __foundry: { pause: () => void } }).__foundry.pause());
+
+    // A value no other address holds, so the score is the one hit and not the 101st of many zeros.
+    await panel.evaluate(() =>
+      (window as unknown as { __panel: { call: (m: string, p: unknown) => Promise<unknown> } }).__panel.call('page.write', {
+        address: 'w1:0x408',
+        type: 'i32',
+        value: 7654321,
+      }),
+    );
+    await panel.fill('#scan-value', '7654321');
+    await panel.press('#scan-value', 'Enter');
+    const row = panel.locator('#scan-hits li', { has: panel.locator('button', { hasText: 'w1:0x408' }) });
+    await expect(row).toHaveCount(1);
+    const first = await row.elementHandle();
+    await game.click('#mine');
+    await expect(row.locator('.hit--moved')).toHaveCount(1);
+    expect(await row.evaluate((item, before) => item === before, first)).toBe(true);
+
+    await row.locator('button').click();
+    const now = await panel.locator('#pick-now').textContent();
+    await game.click('#mine');
+    await expect(panel.locator('#pick-now')).not.toHaveText(now ?? '');
+
+    await panel.fill('#bookmark-label', 'score');
+    await panel.click('#bookmark-add');
+    const bookmark = panel.locator('#bookmark-list-out li', { hasText: 'score' });
+    await expect(bookmark).toContainText('i32 now');
+    const value = await bookmark.textContent();
+    await game.click('#mine');
+    await expect(bookmark).not.toHaveText(value ?? '');
+  } finally {
+    await browser.close();
+    await demo.stop();
+  }
+});
+
+// YouTube Playables and itch.io embeds run the game in a cross-origin iframe that often instantiates
+// after the panel opened. The first pick (the top frame, no wasm) must not stick.
+test('a game frame that instantiates late is found without a reload', async () => {
+  await assertPortFree(DEAD_BRIDGE_PORT);
+  const wasm = '[0,97,115,109,1,0,0,0,5,3,1,0,1,7,10,1,6,109,101,109,111,114,121,2,0]';
+  const host = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(
+      req.url?.startsWith('/game')
+        ? `<!doctype html><link rel="icon" href="data:," /><canvas></canvas><script>setTimeout(() => WebAssembly.instantiate(new Uint8Array(${wasm})).then((r) => { window.keep = r; }), 4000);</script>`
+        : `<!doctype html><title>Playable host</title><link rel="icon" href="data:," /><iframe src="http://localhost:${PLAIN_PORT}/game"></iframe>`,
+    );
+  }).listen(PLAIN_PORT);
+  const browser = await launchBrowser();
+  try {
+    const worker = browser.context.serviceWorkers()[0] ?? (await browser.context.waitForEvent('serviceworker'));
+    await worker.evaluate((port) => chrome.storage.local.set({ wasmcheatPort: port }), DEAD_BRIDGE_PORT);
+    const page = await browser.context.newPage();
+    await page.goto(`http://127.0.0.1:${PLAIN_PORT}/`);
+    const panel = await browser.context.newPage();
+    await panel.goto(`chrome-extension://${browser.extensionId}/panel.html`);
+    await expect(panel.locator('#nothing-title')).toHaveText('Nothing to analyze in this tab');
+    await expect(panel.locator('#advanced')).toBeHidden();
+    await expect(panel.locator('#agent')).toHaveText('1 wasm module', { timeout: 20_000 });
+    await expect(panel.locator('#workbench')).toBeVisible();
+    await expect(panel.locator('#scan-instance')).toHaveValue('w1');
+  } finally {
+    await browser.close();
+    host.close();
+  }
+});

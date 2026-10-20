@@ -84,18 +84,18 @@
       <div class="top">
         <fieldset class="group group--found" id="card-found">
           <legend>Found</legend>
-          <p class="hint">Addresses that hold the value you scanned for. Click one to change it.</p>
+          <p class="hint">Addresses that hold the value you scanned for, read live. A value that moved since the last scan is marked. Click one to change it.</p>
           <div class="row row--tight">
-            <button id="scan-results" type="button">Refresh list</button>
             <button id="scan-drop" type="button">Drop scan</button>
           </div>
-          <div class="listhead" aria-hidden="true"><span>Address</span><span>Value</span></div>
+          <div class="listhead listhead--found" aria-hidden="true"><span>Address</span><span>Value</span><span>Previous</span></div>
           <ul id="scan-hits" class="list list--hits list--found"></ul>
           <div class="pick" id="pick" hidden>
             <p class="pick__head">
               <span class="eyebrow">Selected</span>
               <code id="pick-address"></code>
               <span id="pick-type" class="note"></span>
+              <span id="pick-now" class="pick__now" aria-live="off"></span>
             </p>
             <div class="row">
               <label class="field field--grow">
@@ -227,13 +227,7 @@
               <span>Value:</span>
               <input id="freeze-value" type="text" placeholder="75" spellcheck="false" />
             </label>
-            <label class="field">
-              <span>Id:</span>
-              <input id="freeze-id" type="text" placeholder="f1" spellcheck="false" />
-            </label>
             <button id="freeze-set" type="button">Set</button>
-            <button id="freeze-clear" type="button">Clear</button>
-            <button id="freeze-list" type="button">List</button>
           </div>
           <ul id="freezes" class="list list--hits"></ul>
           <pre id="freeze-out" class="out"></pre>
@@ -241,7 +235,7 @@
 
         <fieldset class="group" id="card-watch">
           <legend>Watch</legend>
-          <p class="hint">Record every change to an address while the game runs. Poll shows what changed since the last poll.</p>
+          <p class="hint">Record every change to an address while the game runs. Show changes lists what changed since you last pressed it.</p>
           <div class="row">
             <label class="field field--grow">
               <span>Address:</span>
@@ -253,14 +247,8 @@
             </label>
           </div>
           <div class="row">
-            <label class="field">
-              <span>Id:</span>
-              <input id="watch-id" type="text" placeholder="w1" spellcheck="false" />
-            </label>
             <button id="watch-add" type="button">Add</button>
-            <button id="watch-remove" type="button">Remove</button>
-            <button id="watch-list" type="button">List</button>
-            <button id="watch-poll" type="button">Poll</button>
+            <button id="watch-poll" type="button">Show changes</button>
           </div>
           <ul id="watches" class="list list--hits"></ul>
           <ul id="watch-events" class="list list--events"></ul>
@@ -269,7 +257,7 @@
 
         <fieldset class="group" id="card-bookmarks">
           <legend>Bookmarks</legend>
-          <p class="hint">Addresses you want back after a reload, with a label of your own.</p>
+          <p class="hint">Addresses you want back after a reload, with a label of your own and their value now.</p>
           <div class="row">
             <label class="field">
               <span>Label:</span>
@@ -279,10 +267,13 @@
               <span>Address:</span>
               <input id="bookmark-address" type="text" placeholder="w1:0x408" spellcheck="false" />
             </label>
+            <label class="field">
+              <span>Type:</span>
+              <select id="bookmark-type"></select>
+            </label>
           </div>
           <div class="row">
             <button id="bookmark-add" type="button">Add</button>
-            <button id="bookmark-list" type="button">List</button>
             <button id="bookmark-clear" type="button">Clear all</button>
           </div>
           <pre id="bookmark-out" class="out"></pre>
@@ -383,7 +374,7 @@
         <fieldset class="group" id="card-trace">
           <legend>Watchpoints</legend>
           <p class="hint">Ask which function wrote or read an address. This rewrites the module and reloads the tab, because a store cannot be observed after compilation.</p>
-          <p class="note">arms before instantiation; the page reloads once so the store callbacks exist</p>
+          <p class="note">The page reloads once, so the module is rewritten before the game starts.</p>
           <div class="row">
             <label class="field field--grow">
               <span>Address:</span>
@@ -522,7 +513,7 @@
           <div class="row">
             <label class="field field--grow">
               <span>Path:</span>
-              <input id="ptr-path" type="text" placeholder="w1:0x2af2730 · 16, 8" spellcheck="false" />
+              <input id="ptr-path" type="text" placeholder="w1:0x2af2730 16,8" spellcheck="false" />
             </label>
             <button id="ptr-scan" type="button">Scan for chains</button>
             <button id="ptr-resolve" type="button">Resolve</button>
@@ -533,7 +524,7 @@
         <fieldset class="group" id="card-speed">
           <legend>Speed hack</legend>
           <p class="hint">Scale the clock the page reads. 0 stops time, 1 is normal, 20 is twenty times faster.</p>
-          <p class="note">scales <code>performance.now</code>, <code>Date.now</code> and frame timestamps; 0 stops the clock</p>
+          <p class="note">Scales <code>performance.now</code>, <code>Date.now</code> and frame timestamps. 0 stops the clock.</p>
           <div class="row">
             <label class="field">
               <span>Speed:</span>
@@ -576,7 +567,7 @@
         <fieldset class="group" id="card-audit">
           <legend>Audit</legend>
           <p class="hint">Every change made through this extension, whoever made it. Newest last.</p>
-          <p class="note">the host file is authoritative; the worker only keeps what it saw while alive</p>
+          <p class="note">The full record is the audit file the MCP server keeps. This list holds what the extension saw since it last started.</p>
           <div class="row">
             <label class="field">
               <span>Limit:</span>

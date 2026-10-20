@@ -10,7 +10,7 @@ import {
   type ValueType,
   VALUE_TYPE_BYTES,
 } from '@wasmcheat/protocol';
-import { MemoryAccess, defaultTolerance } from './memory.js';
+import { MemoryAccess, defaultTolerance, type TypedArrayLike } from './memory.js';
 
 export interface ScanSession {
   id: string;
@@ -118,6 +118,64 @@ function closeDelta(delta: number, target: number, current: number, previous: nu
   return Math.abs(delta - target) <= Math.max(options.tolerance, scaled);
 }
 
+/** Modes whose first pass keeps exactly the values equal to the target (no previous value yet). */
+const EXACT_FIRST_PASS = new Set<ScanMode>(['exact', 'changed', 'unchanged', 'increased', 'decreased']);
+
+/**
+ * The first-pass test, chosen once per scan. It agrees with `satisfies(mode, v, undefined, …)` for
+ * every mode; the common ones skip the per-value switch.
+ */
+function firstPassPredicate(mode: ScanMode, options: CompareOptions): (current: number) => boolean {
+  const target = options.value;
+  if (target !== undefined && EXACT_FIRST_PASS.has(mode)) {
+    const tolerance = options.tolerance;
+    return options.isFloat ? (current) => Math.abs(current - target) <= tolerance : (current) => current === target;
+  }
+  if (target === undefined && mode !== 'between') return () => true;
+  return (current) => satisfies(mode, current, undefined, options);
+}
+
+/**
+ * The first-pass test for an integer type as an inclusive [low, high], or null for `not-equal`,
+ * which is not a range. Elements are integers, so `< 2.5` is `<= 2` and an exact 2.5 is empty.
+ */
+function integerRange(mode: ScanMode, options: CompareOptions): [number, number] | null {
+  const target = options.value;
+  if (target === undefined) return mode === 'between' ? null : [-Infinity, Infinity];
+  switch (mode) {
+    case 'exact':
+    case 'changed':
+    case 'unchanged':
+    case 'increased':
+    case 'decreased':
+      return Number.isInteger(target) ? [target, target] : [1, 0];
+    case 'less':
+      return [-Infinity, Math.ceil(target) - 1];
+    case 'less-or-equal':
+      return [-Infinity, Math.floor(target)];
+    case 'greater':
+      return [Math.floor(target) + 1, Infinity];
+    case 'greater-or-equal':
+      return [Math.ceil(target), Infinity];
+    case 'between': {
+      const other = options.value2 ?? target;
+      return [Math.ceil(Math.min(target, other)), Math.floor(Math.max(target, other))];
+    }
+    case 'increased-by':
+    case 'decreased-by':
+      return [-Infinity, Infinity];
+    default:
+      return null;
+  }
+}
+
+/** Little-endian 32-bit halves of a 64-bit integer, or null when no element can equal it. */
+function int64Halves(value: number, unsigned: boolean): [number, number] | null {
+  if (!Number.isSafeInteger(value) || (unsigned && value < 0)) return null;
+  const bits = BigInt.asUintN(64, BigInt(value));
+  return [Number(bits & 0xffffffffn) | 0, Number(bits >> 32n) | 0];
+}
+
 export class ScanStore {
   private readonly sessions = new Map<string, ScanSession>();
   private nextId = 1;
@@ -167,34 +225,73 @@ export class ScanStore {
     const isFloat = options.type === 'f32' || options.type === 'f64';
     // A first pass has no previous value, so delta modes degrade to "keep everything".
     const compare: CompareOptions = { value: options.value, value2: options.value2, tolerance, isFloat };
-    const matches = (value: number): boolean => satisfies(options.mode, value, undefined, compare);
+    const matches = firstPassPredicate(options.mode, compare);
 
     const addresses = new Uint32Array(Math.min(maxResults, Math.ceil((end - start) / alignment) + 1));
     const values = new Float64Array(addresses.length);
     let count = 0;
     let truncated = false;
 
-    // Fast path: aligned access maps straight onto a typed array, which is ~5x
-    // quicker than DataView on a multi-megabyte scan.
+    // The loop runs once per candidate (67 million times for an i32 scan of 256 MiB). Integer tests
+    // become one inclusive range with no function call in the loop, because a shared callback slows
+    // down for good once scans of different types and modes have gone through it.
     const fast = alignment === width && start % width === 0;
-    const typed = fast ? access.typedArray(options.type) : null;
-
-    for (let offset = start; offset + width <= end; offset += alignment) {
-      let value: number;
-      if (typed) {
-        const raw = typed[offset / width];
-        value = typeof raw === 'bigint' ? Number(raw) : (raw as number);
-      } else {
-        value = access.read(offset, options.type);
-      }
-      if (!matches(value)) continue;
+    const first = start / width;
+    const last = Math.floor(end / width); // exclusive element index
+    const range = isFloat ? null : integerRange(options.mode, compare);
+    const push = (offset: number, value: number): boolean => {
       if (count >= addresses.length) {
         truncated = true;
-        break;
+        return false;
       }
       addresses[count] = offset;
       values[count] = value;
       count++;
+      return true;
+    };
+
+    if (range && range[0] > range[1]) {
+      // A fractional target in an integer scan, or an empty between: nothing can match.
+    } else if (fast && range && width <= 4) {
+      const [low, high] = range;
+      const typed = access.typedArray(options.type) as Exclude<TypedArrayLike, BigInt64Array | BigUint64Array>;
+      for (let index = first; index < last; index++) {
+        const value = typed[index]!;
+        if (value < low || value > high) continue;
+        if (!push(index * width, value)) break;
+      }
+    } else if (fast && range && width === 8 && range[0] === range[1]) {
+      // Reading a BigInt64Array element allocates a BigInt; comparing the two 32-bit halves does not.
+      const halves = int64Halves(range[0], options.type === 'u64');
+      if (halves) {
+        const [low, high] = halves;
+        const words = new Int32Array(access.typedArray('u8').buffer);
+        for (let index = first; index < last; index++) {
+          if (words[index * 2] !== low || words[index * 2 + 1] !== high) continue;
+          if (!push(index * width, range[0])) break;
+        }
+      }
+    } else if (fast && width === 8) {
+      const typed = access.typedArray(options.type) as BigInt64Array | BigUint64Array;
+      for (let index = first; index < last; index++) {
+        const value = Number(typed[index]!);
+        if (!matches(value)) continue;
+        if (!push(index * width, value)) break;
+      }
+    } else if (fast) {
+      const typed = access.typedArray(options.type) as Exclude<TypedArrayLike, BigInt64Array | BigUint64Array>;
+      for (let index = first; index < last; index++) {
+        const value = typed[index]!;
+        if (!matches(value)) continue;
+        if (!push(index * width, value)) break;
+      }
+    } else {
+      const read = access.reader(options.type);
+      for (let offset = start; offset + width <= end; offset += alignment) {
+        const value = read(offset);
+        if (!matches(value)) continue;
+        if (!push(offset, value)) break;
+      }
     }
 
     const id = `s${this.nextId++}`;
@@ -242,10 +339,12 @@ export class ScanStore {
     const relative = options.tolerance !== undefined || !isFloat ? 0 : session.type === 'f32' ? 2 ** -22 : 2 ** -50;
     const compare: CompareOptions = { value: options.value, value2: options.value2, tolerance, isFloat, relative };
 
+    const width = VALUE_TYPE_BYTES[session.type];
+    const read = access.reader(session.type);
     for (let i = 0; i < session.count; i++) {
       const offset = session.addresses[i]!;
-      if (offset + VALUE_TYPE_BYTES[session.type] > byteLength) continue;
-      const current = access.read(offset, session.type);
+      if (offset + width > byteLength) continue;
+      const current = read(offset);
       const previous = session.values[i]!;
       if (!satisfies(mode, current, previous, compare)) continue;
       addresses[count] = offset;
@@ -337,6 +436,7 @@ export class ScanStore {
       hits.push({
         address: { instanceId: session.instanceId, offset: address },
         value: readable ? access.read(address, session.type) : Number.NaN,
+        previous: session.values[i],
       });
     }
     return { hits, total };

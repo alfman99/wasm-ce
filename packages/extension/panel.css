@@ -792,6 +792,7 @@ button:disabled {
 }
 
 .list > li {
+  font-variant-numeric: tabular-nums;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -832,9 +833,32 @@ button:disabled {
 
 .list--found > li {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   align-items: center;
   gap: 8px;
+}
+
+/* A value that moved since the last scan: the cue for choosing changed or unchanged next. Weight and
+   the accent, not motion: the list updates four times a second and must stay calm to read. */
+.list--found .hit--moved {
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.list--found .hit__previous {
+  color: var(--ink-3);
+}
+
+/* The found list scrolls; its empty and "more not shown" lines span all three columns. */
+.list--found > li > .empty:only-child {
+  grid-column: 1 / -1;
+}
+
+.pick__now {
+  margin-left: auto;
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .listhead {
@@ -846,6 +870,11 @@ button:disabled {
   color: var(--ink-3);
   font-size: 11px;
   font-weight: 600;
+}
+
+.listhead--found,
+.list--found > li {
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr);
 }
 
 .list--events {

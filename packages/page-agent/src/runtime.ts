@@ -15,6 +15,7 @@ import {
   type PointerResolution,
   type PointerScanOptions,
   type ReadResult,
+  type ScanHit,
   type ScanMode,
   type ScanOptions,
   type ScanSummary,
@@ -560,7 +561,7 @@ export class PageRuntime {
     });
   }
 
-  scanResults(params: { scanId: string; offset?: number; limit?: number }): { hits: { address: Address; value: number }[]; total: number } {
+  scanResults(params: { scanId: string; offset?: number; limit?: number }): { hits: ScanHit[]; total: number } {
     const session = this.scans.get(params.scanId);
     const { access } = this.access(session.instanceId);
     return this.scans.results(params.scanId, access, params.offset ?? 0, params.limit ?? 50);

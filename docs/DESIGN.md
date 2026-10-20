@@ -69,6 +69,10 @@ headlines.
   with a value you can see on screen." Never a bare "No data".
 - **Waiting** states (the agent starting, a server that needs a token) are a pill on the header, never a spinner that ends nowhere. A stopped MCP server is `MCP off`, a neutral pill: the panel does not need it.
 - **Nothing to analyze**: a page with no WebAssembly replaces the scan cards with one card that says so, why, and what to try (Reload page, Why is it empty?). The panel keeps watching and swaps to the scan cards when wasm appears.
+- **Live** values (Found, the editor's `now`, freezes, watches, bookmarks) change text only: no
+  flash, no fade, no row that moves. A value that moved since the last scan turns the accent and
+  semibold, which is the one cue that matters for the next scan. Numbers use tabular figures so a
+  ticking column does not jitter.
 - **Refused** (`NO_AGENT`, `HOOK_EVAL_BLOCKED`, `BAD_PARAMS`) shows the code and the sentence that
   fixes it, because those codes are the ones a human hits first.
 - **Error** output is tinted with `--danger` and keeps the text on screen; a failed call must not
