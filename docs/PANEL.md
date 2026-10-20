@@ -33,6 +33,10 @@ When the page has no WebAssembly the panel shows **Nothing to analyze in this ta
 scan cards, with **Reload page** and **Why is it empty?** (which runs Diagnose). It keeps watching:
 a game that loads its wasm on a click switches the panel to the scan cards by itself.
 
+When the only WebAssembly is a physics engine (Ammo.js, Box2D, Rapier, Havok, Jolt, PhysX), a note
+above the scan cards says so: the game is JavaScript (PlayCanvas, three.js, Babylon.js), so its score
+and coins are in no memory the panel can scan. Only the physics (bodies, forces, collisions) is.
+
 ## Cards
 
 The first screen is the loop: Found and Scan side by side, Text scan, then the things you keep
@@ -108,6 +112,7 @@ the forms"; the panel fills it in for you. Inside workers the same shape carries
 | --- | --- |
 | Panel says `No page to analyze` | DevTools must be open on a web page; extension pages and `chrome://` tabs cannot be inspected |
 | `Nothing to analyze in this tab` | The page has loaded no WebAssembly yet. Start the game if it waits for a click; if it was already running before WasmCheat, press **Reload page** |
+| Note: "This page's WebAssembly is … a physics engine" | The game logic is JavaScript. A scan for the score or coins finds nothing; only physics values are in this memory |
 | `NO_AGENT` in an output block | Press **Reload page** |
 | Instances empty | **Why is it empty?** (Diagnose); all-zero call counts mean the module was compiled before the agent, so press **Reload page** |
 | A hook call returns `HOOK_EVAL_BLOCKED` | The page forbids `new Function`; use a declarative fallback |

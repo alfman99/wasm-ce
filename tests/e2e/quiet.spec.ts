@@ -226,6 +226,50 @@ test('a patch survives the reload that installs it in a sandboxed game frame', a
   }
 });
 
+// A PlayCanvas or three.js game is JavaScript with a physics engine in wasm (Ammo.js here), so its
+// score is in no memory WasmCheat can scan. The panel says so before the human tries. The page also
+// carries a megabyte of inline script with no spaces, as minified games do: reading it for .wasm
+// references once took seconds and stalled the frame pick on every reload.
+test('a page whose only wasm is a physics engine says so, and diagnosing it stays fast', async () => {
+  await assertPortFree(DEAD_BRIDGE_PORT);
+  const wasm = Buffer.from([0, 97, 115, 109, 1, 0, 0, 0, 5, 3, 1, 0, 1, 7, 10, 1, 6, 109, 101, 109, 111, 114, 121, 2, 0]);
+  const host = createServer((req, res) => {
+    if (req.url?.startsWith('/files/ammo.wasm')) {
+      res.writeHead(200, { 'content-type': 'application/wasm' });
+      res.end(wasm);
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(
+      `<!doctype html><title>Physics game</title><link rel="icon" href="data:," /><canvas></canvas>` +
+        `<script>window.blob = "${'A'.repeat(1_000_000)}";</script>` +
+        `<script>WebAssembly.instantiateStreaming(fetch('/files/ammo.wasm')).then((r) => { window.keep = r; });</script>`,
+    );
+  }).listen(PLAIN_PORT);
+  const browser = await launchBrowser();
+  try {
+    const worker = browser.context.serviceWorkers()[0] ?? (await browser.context.waitForEvent('serviceworker'));
+    await worker.evaluate((port) => chrome.storage.local.set({ wasmcheatPort: port }), DEAD_BRIDGE_PORT);
+    const page = await browser.context.newPage();
+    await page.goto(`http://127.0.0.1:${PLAIN_PORT}/`);
+    const panel = await browser.context.newPage();
+    await panel.goto(`chrome-extension://${browser.extensionId}/panel.html`);
+    await expect(panel.locator('#physics-note')).toBeVisible({ timeout: 20_000 });
+    await expect(panel.locator('#physics-note')).toContainText('Ammo.js (Bullet), a physics engine');
+    type Hooks = { __panel: { call: (method: string, params?: unknown) => Promise<{ physicsEngine?: string }> } };
+    const timed = await panel.evaluate(async () => {
+      const started = performance.now();
+      const info = await (window as unknown as Hooks).__panel.call('page.diagnose');
+      return { ms: performance.now() - started, engine: info.physicsEngine };
+    });
+    expect(timed.engine).toBe('Ammo.js (Bullet)');
+    expect(timed.ms).toBeLessThan(500);
+  } finally {
+    await browser.close();
+    host.close();
+  }
+});
+
 // A value you cannot read (a health bar): First Scan with Value empty keeps every address as a copy
 // of memory, and the movement buttons narrow it. The demo's score is the value that moves.
 test('an unknown-value scan narrows by movement to the address that moved', async () => {

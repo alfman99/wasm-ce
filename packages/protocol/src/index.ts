@@ -608,6 +608,11 @@ export interface PageDiagnostics extends PageAgentInfo {
   canvases: number;
   /** .wasm URLs visible in the document markup, as a hint about where the code lives. */
   wasmReferences: string[];
+  /**
+   * Set when every .wasm the page references is a physics engine (Ammo.js, Box2D, Rapier…): the game
+   * itself is JavaScript, so its score and coins are not in any memory this tool can scan.
+   */
+  physicsEngine?: string;
   /** One line telling the agent what to do next. */
   hint: string;
 }

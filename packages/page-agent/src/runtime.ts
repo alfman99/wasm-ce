@@ -242,9 +242,15 @@ export class PageRuntime {
     const canvases = hasDocument ? document.querySelectorAll('canvas').length : 0;
     const attempts = calls.instantiate + calls.instantiateStreaming + calls.newInstance;
     const crossOrigin = iframes.find((frame) => frame.crossOrigin);
+    const references = wasmReferences();
+    const engine = physicsEngine(references);
 
     let hint: string;
-    if (instances > 0) {
+    if (instances > 0 && engine) {
+      hint =
+        `${instances} instance(s) captured, all from ${engine}, a physics engine: its memory holds bodies, forces ` +
+        'and collisions. The score, coins and rules of this game live in JavaScript, which a wasm scan cannot reach.';
+    } else if (instances > 0) {
       hint = `${instances} instance(s) captured; use wasmcheat_list_instances, then scan.`;
     } else if (crossOrigin) {
       hint =
@@ -268,7 +274,8 @@ export class PageRuntime {
       instances,
       iframes,
       canvases,
-      wasmReferences: wasmReferences(),
+      wasmReferences: references,
+      ...(engine ? { physicsEngine: engine } : {}),
       hint,
     };
   }
@@ -974,10 +981,70 @@ function readIframes(): { src: string; crossOrigin: boolean; width: number; heig
   return frames.slice(0, 10);
 }
 
-/** `.wasm` URLs that appear in the markup — a cheap way to see whether wasm lives here at all. */
+/** Inline script text read per call. YouTube's own inline data alone runs to megabytes. */
+const INLINE_SCRIPT_BUDGET = 512 * 1024;
+/** Longest URL worth reporting; also bounds the walk back from each `.wasm`. */
+const MAX_URL = 400;
+const URL_STOP = new Set(['"', "'", '`', '>', '<', '(', ')', ' ', '\n', '\r', '\t']);
+
+/**
+ * Every `.wasm` URL in `text`, found by searching for `.wasm` and walking back to the delimiter.
+ * Linear on purpose: the obvious regex, `[^"'\s>]*\.wasm`, retries from every character of a run
+ * with no delimiter in it, which minified code and inlined base64 are made of. 40 KB of that took
+ * 1.4 s, and a game's inline script is often far longer.
+ */
+export function wasmUrlsIn(text: string, found: Set<string>): void {
+  let at = text.indexOf('.wasm');
+  while (at !== -1) {
+    let start = at;
+    while (start > 0 && at - start < MAX_URL && !URL_STOP.has(text[start - 1] ?? ' ')) start--;
+    let end = at + 5;
+    if (text[end] === '?') while (end < text.length && end - at < MAX_URL && !URL_STOP.has(text[end] ?? ' ')) end++;
+    if (start < at) found.add(text.slice(start, end));
+    at = text.indexOf('.wasm', end);
+  }
+}
+
+/**
+ * `.wasm` URLs this document fetched or names, a cheap way to see whether wasm lives here at all.
+ * Cheap matters: the extension asks every frame of a tab this on each frame pick, and serialising
+ * the whole DOM (`outerHTML`) took 2.5 s in a PlayCanvas game and longer on YouTube itself.
+ */
 function wasmReferences(): string[] {
   if (typeof document === 'undefined') return [];
-  const html = document.documentElement?.outerHTML ?? '';
-  const found = html.match(/[^"'\s>]*\.wasm(?:\?[^"'\s>]*)?/g) ?? [];
-  return Array.from(new Set(found)).slice(0, 5);
+  const found = new Set<string>();
+  const take = (text: string | null | undefined): void => {
+    if (text) wasmUrlsIn(text, found);
+  };
+  for (const entry of performance.getEntriesByType('resource')) {
+    if (/\.wasm(?:\?|$)/i.test(entry.name)) found.add(entry.name);
+  }
+  for (const element of Array.from(document.querySelectorAll('[src], [href]'))) {
+    take(element.getAttribute('src') ?? element.getAttribute('href'));
+  }
+  let budget = INLINE_SCRIPT_BUDGET;
+  for (const script of Array.from(document.querySelectorAll('script:not([src])'))) {
+    if (budget <= 0) break;
+    const text = script.textContent?.slice(0, budget) ?? '';
+    budget -= text.length;
+    take(text);
+  }
+  return Array.from(found).slice(0, 5);
+}
+
+/** Physics engines that ship as their own .wasm next to a game written in JavaScript. */
+const PHYSICS_ENGINES: [RegExp, string][] = [
+  [/ammo[\w.-]*\.wasm/i, 'Ammo.js (Bullet)'],
+  [/box2d[\w.-]*\.wasm/i, 'Box2D'],
+  [/liquidfun[\w.-]*\.wasm/i, 'LiquidFun'],
+  [/rapier[\w.-]*\.wasm/i, 'Rapier'],
+  [/havok[\w.-]*\.wasm/i, 'Havok'],
+  [/jolt[\w.-]*\.wasm/i, 'Jolt Physics'],
+  [/physx[\w.-]*\.wasm/i, 'PhysX'],
+];
+
+/** The engine's name when every .wasm this page references is a physics engine, else undefined. */
+export function physicsEngine(references: string[]): string | undefined {
+  const engines = references.map((ref) => PHYSICS_ENGINES.find(([pattern]) => pattern.test(ref))?.[1]);
+  return engines.length > 0 && engines.every(Boolean) ? engines[0] : undefined;
 }

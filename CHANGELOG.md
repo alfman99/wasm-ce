@@ -10,6 +10,11 @@
 - Right after a reload, before the game frame has created its wasm, calls go to the frame with the
   game's canvas rather than to the page around it.
 - The MCP server's start-up line names `packages/extension/dist`, the folder you actually load.
+- When a page's only WebAssembly is a physics engine (Ammo.js, Box2D, Rapier, Havok, Jolt, PhysX),
+  the panel, `diagnose` and `attach` say so: the game is JavaScript, so its score and coins are in
+  no memory WasmCheat can scan.
+- Diagnosing a page, which the extension does for every frame when it picks one, takes milliseconds
+  instead of seconds on pages with large minified inline scripts (YouTube, PlayCanvas games).
 
 ## 0.1.0
 

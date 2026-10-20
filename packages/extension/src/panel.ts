@@ -657,6 +657,17 @@ async function refreshStatus(): Promise<void> {
   }
   showWorkbench();
   markStep(activeScanId === undefined ? 1 : 2);
+  // A JavaScript game whose only wasm is its physics engine: say so before the human scans for a
+  // score that is not in this memory. Asked after the workbench is up, so it never delays it.
+  void pageCall<PageDiagnostics>('page.diagnose')
+    .then((diagnostics) => {
+      const note = el('physics-note');
+      note.hidden = !diagnostics.physicsEngine;
+      note.textContent = diagnostics.physicsEngine
+        ? `This page's WebAssembly is ${diagnostics.physicsEngine}, a physics engine. Its memory holds bodies, forces and collisions. The score, coins and rules of this game live in JavaScript, so a scan for them finds nothing.`
+        : '';
+    })
+    .catch(() => undefined);
 }
 
 let watchForWasm: number | undefined;
