@@ -3,17 +3,17 @@
 Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`):
 
 - `npm ci` clean, `npm run build` 0 errors, `npm run typecheck` 0 errors
-- `npx vitest run` **127 passed** (13 files)
-- `npx playwright test` **23 passed, 0 skipped** (~26 s, real Chromium, real extension, no mocks)
+- `npx vitest run` **123 passed** (13 files)
+- `npx playwright test` **22 passed, 0 skipped** (~22 s, real Chromium, real extension, no mocks)
 
 ## Proven end to end (real browser, real tab)
 
-- Attach with human approval, granted per tab **and site**; every **mutation** ends up in one audit
-  funnel. The extension reports these page methods from `callTab` (`describeAction` in
+- Attach with no approval step: the panel is bound to its tab and every tool defaults to the tab in
+  front. Every **mutation** ends up in one audit funnel. The extension reports these page methods from `callTab` (`describeAction` in
   `packages/extension/src/sw.ts`): `page.write`, `page.freeze.set|clear`, `page.watch.add|remove`,
   `page.scan.begin|next|drop|text`, `page.pointer.scan`, `page.hook.add|setEnabled|remove`,
   `page.patch.add|remove|clear`, `page.trace.arm|stop|clear`, `page.bookmark.add|remove|clear`,
-  `page.speed.set`, plus `ext.reload`. Attach, detach, approvals and saved scan lists
+  `page.speed.set`, plus `ext.reload`. Attach, detach and saved scan lists
   (`wasmcheat_saved` save / open / delete) are recorded by the MCP server, which is the only writer
   for them.
   All of it is visible from MCP (`wasmcheat_audit`), the DevTools panel and

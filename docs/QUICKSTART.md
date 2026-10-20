@@ -27,12 +27,10 @@ the DevTools panel. Reload the extension after every rebuild.
 ## 3. Nothing to paste
 
 The extension pairs with the MCP server on its first connection and keeps the token it receives, so
-the popup/panel pill goes from `waiting for pairing` to `bridge live · paired` on its own. There is
-no copy-paste step.
+the pill goes from `waiting for pairing` to `bridge live` on its own. There is no copy-paste step.
 
-Two cases still use the field, and both are in the panel and the popup: the server runs with
-`WASMCHEAT_PAIRING=off` (or `WASMCHEAT_TOKEN`), or another process already holds the bridge. Then paste
-`cat ~/.wasmcheat/token`.
+One case still uses the field, in the panel and in the popup: the server runs with
+`WASMCHEAT_PAIRING=off` (or with `WASMCHEAT_TOKEN` set). Then paste `cat ~/.wasmcheat/token`.
 
 Why a token exists at all: the bridge listens on `ws://127.0.0.1:7331`, and without a secret any local
 process could answer this server's tool calls with made-up data.
@@ -54,9 +52,9 @@ what makes it a target rather than a toy. Click **Mine** a few times and leave t
 Open DevTools on the Foundry tab (`⌥⌘I` / `Ctrl+Shift+I`) and choose the **WasmCheat** tab in the
 DevTools toolbar. If the panel is not listed, reload the extension and reopen DevTools.
 
-1. In **Tabs**, click the Foundry row. It becomes the target.
-2. Click **Attach**. The first attach for a site asks for approval: press **Approve**. Nothing runs
-   in the tab until you do. Attach fills **Instances** for you; if the list is empty it prints
+1. The panel already targets this tab, and every tool defaults to it, so there is nothing to pick.
+2. Click **Attach**. There is no approval step: the panel is bound to the tab you opened it on.
+   Attach fills **Instances** for you; if the list is empty it prints
    **Diagnose** (frames, `WebAssembly.instantiate` calls seen, whether the page blocks `new Function`)
    so you do not have to guess which button explains it.
 3. If the game only starts when you click something, start it and press **Reload & attach**: the page
@@ -94,7 +92,7 @@ DevTools toolbar. If the panel is not listed, reload the extension and reopen De
 | Popup says `bridge offline` | No MCP server running, or a wrong port | Start the server; the popup retries with backoff |
 | Popup says `token refused` | Pairing is off and the saved token does not match `~/.wasmcheat/token` | Paste the current file contents and save |
 | Panel says `waiting for pairing` | The server is not up yet, or its port differs from the extension's | Start it, and check `WASMCHEAT_PORT` |
-| `NEED_APPROVAL` | The human has not approved this tab and site | Press **Approve** in the popup or the panel |
+| `NO_AGENT` | The page has no agent (it loaded before the extension, or it navigated) | Press **Attach**, or **Reload & attach** if the game starts on a click |
 | `NO_AGENT` | The page agent is not in the page (loaded after it, or the tab was replaced) | **Detach**, then **Attach**; use **Reload & attach** if it still fails |
 | Instances empty, Diagnose says `calls.*` are all `0` | The app instantiated its module before the agent existed | **Reload & attach** |
 | Instances empty, Diagnose lists a cross-origin frame | The game is in an iframe | Attach with the frame the panel reports, or let the extension pick it |

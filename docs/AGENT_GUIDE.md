@@ -29,23 +29,21 @@ on first connect and stores what it gets. You only touch the field when pairing 
 (`WASMCHEAT_PAIRING=off`, or a server started with `WASMCHEAT_TOKEN`).
 
 The human also has a front-end: DevTools → **WasmCheat** exposes every tool as a form, plus a raw RPC
-console and a live event and audit log. It talks to the same dispatcher as the agent, so it cannot bypass
-the approval gate — it is the fastest way to check what the agent sees.
+console and a live event and audit log. It talks to the same dispatcher as the agent, so the two never
+drift — it is the fastest way to check what the agent sees.
 
 ## 2. What the agent may and may not do
 
-Every tab needs a human grant before any memory read. That grant is per tab and per site, it survives
-navigation inside the site, and it is revoked when the tab leaves the site or closes. There is no way
-around it from the agent side, and the agent should not pretend otherwise: if a call returns
-`NEED_APPROVAL`, ask the human to click **Approve** in the toolbar popup or the DevTools panel.
+There is no approval prompt to ask for. `tabId` is optional on every tool: omit it and the extension
+acts on the tab in front — the page the human has open. Ask only when the human names a second tab.
 
-A site the human put on the trusted list attaches without a prompt. When that happens `attach` says so
-in its note ("Granted from the trusted-site list"), so do not tell the user they approved this tab. A
-trusted site is a decision the human made in the popup; nothing in the tool list can add one.
+You still do not guess. `wasmcheat_list_tabs` tells you what is open; `attach` tells you what the
+agent can see. If the human's page is a game, work there; if it is a bank, ask before touching
+anything, and respect a `no` without retrying.
 
-Approval is **event-based**: `wasmcheat_attach` blocks on a decision event rather than re-reading state on
-a timer, so the moment the human clicks, the call returns. Do not poll `wasmcheat_approval_status` in a
-loop; call `attach` once and let it wait.
+Every mutation you make is recorded, whoever made it: a write, a freeze, a watch, a scan begin or
+narrow, a hook, a patch, a watchpoint arm, a pointer scan, a bookmark, a speed change, a reload. Do
+not make changes you would not want to explain in that log.
 
 ## 3. The loop
 
@@ -60,10 +58,11 @@ flowchart LR
 ### 3.1 Attach
 
 ```json
-{ "tabId": 1310636703, "reason": "find the coin counter" }
+{ "reason": "find the coin counter" }
 ```
 
-`wasmcheat_list_tabs` first: it returns `tabId`, `title`, `url`, `approval`, `agentAttached`, and `frames`
+No `tabId` means the tab in front. `wasmcheat_list_tabs` returns `tabId`, `title`, `url`, `active`,
+`agentAttached` and `frames`
 (so you can see a game inside an iframe). `attach` returns `pageAgent` info including `evalAllowed` — if
 that is `false` the page's CSP blocks `new Function`, so free-form hook bodies will fail and you must use
 declarative hook fallbacks.
@@ -202,7 +201,7 @@ an export.
   (`replace-return`, `offset-result`), not `new Function` bodies.
 - **Never arm a watchpoint twice.** Re-arming the same address is idempotent, but switching addresses
   clears hits.
-- **Do not poll.** Attach, watchpoints and approvals are event-driven; a poll loop only adds latency and
+- **Do not poll.** Attach and watchpoints are event-driven; a poll loop only adds latency and
   noise to the audit log.
 - **Popup open, session alive.** The toolbar popup keeps the service worker awake; with it closed, the
   extension reconnects on its alarm and a call in that window returns `NO_AGENT`, which is retryable.

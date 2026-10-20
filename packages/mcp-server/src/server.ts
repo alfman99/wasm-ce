@@ -12,7 +12,6 @@ import {
   formatAddress,
   parseAddress,
   type Address,
-  type ApprovalState,
   type FreezeEntry,
   type SpeedStatus,
   type PatchEntry,
@@ -36,7 +35,7 @@ import {
   type WriteResult,
 } from '@wasmcheat/protocol';
 import { Bridge } from './bridge.js';
-import { waitForApproval, waitForPageEvent } from './events.js';
+import { waitForPageEvent } from './events.js';
 import { onRecord, record, tail, type AuditLine } from './audit.js';
 
 export type ToolResult = CallToolResult;
@@ -95,6 +94,16 @@ function json<T>(value: unknown): T {
   return JSON.parse(JSON.stringify(value, (_key, item) => (typeof item === 'bigint' ? `${item}n` : item))) as T;
 }
 
+/**
+ * Every tool takes the tab id, and every tool can do without it: the tab in front is what a human
+ * means by "this game". Listing tabs is only needed to reach a second one.
+ */
+const TAB_ID = z
+  .number()
+  .int()
+  .optional()
+  .describe('Tab id from wasmcheat_list_tabs. Omit for the tab in front.');
+
 export function createServer(bridge: Bridge): McpServer {
   const server = new McpServer({ name: 'wasmcheat', version: '0.1.0' });
 
@@ -118,7 +127,20 @@ export function createServer(bridge: Bridge): McpServer {
     });
   });
 
-  /** Forward a page-level method through the extension's approval gate. */
+  /**
+   * A tabId is optional everywhere: the tab in front is what a human means when they say "this game".
+   * Listing is only needed to reach a second tab.
+   */
+  async function resolveTab(source: Bridge, asked?: number): Promise<number> {
+    if (asked !== undefined) return asked;
+    const tabs = await source.request<TabInfo[]>('ext.listTabs');
+    const front = tabs.find((tab) => tab.active) ?? tabs[0];
+    if (!front) {
+      throw new BridgeError('NO_TAB', 'no http(s) tab is open; open the page you want to work on first');
+    }
+    return front.tabId;
+  }
+
   /**
    * `instanceId: "latest"` means "whatever was instantiated last", resolved at call time.
    *
@@ -155,17 +177,16 @@ export function createServer(bridge: Bridge): McpServer {
     {
       title: 'List browser tabs',
       description:
-        'List the http(s) tabs the WasmCheat extension can see, with each tab\'s approval state and whether the page agent is already running. ' +
-        'Start here: you need a tabId for every other tool. Everywhere a tool asks for instanceId you may pass "latest" to mean whatever was ' +
-        'instantiated last, which survives page reloads.',
+        'List the http(s) tabs the extension can see, with whether the page agent is already running in each. ' +
+        'Every tool that takes a tabId defaults to the tab in front, so listing is only needed to reach a second tab. ' +
+        'Wherever a tool asks for instanceId you may pass "latest" to mean whatever was instantiated last, which survives reloads.',
       inputSchema: {},
     },
     async () => {
       try {
         if (!bridge.connected) await bridge.waitForExtension(1_500);
         const tabs = await bridge.request<TabInfo[]>('ext.listTabs');
-        const pending = tabs.filter((tab) => tab.approval === 'pending').length;
-        return ok(tabs, pending > 0 ? `${pending} tab(s) waiting for the human to approve in the extension popup.` : undefined);
+        return ok(tabs, tabs.length === 0 ? 'No http(s) tabs open. Open the page you want to work on first.' : undefined);
       } catch (error) {
         return fail(error, 'No extension connection.');
       }
@@ -175,15 +196,14 @@ export function createServer(bridge: Bridge): McpServer {
   server.registerTool(
     'wasmcheat_attach',
     {
-      title: 'Attach to a tab (needs human approval)',
+      title: 'Attach to a tab',
       description:
-        'Ask the human to approve a tab, then start the page agent in it. Blocks while the request waits for approval ' +
-        '(default 60s) and returns NEED_APPROVAL if the human has not answered yet — in that case tell the user to click the ' +
-        'WasmCheat toolbar icon, approve the tab, then retry. Nothing can read or write memory until this succeeds.',
+        'Start the page agent in a tab and list the WebAssembly instances it found. No approval step: the extension is ' +
+        'installed by the person using the browser, and this call only starts doing work in a tab they already opened. ' +
+        'If the page was loaded before the extension, the tab is reloaded once automatically (the answer says so, and ' +
+        'every address from before that reload is stale).',
       inputSchema: {
-        tabId: z.number().int().describe('Tab id from wasmcheat_list_tabs.'),
-        reason: z.string().optional().describe('One line shown to the human explaining what you intend to do.'),
-        waitSeconds: z.number().min(0).max(120).optional().describe('How long to wait for the human (default 60).'),
+        tabId: z.number().int().optional().describe('Tab id from wasmcheat_list_tabs. Defaults to the tab in front.'),
         reload: z
           .boolean()
           .optional()
@@ -197,51 +217,9 @@ export function createServer(bridge: Bridge): McpServer {
           ),
       },
     },
-    async ({ tabId, reason, waitSeconds, reload, frameId }) => {
-      const timeoutMs = (waitSeconds ?? 60) * 1_000;
+    async ({ tabId: askedTab, reload, frameId }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
-        // Ask, then wait on the event. The request registers the pending prompt and returns at once
-        // (waitMs 0), so nothing on the extension side has to stay awake polling for a human click:
-        // sw.ts emits approval.resolved the moment the answer exists, and this call is already
-        // listening for it. waitSeconds is only the outer bound on how long we are willing to wait.
-        const asked = await bridge.request<{ requestId: string; state: ApprovalState; tab?: { title: string; url: string } }>(
-          'ext.requestApproval',
-          { tabId, reason, waitMs: 0 },
-          15_000,
-        );
-        const approval: { requestId: string; state: ApprovalState; tab?: { title: string; url: string } } = {
-          requestId: asked.requestId,
-          state: asked.state,
-          tab: asked.tab,
-        };
-        if (asked.state === 'pending' && timeoutMs > 0) {
-          try {
-            approval.state = await waitForApproval(bridge, tabId, { timeoutMs });
-          } catch (error) {
-            if (!(error instanceof BridgeError) || error.code !== 'APPROVAL_TIMEOUT') throw error;
-            // No event inside the bound. The human may still have answered while the extension's
-            // service worker was suspended (a suspended worker has no socket, so the event died
-            // with it), and one status read at the deadline answers that without a poll loop.
-            const current = await bridge
-              .request<{ state: ApprovalState } | null>('ext.approvalStatus', { tabId }, 10_000)
-              .catch(() => null);
-            if (current) approval.state = current.state;
-          }
-        }
-        if (approval.state !== 'granted') {
-          await record({ kind: 'approval', tabId, ok: false, summary: `approval ${approval.state}`, detail: { reason } });
-          return fail(
-            new BridgeError(
-              'NEED_APPROVAL',
-              approval.state === 'pending'
-                ? `still waiting for the human to approve tab ${tabId}`
-                : `the human denied tab ${tabId}`,
-              { requestId: approval.requestId, tab: approval.tab },
-            ),
-            'Ask the user to approve this tab in the WasmCheat popup, then call wasmcheat_attach again.',
-          );
-        }
-
         const info = await bridge.request<PageAgentInfo>(
           'ext.ensureAgent',
           { tabId, reload, frameId },
@@ -252,18 +230,15 @@ export function createServer(bridge: Bridge): McpServer {
           kind: 'attach',
           tabId,
           ok: true,
-          summary: `attached to ${approval.tab?.url ?? 'tab'}`,
+          summary: `attached to ${info.url}`,
           detail: { instanceCount: instances.length, evalAllowed: info.evalAllowed },
         });
         return ok(
-          { approval, pageAgent: info, instances },
+          { pageAgent: info, instances },
           [
             instances.length === 0
               ? 'Attached, but no WebAssembly instance was captured yet. If the app loaded before the extension, attach with reload=true.'
               : `Attached. ${instances.length} instance(s) captured.`,
-            // A grant that arrived without a round trip means a trusted site answered instead of the
-            // human. Say so, so the agent does not claim a human approved this particular tab.
-            asked.state === 'granted' ? 'Granted from the trusted-site list, so no prompt was shown.' : undefined,
             // The extension reloads a page that predates the agent on its own; the agent should know
             // the document is new, because every address it had is gone.
             info.autoReloaded
@@ -281,37 +256,19 @@ export function createServer(bridge: Bridge): McpServer {
   );
 
   server.registerTool(
-    'wasmcheat_approval_status',
-    {
-      title: 'Check approval state',
-      description: 'Read the approval state of a tab (none, pending, granted, revoked) without starting anything.',
-      inputSchema: { tabId: z.number().int() },
-    },
-    async ({ tabId }) => {
-      try {
-        const entry = await bridge.request<{ state: ApprovalState; reason: string; requestId: string } | null>(
-          'ext.approvalStatus',
-          { tabId },
-        );
-        return ok(entry ?? { state: 'none' });
-      } catch (error) {
-        return fail(error);
-      }
-    },
-  );
-
-  server.registerTool(
     'wasmcheat_detach',
     {
       title: 'Detach from a tab',
-      description: 'Revoke approval for a tab. The agent stops being able to read or write that tab immediately.',
-      inputSchema: { tabId: z.number().int(), reason: z.string().optional() },
+      description:
+        'Forget everything about a tab: hooks, patches, freezes and cached frames. The next call re-injects the agent.',
+      inputSchema: { tabId: TAB_ID },
     },
-    async ({ tabId, reason }) => {
+    async ({ tabId: askedTab }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
-        await bridge.request('ext.detach', { tabId, reason });
-        await record({ kind: 'detach', tabId, ok: true, summary: reason ?? 'detached' });
-        return ok({ tabId, approval: 'revoked' });
+        await bridge.request('ext.detach', { tabId });
+        await record({ kind: 'detach', tabId, ok: true, summary: 'detached' });
+        return ok({ tabId });
       } catch (error) {
         return fail(error);
       }
@@ -326,9 +283,10 @@ export function createServer(bridge: Bridge): McpServer {
         'List the WebAssembly instances captured in a tab, with their id (w1, w2…), module hash, memory size and exports. ' +
         'Instances hosted by a Web Worker are included: they carry an id like k1-1, host "worker" and a workerId, and every ' +
         'tool that takes an instance id accepts them unchanged. Only function exports can be hooked.',
-      inputSchema: { tabId: z.number().int() },
+      inputSchema: { tabId: TAB_ID },
     },
-    async ({ tabId }) => {
+    async ({ tabId: askedTab }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
         return ok(await page<InstanceInfo[]>(tabId, 'page.listInstances'));
       } catch (error) {
@@ -347,9 +305,10 @@ export function createServer(bridge: Bridge): McpServer {
         '(Unity, Godot 4, many itch.io builds) show up here; their instances appear in list_instances as k1-1, k1-2… ' +
         'An empty list on a tab that clearly runs wasm means the worker was created before the agent loaded or is nested ' +
         'inside another worker — neither can be instrumented.',
-      inputSchema: { tabId: z.number().int() },
+      inputSchema: { tabId: TAB_ID },
     },
-    async ({ tabId }) => {
+    async ({ tabId: askedTab }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
         return ok(await page<WorkerInfo[]>(tabId, 'page.listWorkers'));
       } catch (error) {
@@ -367,9 +326,10 @@ export function createServer(bridge: Bridge): McpServer {
         'WebAssembly.instantiate, how many instances were captured, whether the document hosts a cross-origin ' +
         'iframe (a game in a subframe is invisible to the top-frame agent), any .wasm URLs in the markup, and ' +
         'whether the page allows eval (free-form hook bodies). Call this first when list_instances is empty.',
-      inputSchema: { tabId: z.number().int() },
+      inputSchema: { tabId: TAB_ID },
     },
-    async ({ tabId }) => {
+    async ({ tabId: askedTab }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
         return ok(await page<PageDiagnostics>(tabId, 'page.diagnose'));
       } catch (error) {
@@ -388,7 +348,7 @@ export function createServer(bridge: Bridge): McpServer {
         'which is the normal way to converge: begin with "exact" or "changed", then narrow with changed / increased / decreased ' +
         'after the value moves in the app. Returns a scanId and a match count; use wasmcheat_scan_results to read hits.',
       inputSchema: {
-        tabId: z.number().int(),
+        tabId: TAB_ID,
         instanceId: z.string().describe('Instance id from wasmcheat_list_instances, e.g. "w1".'),
         type: VALUE_TYPE.describe('Value width to interpret memory as.'),
         mode: SCAN_MODE.optional().describe('Filter for this pass (default "exact" when a value is given, else "changed").'),
@@ -415,7 +375,8 @@ export function createServer(bridge: Bridge): McpServer {
         to: z.number().int().min(1).optional().describe('End of the byte range to scan, exclusive (default: memory size).'),
       },
     },
-    async ({ tabId, instanceId, type, mode, value, value2, tolerance, alignment, maxResults, scanId, from, to }) => {
+    async ({ tabId: askedTab, instanceId, type, mode, value, value2, tolerance, alignment, maxResults, scanId, from, to }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
         const parsedValue = numeric(value);
         const parsedValue2 = numeric(value2);
@@ -470,7 +431,7 @@ export function createServer(bridge: Bridge): McpServer {
         'encoding "ascii" (default) or "utf8" for text, "bytes" for a hex needle like "deadbeef". Returns matching ' +
         'offsets you can read with wasmcheat_read.',
       inputSchema: {
-        tabId: z.number().int(),
+        tabId: TAB_ID,
         instanceId: z.string().describe('Instance id from wasmcheat_list_instances, e.g. "w1".'),
         text: z.string().min(1).describe('Text to find, or a hex string when encoding is "bytes".'),
         encoding: z.enum(['ascii', 'utf8', 'bytes']).optional().describe('How to encode the needle (default "ascii").'),
@@ -480,7 +441,8 @@ export function createServer(bridge: Bridge): McpServer {
         maxResults: z.number().int().min(1).max(250_000).optional(),
       },
     },
-    async ({ tabId, instanceId, text, encoding, caseSensitive, from, to, maxResults }) => {
+    async ({ tabId: askedTab, instanceId, text, encoding, caseSensitive, from, to, maxResults }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
         const result = await page<TextScanResult>(tabId, 'page.scan.text', {
           instanceId,
@@ -510,13 +472,14 @@ export function createServer(bridge: Bridge): McpServer {
       title: 'Read scan hits',
       description: 'Page through the hits of a scan (current memory values, not the snapshot).',
       inputSchema: {
-        tabId: z.number().int(),
+        tabId: TAB_ID,
         scanId: z.string(),
         offset: z.number().int().min(0).optional(),
         limit: z.number().int().min(1).max(1000).optional(),
       },
     },
-    async ({ tabId, scanId, offset, limit }) => {
+    async ({ tabId: askedTab, scanId, offset, limit }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
         const result = await page<{ hits: { address: Address; value: number }[]; total: number }>(
           tabId,
@@ -538,9 +501,10 @@ export function createServer(bridge: Bridge): McpServer {
     {
       title: 'Drop a scan',
       description: 'Free the memory held by a scan session. Do this when you are done with it.',
-      inputSchema: { tabId: z.number().int(), scanId: z.string() },
+      inputSchema: { tabId: TAB_ID, scanId: z.string() },
     },
-    async ({ tabId, scanId }) => {
+    async ({ tabId: askedTab, scanId }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
         return ok({ dropped: await page<boolean>(tabId, 'page.scan.drop', { scanId }) });
       } catch (error) {
@@ -559,14 +523,15 @@ export function createServer(bridge: Bridge): McpServer {
         'the list and keep narrowing instead of starting over. Actions: list, save (needs scanId and name), ' +
         'open (needs name; returns a new scanId), delete (needs name).',
       inputSchema: {
-        tabId: z.number().int(),
+        tabId: TAB_ID,
         action: z.enum(['list', 'save', 'open', 'delete']),
         name: z.string().min(1).max(64).optional(),
         scanId: z.string().optional().describe('Session to save (action save).'),
         instanceId: z.string().optional().describe('Instance to attach an opened list to (default: the saved one).'),
       },
     },
-    async ({ tabId, action, name, scanId, instanceId }) => {
+    async ({ tabId: askedTab, action, name, scanId, instanceId }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
         if (action === 'list') return ok(await page<SavedScanSummary[]>(tabId, 'page.saved.list'));
         if (action === 'delete') {
@@ -607,7 +572,7 @@ export function createServer(bridge: Bridge): McpServer {
         'stored in the page\'s local storage so they outlive a reload (they are per site). Actions: list, add ' +
         '(needs label and address; adding an existing label replaces it), remove (id or label), clear.',
       inputSchema: {
-        tabId: z.number().int(),
+        tabId: TAB_ID,
         action: z.enum(['list', 'add', 'remove', 'clear']),
         label: z.string().min(1).max(64).optional().describe('Name a human would recognise, for example "score".'),
         address: ADDRESS.optional().describe('Address from a scan, a read or wasmcheat_scan_results.'),
@@ -616,7 +581,8 @@ export function createServer(bridge: Bridge): McpServer {
         id: z.string().optional().describe('Bookmark id (or label) for remove.'),
       },
     },
-    async ({ tabId, action, label, address, type, note, id }) => {
+    async ({ tabId: askedTab, action, label, address, type, note, id }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
         if (action === 'list') {
           const bookmarks = await page<Bookmark[]>(tabId, 'page.bookmark.list');
@@ -649,14 +615,15 @@ export function createServer(bridge: Bridge): McpServer {
       description:
         'Read typed values at an address, or raw bytes with `length` (returned as hex). Use count to read an array of values.',
       inputSchema: {
-        tabId: z.number().int(),
+        tabId: TAB_ID,
         address: ADDRESS,
         type: VALUE_TYPE.optional().describe('Value width (required unless you pass length).'),
         count: z.number().int().min(1).max(1024).optional(),
         length: z.number().int().min(1).max(4096).optional().describe('Read this many raw bytes instead of values.'),
       },
     },
-    async ({ tabId, address, type, count, length }) => {
+    async ({ tabId: askedTab, address, type, count, length }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
         const result = await page<ReadResult>(tabId, 'page.read', {
           address: addr(address),
@@ -678,7 +645,7 @@ export function createServer(bridge: Bridge): McpServer {
       description:
         'Write one typed value to memory. Every write is appended to the audit log. Returns the value before and after, so you can confirm it landed.',
       inputSchema: {
-        tabId: z.number().int(),
+        tabId: TAB_ID,
         address: ADDRESS,
         type: VALUE_TYPE,
         value: z
@@ -686,7 +653,8 @@ export function createServer(bridge: Bridge): McpServer {
           .describe('New value. Integers are wrapped to the type width; floats are stored as the nearest f32/f64.'),
       },
     },
-    async ({ tabId, address, type, value }) => {
+    async ({ tabId: askedTab, address, type, value }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       const parsed = numeric(value);
       if (parsed === undefined) return fail(new BridgeError('BAD_PARAMS', 'value is required'));
       try {
@@ -707,7 +675,7 @@ export function createServer(bridge: Bridge): McpServer {
         'Freeze keeps re-writing a value every 16ms so the app cannot change it (the classic "infinite health"). ' +
         'Actions: set (needs address, type, value), clear (needs freezeId), list.',
       inputSchema: {
-        tabId: z.number().int(),
+        tabId: TAB_ID,
         action: z.enum(['set', 'clear', 'list']),
         address: ADDRESS.optional(),
         type: VALUE_TYPE.optional(),
@@ -715,7 +683,8 @@ export function createServer(bridge: Bridge): McpServer {
         freezeId: z.string().optional(),
       },
     },
-    async ({ tabId, action, address, type, value, freezeId }) => {
+    async ({ tabId: askedTab, action, address, type, value, freezeId }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
         if (action === 'list') return ok(await page<FreezeEntry[]>(tabId, 'page.freeze.list'));
         if (action === 'clear') {
@@ -744,12 +713,13 @@ export function createServer(bridge: Bridge): McpServer {
         'still scan), 3 is three times faster. Only the page realm is scaled; workers keep real time. Omit `scale` to read the ' +
         'current setting, use `reset: true` (or scale 1) to go back.',
       inputSchema: {
-        tabId: z.number().int(),
+        tabId: TAB_ID,
         scale: z.number().min(0).max(20).optional().describe('Multiplier, 0..20. Omit to just report the current scale.'),
         reset: z.boolean().optional().describe('Return to real time (same as scale 1).'),
       },
     },
-    async ({ tabId, scale, reset }) => {
+    async ({ tabId: askedTab, scale, reset }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
         if (reset === true || scale !== undefined) {
           const requested = reset === true ? 1 : (scale as number);
@@ -771,7 +741,7 @@ export function createServer(bridge: Bridge): McpServer {
         'Track an address and collect change events (polled every 50ms). Actions: add (needs address, type), remove (needs watchId), ' +
         'list, poll (drain buffered change events).',
       inputSchema: {
-        tabId: z.number().int(),
+        tabId: TAB_ID,
         action: z.enum(['add', 'remove', 'list', 'poll']),
         address: ADDRESS.optional(),
         type: VALUE_TYPE.optional(),
@@ -779,7 +749,8 @@ export function createServer(bridge: Bridge): McpServer {
         limit: z.number().int().min(1).max(1000).optional(),
       },
     },
-    async ({ tabId, action, address, type, watchId, limit }) => {
+    async ({ tabId: askedTab, action, address, type, watchId, limit }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
         if (action === 'list') return ok(await page<WatchEntry[]>(tabId, 'page.watch.list'));
         if (action === 'poll') {
@@ -809,9 +780,17 @@ export function createServer(bridge: Bridge): McpServer {
    */
   async function findAccess(
     kind: TraceKind,
-    args: { tabId: number; address: string; type?: ValueType; maxHits?: number; timeoutSeconds?: number; reload?: boolean },
+    args: {
+      tabId?: number;
+      address: string;
+      type?: ValueType;
+      maxHits?: number;
+      timeoutSeconds?: number;
+      reload?: boolean;
+    },
   ): Promise<ToolResult> {
-    const { tabId, address, type, maxHits, timeoutSeconds, reload } = args;
+    const tabId = await resolveTab(bridge, args.tabId);
+    const { address, type, maxHits, timeoutSeconds, reload } = args;
     try {
       const target = addr(address);
       const formatted = formatAddress(target);
@@ -864,9 +843,9 @@ export function createServer(bridge: Bridge): McpServer {
       description:
         "Answers \"which function writes here?\" — Cheat Engine's write breakpoint, for wasm. WebAssembly has no write events, " +
         'so the tab is reloaded with an instrumented module: every store then calls back with the function index that made it. ' +
-        'The reload keeps the existing approval. Returns every hit with the function that wrote and the value before/after.',
+        'Returns every hit with the function that wrote and the value before/after.',
       inputSchema: {
-        tabId: z.number().int(),
+        tabId: TAB_ID,
         address: ADDRESS,
         type: VALUE_TYPE.optional(),
         maxHits: z.number().int().min(1).max(500).optional(),
@@ -884,10 +863,10 @@ export function createServer(bridge: Bridge): McpServer {
       description:
         'Answers "which function reads here?" — Cheat Engine\'s read breakpoint, for wasm. Every load in the module gains a small ' +
         'guarded call that reports the address it is about to read, so the tab is reloaded once with the instrumented module ' +
-        '(the approval survives the reload). Reads are the better question for input flags, timers and health checks: the reader ' +
+        'Reads are the better question for input flags, timers and health checks: the reader ' +
         'is the code that decides what the value means.',
       inputSchema: {
-        tabId: z.number().int(),
+        tabId: TAB_ID,
         address: ADDRESS,
         type: VALUE_TYPE.optional(),
         maxHits: z.number().int().min(1).max(500).optional(),
@@ -924,14 +903,15 @@ export function createServer(bridge: Bridge): McpServer {
         'static location), `offsets` are applied in order. In wasm every pointer is a 32-bit index into the same linear memory, ' +
         'so the scan needs no module bases or rebasing. Verify a chain with wasmcheat_pointer_resolve before trusting it.',
       inputSchema: {
-        tabId: z.number().int(),
+        tabId: TAB_ID,
         address: ADDRESS,
         maxDepth: z.number().int().min(1).max(6).optional(),
         maxOffset: z.number().int().min(4).max(0x100000).optional(),
         maxResults: z.number().int().min(1).max(100).optional(),
       },
     },
-    async ({ tabId, address, maxDepth, maxOffset, maxResults }) => {
+    async ({ tabId: askedTab, address, maxDepth, maxOffset, maxResults }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
         const target = addr(address);
         const paths = await page<PointerPath[]>(tabId, 'page.pointer.scan', {
@@ -966,12 +946,13 @@ export function createServer(bridge: Bridge): McpServer {
         'Walks one chain from wasmcheat_pointer_scan and reports every hop (address + value) and the value at the end. A hop whose ' +
         'value is no longer a plausible address means the chain broke (the app reallocated, or the base moved).',
       inputSchema: {
-        tabId: z.number().int(),
+        tabId: TAB_ID,
         base: ADDRESS,
         offsets: z.array(z.number().int().min(0)).min(1).max(6),
       },
     },
-    async ({ tabId, base, offsets }) => {
+    async ({ tabId: askedTab, base, offsets }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
         const start = addr(base);
         const resolution = await page<PointerResolution>(tabId, 'page.pointer.resolve', {
@@ -1002,7 +983,7 @@ export function createServer(bridge: Bridge): McpServer {
         "'wasm-function[N]' from list_instances. Patches stay until removed and survive reloads via sessionStorage. A compiled " +
         "module can never be patched in place, so `applied` is false until the reload that installs it.",
       inputSchema: {
-        tabId: z.number().int(),
+        tabId: TAB_ID,
         action: z.enum(['add', 'list', 'remove', 'clear']),
         target: z.string().optional(),
         mode: z.enum([...PATCH_MODES]).optional(),
@@ -1012,7 +993,8 @@ export function createServer(bridge: Bridge): McpServer {
         reload: z.boolean().optional(),
       },
     },
-    async ({ tabId, action, target, mode, value, note, patchId, reload }) => {
+    async ({ tabId: askedTab, action, target, mode, value, note, patchId, reload }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
         if (action === 'list') return ok(await page<PatchEntry[]>(tabId, 'page.patch.list'));
         if (action === 'clear') {
@@ -1059,7 +1041,7 @@ export function createServer(bridge: Bridge): McpServer {
         'watchpoint for the next instantiation and remembers it across a reload, status reports whether it installed, poll ' +
         'drains the collected hits, clear resets them, stop removes the watchpoint entirely.',
       inputSchema: {
-        tabId: z.number().int(),
+        tabId: TAB_ID,
         action: z.enum(['arm', 'status', 'poll', 'clear', 'stop']),
         address: ADDRESS.optional(),
         type: VALUE_TYPE.optional(),
@@ -1068,7 +1050,8 @@ export function createServer(bridge: Bridge): McpServer {
         limit: z.number().int().min(1).max(1000).optional(),
       },
     },
-    async ({ tabId, action, address, type, maxHits, kind, limit }) => {
+    async ({ tabId: askedTab, action, address, type, maxHits, kind, limit }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
         if (action === 'arm') {
           if (!address) return fail(new BridgeError('BAD_PARAMS', 'address is required for arm'));
@@ -1106,7 +1089,7 @@ export function createServer(bridge: Bridge): McpServer {
         'at instantiation, so an already-running instance cannot be re-patched (the response says pending: true).\n' +
         'Every add/remove is audited. If the page forbids eval, pass `fallback` for a declarative behaviour.',
       inputSchema: {
-        tabId: z.number().int(),
+        tabId: TAB_ID,
         action: z.enum(['add', 'list', 'enable', 'remove']),
         instanceId: z.string().optional(),
         target: z.enum(['export', 'import']).optional(),
@@ -1123,7 +1106,8 @@ export function createServer(bridge: Bridge): McpServer {
         enabled: z.boolean().optional(),
       },
     },
-    async ({ tabId, action, instanceId, target, name, body, fallback, note, hookId, enabled }) => {
+    async ({ tabId: askedTab, action, instanceId, target, name, body, fallback, note, hookId, enabled }) => {
+      const tabId = await resolveTab(bridge, askedTab);
       try {
         if (action === 'list') return ok(await page<HookEntry[]>(tabId, 'page.hook.list'));
         if (action === 'enable') {

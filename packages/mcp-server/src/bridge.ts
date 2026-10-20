@@ -280,7 +280,10 @@ export class Bridge {
       this.reply(id, makeErrorResponse(id, new BridgeError('UNSUPPORTED', `unknown request "${method}"`)));
       return;
     }
-    const allowed = this.options.pairing !== false && this.authenticatedSocket === null;
+    // A paired socket that has already gone away must not block a fresh install (or an extension
+    // reload, which drops its token) from pairing again.
+    const pairedAlive = this.authenticatedSocket !== null && this.authenticatedSocket.readyState === 1;
+    const allowed = this.options.pairing !== false && !pairedAlive;
     if (!allowed || !this.options.token) {
       this.reply(
         id,

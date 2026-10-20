@@ -37,26 +37,6 @@
   --shadow-float: 0 20px 50px -24px rgb(28 25 20 / 45%), 0 2px 6px rgb(28 25 20 / 8%);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --paper: #131312;
-    --surface: #1a1a19;
-    --surface-2: #232322;
-    --line: #2d2d2a;
-    --line-strong: #3c3c37;
-    --ink: #f2f0ea;
-    --ink-2: #b5afa2;
-    --ink-3: #948e83;
-    --accent: #38c3a4;
-    --accent-ink: #05221c;
-    --accent-soft: #14312b;
-    --danger: #ff8578;
-    --danger-soft: #33191a;
-    --warn: #f0b451;
-    --warn-soft: #2c2415;
-    --shadow-float: 0 24px 60px -24px rgb(0 0 0 / 70%), 0 2px 6px rgb(0 0 0 / 45%);
-  }
-}
 
 /* The theme button writes data-theme on <html>; without a stored choice the media query above wins. */
 :root[data-theme="light"] {

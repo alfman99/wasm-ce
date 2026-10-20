@@ -8,7 +8,6 @@ import {
   isResponse,
   makeErrorResponse,
   makeResponse,
-  type ApprovalState,
   type BridgeErrorShape,
   type PageAgentInfo,
   type PageDiagnostics,
@@ -20,9 +19,9 @@ import {
 /**
  * Service worker: the only part of the extension that talks to the MCP server.
  *
- * It owns the approval gate. Every page-level call funnels through `callTab`, which refuses
- * to forward anything for a tab the human has not approved. Approval state lives in
- * `chrome.storage.session` because MV3 kills this worker whenever it likes.
+ * There is no approval step: opening the panel on a tab is the human saying yes, so every
+ * page-level call funnels through `callTab`, which only has to find the right frame, do the
+ * work and report it.
  */
 
 // Injected by build.mjs from WASMCHEAT_PORT so the extension and the MCP server agree
@@ -47,24 +46,12 @@ const RECONNECT_MAX_MS = 10_000;
 const RPC_TIMEOUT_MS = 30_000;
 /** A frame that has not answered hello in this long is treated as gone, not as slow. */
 const FRAME_PROBE_TIMEOUT_MS = 1_500;
-const APPROVAL_POLL_MS = 400;
 /**
  * MV3 terminates an idle service worker after 30s, and a wait on a human click is exactly that:
  * timers do not count as activity, so a long approval wait would die mid-poll and the bridge would
  * time out. Pinging a trivial extension API every 15s keeps the worker alive while we wait.
  */
 const KEEPALIVE_MS = 15_000;
-
-interface ApprovalEntry {
-  state: ApprovalState;
-  reason: string;
-  requestId: string;
-  at: number;
-  tabTitle?: string;
-  tabUrl?: string;
-}
-
-type Approvals = Record<string, ApprovalEntry>;
 
 let socket: WebSocket | null = null;
 let reconnectDelay = RECONNECT_BASE_MS;
@@ -74,23 +61,6 @@ const attachedTabs = new Set<number>();
 const tabFrames = new Map<number, Map<number, string>>();
 /** tabId → the frame that owns the wasm, so page.* calls land in the right realm. */
 const activeFrame = new Map<number, number>();
-/** tabId → the grant that should survive the reload we are about to cause ourselves. */
-const keepApprovalOnReload = new Map<number, ApprovalEntry>();
-
-/**
- * Sites the human said "always allow". Keyed by origin, stored in `localStorage` rather than
- * `sessionStorage` because the whole point is that it survives a browser restart: approving the
- * same game every morning is the friction this exists to remove.
- */
-interface TrustedSite {
-  origin: string;
-  at: number;
-  label: string;
-}
-
-type TrustedSites = Record<string, TrustedSite>;
-
-const TRUSTED_KEY = 'trustedSites';
 
 /**
  * The tab the popup should put first. In Chrome, opening the popup does not change the active tab, so
@@ -118,14 +88,6 @@ function originOf(url: string | undefined): string | null {
   }
 }
 
-async function readTrusted(): Promise<TrustedSites> {
-  const stored = await chrome.storage.local.get(TRUSTED_KEY);
-  return (stored[TRUSTED_KEY] as TrustedSites | undefined) ?? {};
-}
-
-async function writeTrusted(sites: TrustedSites): Promise<void> {
-  await chrome.storage.local.set({ [TRUSTED_KEY]: sites });
-}
 /**
  * tabId → a watchpoint that must be re-armed in the next document.
  *
@@ -181,32 +143,6 @@ async function restoreSession(): Promise<void> {
   }
 }
 void restoreSession();
-
-// ---------------------------------------------------------------- storage
-
-async function readApprovals(): Promise<Approvals> {
-  const stored = await chrome.storage.session.get('approvals');
-  return (stored.approvals as Approvals | undefined) ?? {};
-}
-
-async function writeApprovals(approvals: Approvals): Promise<void> {
-  await chrome.storage.session.set({ approvals });
-  await refreshBadge(approvals);
-}
-
-async function setApproval(tabId: number, entry: ApprovalEntry | null): Promise<void> {
-  const approvals = await readApprovals();
-  if (entry) approvals[String(tabId)] = entry;
-  else delete approvals[String(tabId)];
-  await writeApprovals(approvals);
-}
-
-async function refreshBadge(approvals?: Approvals): Promise<void> {
-  const current = approvals ?? (await readApprovals());
-  const pending = Object.values(current).filter((entry) => entry.state === 'pending').length;
-  await chrome.action.setBadgeBackgroundColor({ color: '#e8590c' });
-  await chrome.action.setBadgeText({ text: pending > 0 ? String(pending) : '' });
-}
 
 // ---------------------------------------------------------------- bridge socket
 
@@ -472,22 +408,12 @@ async function handleBridgeRequest(method: string, params: unknown): Promise<unk
       };
     case 'ext.listTabs':
       return listTabs();
-    case 'ext.requestApproval':
-      return requestApproval(params as { tabId: number; reason?: string; waitMs?: number });
-    case 'ext.approvalStatus':
-      return approvalStatus(params as { tabId: number });
-    case 'ext.revoke':
-      return revoke(params as { tabId: number; reason?: string });
-    case 'ext.trust':
-      return trustSite(params as { tabId: number });
-    case 'ext.untrust':
-      return untrustSite(params as { origin: string });
     case 'ext.ensureAgent':
-      return ensureAgent(params as { tabId: number; reload?: boolean });
+      return ensureAgent(params as { tabId: number; reload?: boolean; frameId?: number });
     case 'ext.call':
       return callTab(params as { tabId: number; method: string; params?: unknown; timeoutMs?: number });
     case 'ext.detach':
-      return revoke(params as { tabId: number; reason?: string });
+      return detach(params as { tabId: number });
     case 'ext.reload':
       return reloadTab(params as { tabId: number });
     case 'ext.traceArm':
@@ -502,7 +428,6 @@ async function handleBridgeRequest(method: string, params: unknown): Promise<unk
 // ---------------------------------------------------------------- tabs
 
 async function listTabs(): Promise<TabInfo[]> {
-  const approvals = await readApprovals();
   const tabs = await chrome.tabs.query({});
   const visible: TabInfo[] = [];
   for (const tab of tabs) {
@@ -516,7 +441,6 @@ async function listTabs(): Promise<TabInfo[]> {
       url,
       active: tab.active ?? false,
       agentAttached: attachedTabs.has(tab.id),
-      approval: approvals[String(tab.id)]?.state ?? 'none',
       frames: [...(tabFrames.get(tab.id) ?? new Map<number, string>()).entries()].map(([frameId, url]) => ({
         frameId,
         url,
@@ -534,190 +458,29 @@ async function getTab(tabId: number): Promise<chrome.tabs.Tab> {
   }
 }
 
-// ---------------------------------------------------------------- approval
+// ---------------------------------------------------------------- tabs
 
-async function requestApproval(params: { tabId: number; reason?: string; waitMs?: number }): Promise<{
-  requestId: string;
-  state: ApprovalState;
-  tab?: { title: string; url: string };
-}> {
-  const tab = await getTab(params.tabId);
-
-  // An already-approved tab must not be re-prompted: re-attaching is a normal thing for an
-  // agent to do, and flashing the human a second dialog for the same tab is noise.
-  const existing = (await readApprovals())[String(params.tabId)];
-  if (existing?.state === 'granted') {
-    return {
-      requestId: existing.requestId,
-      state: 'granted',
-      tab: { title: existing.tabTitle ?? tab.title ?? '', url: existing.tabUrl ?? tab.url ?? '' },
-    };
-  }
-
-  // A trusted site attaches without a prompt. This is the only path that grants on its own, it is
-  // still per tab, and it is still reported to the audit log so the log keeps reading as a history
-  // of "who let this in".
-  const origin = originOf(tab.url);
-  const trusted = origin ? (await readTrusted())[origin] : undefined;
-  if (trusted && origin) {
-    const requestId = crypto.randomUUID();
-    await setApproval(params.tabId, {
-      state: 'granted',
-      reason: `trusted site ${origin}`,
-      requestId,
-      at: Date.now(),
-      tabTitle: tab.title ?? '',
-      tabUrl: tab.url ?? '',
-    });
-    emit(Events.approvalResolved, { tabId: params.tabId, state: 'granted' });
-    send({
-      v: PROTOCOL_VERSION,
-      kind: 'evt',
-      event: Events.actionAudit,
-      data: {
-        kind: 'approval',
-        tabId: params.tabId,
-        ok: true,
-        summary: `attached to ${origin} without a prompt (trusted site)`,
-      } satisfies ActionLine,
-    });
-    return {
-      requestId,
-      state: 'granted',
-      tab: { title: tab.title ?? '', url: tab.url ?? '' },
-    };
-  }
-
-  const requestId = crypto.randomUUID();
-  const reason = params.reason?.trim() || 'An agent wants to read and modify this page\'s WebAssembly memory.';
-  const entry: ApprovalEntry = {
-    state: 'pending',
-    reason,
-    requestId,
-    at: Date.now(),
-    tabTitle: tab.title ?? '',
-    tabUrl: tab.url ?? '',
-  };
-  await setApproval(params.tabId, entry);
-  emit(Events.approvalRequested, { tabId: params.tabId, requestId, reason, title: entry.tabTitle, url: entry.tabUrl });
-
-  const waitMs = Math.max(0, Math.min(params.waitMs ?? 0, 120_000));
-  const tabInfo = { title: entry.tabTitle ?? '', url: entry.tabUrl ?? '' };
-  if (waitMs === 0) return { requestId, state: 'pending', tab: tabInfo };
-
-  const deadline = Date.now() + waitMs;
-  const keepAlive = setInterval(() => {
-    void chrome.runtime.getPlatformInfo().catch(() => undefined);
-  }, KEEPALIVE_MS);
-  try {
-    while (Date.now() < deadline) {
-      await sleep(APPROVAL_POLL_MS);
-      const approvals = await readApprovals();
-      const current = approvals[String(params.tabId)];
-      if (!current || current.requestId !== requestId) {
-        return { requestId, state: current?.state ?? 'revoked', tab: tabInfo };
-      }
-      if (current.state !== 'pending') return { requestId, state: current.state, tab: tabInfo };
-    }
-  } finally {
-    clearInterval(keepAlive);
-  }
-  return { requestId, state: 'pending', tab: tabInfo };
-}
-
-async function approvalStatus(params: { tabId: number }): Promise<ApprovalEntry | null> {
-  const approvals = await readApprovals();
-  return approvals[String(params.tabId)] ?? null;
-}
-
-async function revoke(params: { tabId: number; reason?: string }): Promise<{ ok: true }> {
-  await setApproval(params.tabId, {
-    state: 'revoked',
-    reason: params.reason ?? 'revoked by the user or the agent',
-    requestId: '',
-    at: Date.now(),
-  });
-  emit(Events.approvalResolved, { tabId: params.tabId, state: 'revoked' });
+/** Forgets everything this worker knows about a tab; the next call re-injects the agent. */
+async function detach(params: { tabId: number }): Promise<{ ok: true }> {
+  attachedTabs.delete(params.tabId);
+  activeFrame.delete(params.tabId);
+  tabFrames.delete(params.tabId);
+  pendingTraces.delete(params.tabId);
+  persistSession();
+  await reportAction(params.tabId, 'ext.detach', params, { ok: true }, undefined);
   return { ok: true };
-}
-
-/**
- * Adds the tab's origin to the trusted list and grants this tab, so a site you play daily stops
- * asking. Deliberately not reachable over the bridge: an agent that could trust its own targets
- * would be approving itself, which is the one decision the human keeps.
- */
-async function trustSite(params: { tabId: number }): Promise<{ ok: true; origin: string }> {
-  const tab = await getTab(params.tabId);
-  const origin = originOf(tab.url);
-  if (!origin) throw new BridgeError('UNSUPPORTED', 'only http(s) pages can be trusted');
-  const trusted = await readTrusted();
-  trusted[origin] = { origin, at: Date.now(), label: tab.title ?? origin };
-  await writeTrusted(trusted);
-  await setApproval(params.tabId, {
-    state: 'granted',
-    reason: `trusted site ${origin}`,
-    requestId: crypto.randomUUID(),
-    at: Date.now(),
-    tabTitle: tab.title ?? '',
-    tabUrl: tab.url ?? '',
-  });
-  emit(Events.approvalResolved, { tabId: params.tabId, state: 'granted' });
-  send({
-    v: PROTOCOL_VERSION,
-    kind: 'evt',
-    event: Events.actionAudit,
-    data: { kind: 'trust', tabId: params.tabId, ok: true, summary: `trusted ${origin}: future tabs there attach without a prompt` } satisfies ActionLine,
-  });
-  return { ok: true, origin };
-}
-
-/** Forgetting a site also revokes the tabs that were riding on it, so the state cannot lie. */
-async function untrustSite(params: { origin: string }): Promise<{ ok: true; revoked: number[] }> {
-  const trusted = await readTrusted();
-  delete trusted[params.origin];
-  await writeTrusted(trusted);
-  const revokeQueue: number[] = [];
-  const tabs = await chrome.tabs.query({});
-  for (const tab of tabs) {
-    if (tab.id === undefined || originOf(tab.url) !== params.origin) continue;
-    const approvals = await readApprovals();
-    if (approvals[String(tab.id)]?.reason === `trusted site ${params.origin}`) revokeQueue.push(tab.id);
-  }
-  for (const tabId of revokeQueue) {
-    await setApproval(tabId, {
-      state: 'revoked',
-      reason: `forgot the trusted site ${params.origin}`,
-      requestId: '',
-      at: Date.now(),
-    });
-    emit(Events.approvalResolved, { tabId, state: 'revoked' });
-  }
-  send({
-    v: PROTOCOL_VERSION,
-    kind: 'evt',
-    event: Events.actionAudit,
-    data: { kind: 'trust', tabId: revokeQueue[0] ?? 0, ok: true, summary: `forgot trusted site ${params.origin} (${revokeQueue.length} tab(s) revoked)` } satisfies ActionLine,
-  });
-  return { ok: true, revoked: revokeQueue };
 }
 
 // ---------------------------------------------------------------- page calls
 
 /**
- * Reloads a tab that is already approved, keeping the grant.
+ * Reloads a tab so the next document is instrumented from `document_start`.
  *
- * A write watchpoint has to be in place before the app compiles its module, so tracing a page
- * that is already running means reloading it. A navigation normally revokes approval, but this
- * reload is ours and lands on the same URL, so the grant carries over instead of asking the
- * human a second time for the same page.
+ * A watchpoint has to be in place before the app compiles its module, so tracing a page that is
+ * already running means reloading it. The grant, hooks and patches that existed before are gone
+ * with the old document — the agent asked for this reload, so it knows.
  */
 async function reloadTab(params: { tabId: number }): Promise<{ reloaded: true }> {
-  const approvals = await readApprovals();
-  const entry = approvals[String(params.tabId)];
-  if (!entry || entry.state !== 'granted') {
-    throw new BridgeError('NEED_APPROVAL', `tab ${params.tabId} is not approved`);
-  }
-  keepApprovalOnReload.set(params.tabId, entry);
   attachedTabs.delete(params.tabId);
   await chrome.tabs.reload(params.tabId);
   const ready = await waitFor(() => attachedTabs.has(params.tabId), 15_000);
@@ -745,8 +508,8 @@ async function traceArm(params: {
   };
   pendingTraces.set(params.tabId, options);
   persistSession();
-  // Through `callTab`, so arming is gated on approval and lands in the same audit funnel as an
-  // agent's `page.trace.arm` — a human clicking "Arm & reload" must not be invisible.
+  // Through `callTab`, so arming lands in the same audit funnel as an agent's `page.trace.arm`:
+  // a human clicking "Arm & reload" must not be invisible.
   return callTab({ tabId: params.tabId, method: 'page.trace.arm', params: options, timeoutMs: 8_000 });
 }
 
@@ -891,8 +654,7 @@ type ActionKind =
   | 'bookmark'
   | 'speed'
   | 'trace'
-  | 'approval'
-  | 'trust';
+  | 'detach';
 
 interface ActionLine {
   kind: ActionKind;
@@ -1104,18 +866,6 @@ async function callTab(params: {
   if (typeof params.method !== 'string' || !params.method.startsWith('page.')) {
     throw new BridgeError('BAD_PARAMS', `ext.call only forwards page.* methods, got "${params.method}"`);
   }
-  const approvals = await readApprovals();
-  const approval = approvals[String(params.tabId)];
-  if (!approval || approval.state !== 'granted') {
-    throw new BridgeError(
-      'NEED_APPROVAL',
-      approval?.state === 'pending'
-        ? `tab ${params.tabId} is waiting for the human to approve the request`
-        : `tab ${params.tabId} has not been approved (state: ${approval?.state ?? 'none'})`,
-      { tabId: params.tabId, state: approval?.state ?? 'none', requestId: approval?.requestId ?? null },
-    );
-  }
-
   const timeoutMs = Math.max(1_000, Math.min(params.timeoutMs ?? RPC_TIMEOUT_MS, 120_000));
   const frameId = await resolveFrame(params.tabId);
   try {
@@ -1301,68 +1051,14 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse: (v
   if (msg.type === 'popup.state') {
     void (async () => {
       sendResponse({
-        approvals: await readApprovals(),
         tabs: await listTabs(),
         activeTabId: await pickActiveTab(),
-        trusted: Object.values(await readTrusted()).sort((a, b) => a.origin.localeCompare(b.origin)),
         bridgeConnected: socket?.readyState === WebSocket.OPEN,
         bridgeRejected,
         tokenConfigured: (await bridgeToken()).length > 0,
         tokenSource: await tokenSource(),
         pairingHint: processHint,
       });
-    })();
-    return true;
-  }
-
-  if (msg.type === 'popup.approve' && typeof msg.tabId === 'number') {
-    const approvedTabId = msg.tabId;
-    void (async () => {
-      const approvals = await readApprovals();
-      const pending = approvals[String(approvedTabId)];
-      await setApproval(approvedTabId, {
-        state: 'granted',
-        reason: pending?.reason ?? 'approved in the popup',
-        requestId: pending?.requestId ?? crypto.randomUUID(),
-        at: Date.now(),
-        tabTitle: pending?.tabTitle,
-        tabUrl: pending?.tabUrl,
-      });
-      emit(Events.approvalResolved, { tabId: approvedTabId, state: 'granted' });
-      sendResponse({ ok: true });
-    })();
-    return true;
-  }
-
-  if (msg.type === 'popup.trust' && typeof msg.tabId === 'number') {
-    const trustedTabId = msg.tabId;
-    void (async () => {
-      try {
-        sendResponse(await trustSite({ tabId: trustedTabId }));
-      } catch (error) {
-        sendResponse(errorReply(error));
-      }
-    })();
-    return true;
-  }
-
-  if (msg.type === 'popup.untrust' && typeof msg.origin === 'string') {
-    const origin = msg.origin;
-    void (async () => {
-      try {
-        sendResponse(await untrustSite({ origin }));
-      } catch (error) {
-        sendResponse(errorReply(error));
-      }
-    })();
-    return true;
-  }
-
-  if (msg.type === 'popup.deny' && typeof msg.tabId === 'number') {
-    const deniedTabId = msg.tabId;
-    void (async () => {
-      await revoke({ tabId: deniedTabId, reason: 'denied in the popup' });
-      sendResponse({ ok: true });
     })();
     return true;
   }
@@ -1375,65 +1071,27 @@ function errorReply(error: unknown): { error: BridgeErrorShape } {
   return { error: makeErrorResponse('panel', error).error ?? { code: 'INTERNAL', message: String(error) } };
 }
 
-/** Two URLs on the same origin count as the same site; a missing URL is never a match. */
-function sameSite(before: string | undefined, after: string | undefined): boolean {
-  if (!before || !after) return false;
-  try {
-    return new URL(before).origin === new URL(after).origin;
-  } catch {
-    return before === after;
-  }
-}
-
 chrome.tabs.onRemoved.addListener((tabId) => {
   attachedTabs.delete(tabId);
   tabFrames.delete(tabId);
   activeFrame.delete(tabId);
   pendingTraces.delete(tabId);
   persistSession();
-  void (async () => {
-    const approvals = await readApprovals();
-    if (approvals[String(tabId)]) {
-      delete approvals[String(tabId)];
-      await writeApprovals(approvals);
-    }
-  })();
 });
 
-// A navigation invalidates the approval: the new page is not the one the human vetted.
+// A new document means new frames and a new page agent, so forget the routing and re-probe on the
+// next call. Nothing else has to happen: there is no grant to revoke.
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === 'loading' && changeInfo.url) {
-    const kept = keepApprovalOnReload.get(tabId);
-    keepApprovalOnReload.delete(tabId);
     attachedTabs.delete(tabId);
     tabFrames.delete(tabId);
     activeFrame.delete(tabId);
     persistSession();
-    // A grant is scoped to the tab and the site, not to one URL: games navigate (a level select, a
-    // hash route, a reload we caused ourselves) and re-prompting for every step would train the
-    // human to approve without reading. Leaving the site still revokes.
-    if (kept && kept.state === 'granted' && sameSite(kept.tabUrl, changeInfo.url)) return;
-    void (async () => {
-      const approvals = await readApprovals();
-      const entry = approvals[String(tabId)];
-      if (entry && entry.state === 'granted' && sameSite(entry.tabUrl, changeInfo.url)) {
-        attachedTabs.delete(tabId);
-        return;
-      }
-      if (entry) {
-        delete approvals[String(tabId)];
-        await writeApprovals(approvals);
-        emit(Events.approvalResolved, { tabId, state: 'none', reason: 'tab navigated' });
-      }
-    })();
   }
 });
 
 chrome.runtime.onStartup.addListener(() => connect());
-chrome.runtime.onInstalled.addListener(() => {
-  connect();
-  void refreshBadge();
-});
+chrome.runtime.onInstalled.addListener(() => connect());
 
 // Keep trying to reach the local bridge for as long as the worker is alive.
 connect();

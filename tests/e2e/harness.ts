@@ -10,7 +10,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 /**
  * The end-to-end rig: a real Chrome with the extension loaded, the demo served over HTTP,
  * and the MCP server as a child process reached over stdio exactly like a real client would.
- * Nothing here shortcuts the approval gate — the popup is driven through its own DOM.
+ * Nothing here shortcuts the extension: tools are called through a real MCP client over stdio.
  */
 
 export const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -169,25 +169,6 @@ function decode<T>(text: string): T {
     }
   }
   return undefined as T;
-}
-
-/** Drive the real popup UI the way a human would, so approval is genuinely exercised. */
-export async function approveThroughPopup(
-  browser: LaunchedBrowser,
-  tabId: number,
-  button: 'Approve' | 'Reload & attach' = 'Approve',
-): Promise<void> {
-  const popup = await browser.context.newPage();
-  await popup.goto(`chrome-extension://${browser.extensionId}/popup.html`);
-  const row = popup.locator(`li.tab[data-tab-id="${tabId}"]`);
-  try {
-    await row.waitFor({ state: 'visible', timeout: 20_000 });
-  } catch (error) {
-    throw new Error(`popup never showed tab ${tabId}: ${JSON.stringify(await popup.locator('body').innerText())}`);
-  }
-  await row.getByRole('button', { name: button, exact: true }).click();
-  await popup.locator(`li.tab[data-tab-id="${tabId}"][data-state="granted"]`).waitFor({ timeout: 20_000 });
-  await popup.close();
 }
 
 /** A stray dev server on the bridge port would make the suite talk to the wrong process. */

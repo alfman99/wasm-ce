@@ -2,7 +2,7 @@
  * DevTools panel: the whole bridge, driven by a human.
  *
  * Every call goes through the service worker's `wasmcheat.panel.call` family, which reuses the
- * very dispatcher the WebSocket uses. That is deliberate: the approval gate, frame routing,
+ * very dispatcher the WebSocket uses. That is deliberate: frame routing,
  * worker routing and error shapes are identical to what an MCP client sees, so this panel is a
  * second front end rather than a trust bypass.
  */
@@ -18,7 +18,6 @@ import {
   isBridgeError,
   parseAddress,
   type Address,
-  type ApprovalState,
   type ErrorCode,
   type FreezeEntry,
   type HookEntry,
@@ -72,7 +71,39 @@ function inspectedTabId(): number | undefined {
   return typeof tabId === 'number' ? tabId : undefined;
 }
 
+/**
+ * The panel drives the tab it was opened on. Opened through DevTools that tab is known outright; opened
+ * as a plain page (a test, or someone bookmarked panel.html) fall back to the tab in front, which is
+ * the one the human is looking at anyway.
+ */
+function isWebUrl(url: string): boolean {
+  return url.startsWith('http://') || url.startsWith('https://');
+}
+
+async function frontTab(): Promise<TabInfo | undefined> {
+  const inspected = inspectedTabId();
+  try {
+    const tabs = await swCall<TabInfo[]>('ext.listTabs');
+    const known = tabs.find((tab) => tab.tabId === inspected);
+    if (known) return known;
+  } catch {
+    // The service worker may still be waking up; the pills report that separately.
+  }
+  try {
+    const tabs = (await swCall<TabInfo[]>('ext.listTabs')).filter((tab) => isWebUrl(tab.url));
+    // A panel opened as a tab is itself the active tab, and extension pages are not targets.
+    const active = tabs.find((tab) => tab.active);
+    if (active) return active;
+    const attached = tabs.find((tab) => tab.agentAttached);
+    return attached ?? tabs[0];
+  } catch {
+    return undefined;
+  }
+}
+
 let targetTabId: number | undefined = inspectedTabId();
+/** Title and URL of the target, so the header can name it instead of saying "a tab". */
+let frontTabInfo: TabInfo | undefined;
 let selectedInstanceId: string | undefined;
 let activeScanId: string | undefined;
 
@@ -118,7 +149,7 @@ function requireTab(): number {
   return targetTabId;
 }
 
-/** Page methods travel as `ext.call`, so the service worker's approval check applies unchanged. */
+/** Page methods travel as `ext.call`, so frame routing and the audit funnel apply unchanged. */
 function pageCall<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
   return swCall<T>('ext.call', { tabId: requireTab(), method, params });
 }
@@ -130,7 +161,7 @@ function paramsObject(params: unknown, method: string): Record<string, unknown> 
   return params as Record<string, unknown>;
 }
 
-/** `page.*` has to travel as `ext.call` or the approval gate is skipped, so every front-end uses this. */
+/** `page.*` travels as `ext.call` so every front-end goes through the same dispatcher and audit funnel. */
 function dispatch(method: string, params: unknown): Promise<unknown> {
   return method.startsWith('page.')
     ? pageCall(method, normalizePageParams(method, paramsObject(params, method)))
@@ -211,8 +242,17 @@ async function run(out: HTMLElement, action: () => Promise<string>): Promise<voi
   }
 }
 
+/**
+ * Missing ids are skipped, not fatal: the panel is edited often, and one removed button must never
+ * take the whole surface down before it renders.
+ */
 function bind(id: string, out: HTMLElement, action: () => Promise<string>): void {
-  el<HTMLButtonElement>(id).addEventListener('click', () => {
+  const button = document.getElementById(id) as HTMLButtonElement | null;
+  if (!button) {
+    console.warn(`panel.html is missing #${id}; that action is unavailable`);
+    return;
+  }
+  button.addEventListener('click', () => {
     void run(out, action);
   });
 }
@@ -373,37 +413,12 @@ function reportStatusError(error: unknown): void {
   report(out, describeError(error), true);
 }
 
-function renderTabs(tabs: TabInfo[]): void {
-  const items = tabs.map((tab) => {
-    const item = document.createElement('li');
-    item.className = 'tab';
-    item.dataset.tabId = String(tab.tabId);
-    item.dataset.state = tab.approval;
-    if (tab.tabId === targetTabId) item.classList.add('is-target');
-    item.append(
-      span(tab.title || '(untitled)', 'tab__title'),
-      span(tab.approval, 'tab__state'),
-      span(tab.url, 'tab__url'),
-    );
-    item.addEventListener('click', () => {
-      void selectTab(tab.tabId).catch(reportStatusError);
-    });
-    return item;
-  });
-  renderList(el('tabs'), items, 'No tabs yet. A tab appears here once the extension has run in it: open the page you want, then press Refresh.');
-}
-
 async function refreshStatus(): Promise<void> {
   const statusOut = el<HTMLPreElement>('status-out');
   statusOut.hidden = true;
   statusOut.classList.remove('is-error');
 
-  const [ping, tabs] = await Promise.all([
-    swCall<PingReply>('ext.ping'),
-    swCall<TabInfo[]>('ext.listTabs'),
-  ]);
-
-  renderTabs(tabs);
+  const ping = await swCall<PingReply>('ext.ping');
   setPill(
     'bridge',
     ping.bridgeConnected ? 'bridge live' : 'bridge offline (retrying)',
@@ -422,34 +437,31 @@ async function refreshStatus(): Promise<void> {
   else if (!ping.tokenConfigured) setPill('bridge', 'waiting for pairing', 'warn');
   if (ping.pairingHint && !ping.bridgeConnected) setPill('bridge', ping.pairingHint, 'warn');
 
-  const target = targetTabId === undefined ? undefined : tabs.find((tab) => tab.tabId === targetTabId);
-  setDecisionButtons(target?.approval);
-  if (!target) {
-    el('target').textContent =
-      targetTabId === undefined ? 'no target tab: pick one below' : `tab ${targetTabId} is gone`;
-    setPill('approval', 'approval ?', 'idle');
+  if (targetTabId === undefined) {
+    const front = await frontTab();
+    if (front) {
+      targetTabId = front.tabId;
+      frontTabInfo = front;
+    }
+  }
+  const tabId = targetTabId;
+  if (tabId === undefined) {
+    el('target').textContent = 'no inspected tab: open this panel from DevTools on the page you want';
+    setPill('tab-state', 'no tab', 'idle');
     setPill('agent', 'agent ?', 'idle');
     markStep(1);
     return;
   }
   markStep(activeScanId === undefined ? 2 : 3);
-
-  el('target').textContent = `tab ${target.tabId} · ${target.title || '(untitled)'} · ${target.url}`;
-  setPill(
-    'approval',
-    target.approval === 'granted' ? 'approved' : `approval ${target.approval}`,
-    target.approval === 'granted' ? 'live' : target.approval === 'pending' ? 'warn' : 'idle',
-  );
-
-  if (target.approval !== 'granted') {
-    setPill('agent', target.agentAttached ? 'agent injected, not approved' : 'agent not attached', 'idle');
-    markStep(1);
-    return;
+  setPill('tab-state', 'this tab', 'live');
+  if (frontTabInfo) {
+    el('target').textContent = `${frontTabInfo.title || frontTabInfo.url} · ${frontTabInfo.url}`;
+    el('target').classList.remove('process--empty');
   }
 
   try {
     const info = await swCall<PageAgentInfo>('ext.call', {
-      tabId: target.tabId,
+      tabId,
       method: 'page.hello',
       params: {},
     });
@@ -458,81 +470,10 @@ async function refreshStatus(): Promise<void> {
       info.evalAllowed ? 'agent ready' : 'agent ready · scripts blocked',
       info.evalAllowed ? 'live' : 'warn',
     );
-  } catch (error) {
-    setPill('agent', 'agent unreachable', 'bad');
-    report(statusOut, describeError(error), true);
+  } catch {
+    setPill('agent', 'not attached yet', 'idle');
+    report(statusOut, 'this tab has no page agent yet: press Attach', false);
   }
-}
-
-/** Approve/Deny only mean something while a decision is owed, so they hide once the tab is granted. */
-function setDecisionButtons(approval: ApprovalState | undefined): void {
-  const granted = approval === 'granted';
-  el<HTMLButtonElement>('approve').hidden = granted;
-  el<HTMLButtonElement>('deny').hidden = granted || approval === undefined;
-}
-
-async function selectTab(tabId: number): Promise<void> {
-  targetTabId = tabId;
-  await refreshStatus();
-}
-
-/**
- * The human decision arrives as an event, never as a poll: `ext.requestApproval` only registers the
- * pending request, and whoever clicks Approve (toolbar popup or this panel) makes the service worker
- * emit `approval.resolved`. Waiting on that event keeps the panel honest about being a *request*.
- */
-interface DecisionWaiter {
-  tabId: number;
-  resolve: (state: ApprovalState) => void;
-  timer: number;
-}
-
-const decisionWaiters: DecisionWaiter[] = [];
-
-function waitForDecision(tabId: number, timeoutMs: number): Promise<ApprovalState> {
-  return new Promise((resolve) => {
-    const waiter: DecisionWaiter = {
-      tabId,
-      resolve,
-      timer: window.setTimeout(() => settleDecision(tabId, 'pending'), timeoutMs),
-    };
-    decisionWaiters.push(waiter);
-  });
-}
-
-function settleDecision(tabId: number, state: ApprovalState): void {
-  for (const waiter of decisionWaiters.filter((entry) => entry.tabId === tabId)) {
-    window.clearTimeout(waiter.timer);
-    decisionWaiters.splice(decisionWaiters.indexOf(waiter), 1);
-    waiter.resolve(state);
-  }
-}
-
-/**
- * Ask for approval, then inject. The request only *asks*: the human click is the grant, so neither
- * this panel nor an agent can hand itself access.
- */
-async function requestAccess(
-  reload: boolean,
-  tabId: number = requireTab(),
-): Promise<{ approval: ApprovalState; agent?: PageAgentInfo }> {
-  const request = await swCall<{ state: ApprovalState }>('ext.requestApproval', {
-    tabId,
-    reason: 'DevTools panel: a human wants to inspect this tab',
-    waitMs: 0,
-  });
-  let approval = request.state;
-  if (approval !== 'granted') {
-    await refreshStatus();
-    approval = await waitForDecision(tabId, 120_000);
-  }
-  if (approval !== 'granted') {
-    await refreshStatus();
-    return { approval };
-  }
-  const agent = await swCall<PageAgentInfo>('ext.ensureAgent', { tabId, reload });
-  await refreshStatus();
-  return { approval: 'granted', agent };
 }
 
 /**
@@ -543,15 +484,13 @@ async function requestAccess(
 function attachAndReport(reload: boolean): () => Promise<string> {
   return async () => {
     const tabId = requireTab();
-    const result = await requestAccess(reload, tabId);
-    if (result.approval !== 'granted' || !result.agent) {
-      return `approval ${result.approval}: click Approve here or in the toolbar popup`;
-    }
-    const reloaded = result.agent.autoReloaded === true && !reload;
+    const agent = await swCall<PageAgentInfo>('ext.ensureAgent', { tabId, reload });
+    await refreshStatus();
     await refreshInstances();
+    const reloaded = agent.autoReloaded === true && !reload;
     const lines = [
-      `agent ${result.agent.version} attached to tab ${tabId} · eval ${
-        result.agent.evalAllowed ? 'allowed' : 'blocked by page CSP'
+      `agent ${agent.version} attached to tab ${tabId} · eval ${
+        agent.evalAllowed ? 'allowed' : 'blocked by page CSP'
       }${reload ? ' · after a reload' : reloaded ? ' · the tab was reloaded for you' : ''}`,
       `instances: ${knownInstances.length === 0 ? 'none yet' : knownInstances.map((instance) => instance.id).join(', ')}`,
     ];
@@ -1434,7 +1373,7 @@ function renderEventLog(): void {
   const items = eventLog.map((entry) =>
     listItem([clock(entry.at), entry.event, compact(entry.data)]),
   );
-  renderList(el('event-log'), items, 'No events yet. Bridge, approval and page events appear here as they happen.');
+  renderList(el('event-log'), items, 'No events yet. Bridge and page events appear here as they happen.');
 }
 
 function logEvent(event: string, data: unknown): void {
@@ -1459,19 +1398,7 @@ function openEvents(): void {
       setPill('bridge', 'token refused', 'bad');
       report(el('status-out'), data?.hint ?? 'the bridge refused this extension: paste the bridge token');
     }
-    if (payload.event === 'approval.resolved') {
-      const data = payload.data as { tabId?: unknown; state?: unknown } | null;
-      if (typeof data?.tabId === 'number' && typeof data.state === 'string') {
-        settleDecision(data.tabId, data.state as ApprovalState);
-      }
-    }
-    if (
-      payload.event === 'tabs.changed' ||
-      payload.event === 'approval.requested' ||
-      payload.event === 'approval.resolved'
-    ) {
-      scheduleStatusRefresh();
-    }
+    if (payload.event === 'tabs.changed') scheduleStatusRefresh();
   });
   port.onDisconnect.addListener(() => {
     // Reading lastError keeps Chrome from reporting an unchecked runtime error for a closed port.
@@ -1488,14 +1415,13 @@ function openEvents(): void {
  * exercises the real path rather than a test-only shortcut.
  */
 interface PanelTestHooks {
-  select(tabId: number): Promise<void>;
-  attach(tabId?: number): Promise<{ approval: ApprovalState; agent?: PageAgentInfo }>;
+  attach(tabId?: number): Promise<unknown>;
   call(method: string, params?: unknown): Promise<unknown>;
 }
 
-function panelAttach(tabId?: number): Promise<{ approval: ApprovalState; agent?: PageAgentInfo }> {
+function panelAttach(tabId?: number): Promise<unknown> {
   if (tabId !== undefined) targetTabId = tabId;
-  return requestAccess(false);
+  return swCall('ext.ensureAgent', { tabId: requireTab() });
 }
 
 // ---------------------------------------------------------------- wiring
@@ -1516,38 +1442,6 @@ function wire(): void {
   });
   bind('attach', statusOut, attachAndReport(false));
   bind('attach-reload', statusOut, attachAndReport(true));
-  bind('approve', statusOut, async () => {
-    const tabId = requireTab();
-    await chrome.runtime.sendMessage({ type: 'popup.approve', tabId });
-    await refreshStatus();
-    return `approved tab ${tabId}`;
-  });
-  bind('deny', statusOut, async () => {
-    const tabId = requireTab();
-    await chrome.runtime.sendMessage({ type: 'popup.deny', tabId });
-    await refreshStatus();
-    return `denied tab ${tabId}`;
-  });
-  bind('detach', statusOut, async () => {
-    const tabId = requireTab();
-    await swCall('ext.detach', { tabId });
-    await refreshStatus();
-    return `detached tab ${tabId}: page calls need a fresh approval`;
-  });
-  bind('revoke', statusOut, async () => {
-    const tabId = requireTab();
-    await swCall('ext.revoke', { tabId, reason: 'revoked from the DevTools panel' });
-    await refreshStatus();
-    return `revoked tab ${tabId}`;
-  });
-
-  bind('trust', statusOut, async () => {
-    const tabId = requireTab();
-    const result = await swCall<{ origin: string }>('ext.trust', { tabId });
-    await refreshStatus();
-    return `trusted ${result.origin}: tabs there attach without a prompt (forget it in the popup)`;
-  });
-
   bind('token-save', statusOut, async () => {
     const token = el<HTMLInputElement>('bridge-token').value.trim();
     if (!token) throw new BridgeError('BAD_PARAMS', 'paste the token printed by the MCP server first');
@@ -1633,11 +1527,10 @@ function wire(): void {
     renderEventLog();
   });
 
-  renderList(el('event-log'), [], 'No events yet. Bridge, approval and page events appear here as they happen.');
+  renderList(el('event-log'), [], 'No events yet. Bridge and page events appear here as they happen.');
   openEvents();
 
   (window as unknown as { __panel: PanelTestHooks }).__panel = {
-    select: selectTab,
     attach: panelAttach,
     call: (method, params) => dispatch(method, params ?? {}),
   };

@@ -3,7 +3,6 @@ import {
   BRIDGE_PORT,
   BRIDGE_TOKEN,
   DEMO_URL,
-  approveThroughPopup,
   assertPortFree,
   call,
   connectMcp,
@@ -40,10 +39,7 @@ test('screenshots', async () => {
     const panel = await browser.context.newPage();
     await panel.setViewportSize({ width: 1180, height: 900 });
     await panel.goto(`chrome-extension://${browser.extensionId}/panel.html`);
-    const attach = call(mcp, 'wasmcheat_attach', { tabId, waitSeconds: 30, reason: 'screenshots' });
-    await approveThroughPopup(browser, tabId);
-    await attach;
-    await panel.click(`li.tab[data-tab-id="${tabId}"]`);
+    await call(mcp, 'wasmcheat_attach', { tabId });
     await panel.click('#refresh-status');
     await panel.waitForTimeout(900);
     await panel.fill('#scan-instance', 'w1');
@@ -64,16 +60,11 @@ test('screenshots', async () => {
     await panel.click('#help-close');
     await panel.click('#theme-toggle');
 
-    // A pending request is the state worth photographing: it is the decision this popup exists for.
-    await call(mcp, 'wasmcheat_detach', { tabId });
-    const pending = call(mcp, 'wasmcheat_attach', { tabId, waitSeconds: 0, reason: 'screenshots' });
-    await sleep(800);
     const popup = await browser.context.newPage();
     await popup.setViewportSize({ width: 380, height: 560 });
     await popup.goto(`chrome-extension://${browser.extensionId}/popup.html`);
     await popup.waitForTimeout(1200);
     await popup.screenshot({ path: 'docs/img/popup.png' });
-    await pending;
   } finally {
     await mcp.client.close();
     await browser.close();

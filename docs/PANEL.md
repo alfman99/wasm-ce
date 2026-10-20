@@ -2,11 +2,11 @@
 
 The panel is the same bridge an MCP client talks to, with a human at the keyboard. Every call it
 makes goes through the service worker's `wasmcheat.panel.call` family, which reuses the WebSocket
-dispatcher — so the approval gate, frame routing, worker routing and audit log behave identically.
-A panel is a front end, not a bypass.
+dispatcher — so frame routing, worker routing and the audit log behave identically. A panel is a
+front end, not a separate implementation.
 
-Open it with DevTools on the target tab → **WasmCheat**. The panel is bound to that tab; switch tabs
-and you are looking at the same page you started from.
+Open it with DevTools on the target tab → **WasmCheat**. The panel is bound to that tab: there is no
+tab picker, because the tab you are inspecting is the tab you mean.
 
 ![The panel: target, workflow strip, scan, found list and the address tools](../docs/img/panel.png)
 
@@ -14,24 +14,24 @@ and you are looking at the same page you started from.
 
 | Element | Meaning |
 | --- | --- |
-| **Target** | The tab the panel is attached to (`tab 1310636703 · Foundry`). `no tab attached` means the panel has not been pointed at anything yet. |
+| **Target** | The tab the panel is bound to (`tab 1310636703 · Foundry`). `no tab attached` means the panel could not resolve one (no web page open). |
 | **Now** | `Foundry · w1 · 0x408`. Tab, then instance, then the address in the forms. Updates as you click. It answers "what am I about to write to?" |
 | `bridge` pill | The extension's WebSocket to the MCP server: `bridge live`, `bridge offline (retrying)`, `token refused`, `waiting for pairing`. |
-| `approval` pill | `approved`, or `approval none` / `pending` / `revoked` for this tab and site. |
+| `tab-state` pill | `this tab`: the panel targets the tab it lives on. |
 | `agent` pill | `agent ready`, or `agent unreachable`. |
-| Steps strip | `1 Pick a tab`, `2 Scan for a value`, `3 Change it`. The current step is outlined, so the strip tells you where you are rather than listing three links. |
+| Steps strip | `1 Attach`, `2 Scan for a value`, `3 Change it`. The current step is outlined, so the strip tells you where you are rather than listing three links. |
 | **Help** / **Theme** | The same help sheet as <kbd>?</kbd>, and a light/dark switch that is remembered. |
 
-The three chips under the header are the workflow: **1 Pick a tab**, **2 Scan for a value**,
+The three chips under the header are the workflow: **1 Attach**, **2 Scan for a value**,
 **3 Change it**. Each jumps to the card that does that job.
 
-**Attach** is the whole setup: it asks for approval if the tab has none, installs the page agent
-(reloading the tab once if the page was open before the extension), fills the Instances table, and
-quotes **Diagnose** when the table is empty — so the next step is in front of you instead of in a doc.
+**Attach** is the whole setup: it installs the page agent (reloading the tab once if the page
+started before the extension), fills the Instances table, and quotes **Diagnose** when the table is
+empty — so the next step is in front of you instead of in a doc. There is nothing to approve.
 
 ## Cards
 
-The first screen is the loop: Tabs, Instances, Scan, Text scan, Found, Reads / writes, Freeze,
+The first screen is the loop: Instances, Scan, Text scan, Found, Reads / writes, Freeze,
 Watch, Bookmarks and Memory View. Everything else — Watchpoints, Patches, Hooks, Pointers, Speed
 hack, Workers, Saved scans, Audit and the raw console — is one click away under **Advanced**, which
 is collapsed until you need it.
@@ -41,8 +41,7 @@ thing, so a human and an agent are never using different mechanisms.
 
 | Card | What it does | MCP tool |
 | --- | --- | --- |
-| **Tabs** | Lists tabs with approval state, frames and whether an agent is attached. Click a row to select it. | `wasmcheat_list_tabs` |
-| **Attach / Reload & attach / Approve / Deny / Detach / Revoke / Trust site** | The approval gate. Attach asks once per tab and site; the same-site reload keeps the grant. **Trust site** stops the prompt for every tab on that origin, and the popup lists what you trusted so you can forget it. | `wasmcheat_attach`, `wasmcheat_detach`, `wasmcheat_approval_status` |
+| **Attach / Reload & attach / Detach** | Attach injects the agent and heals a page that started before it existed (one reload, reported in the output). Detach forgets the tab; the next call re-attaches on its own. | `wasmcheat_attach`, `wasmcheat_detach` |
 | **Instances** | Wasm instances in the target: id, exports, memory size, `page` or `worker`, `importPatchability`. | `wasmcheat_list_instances` |
 | **Diagnose** | Why the instance list is empty: `WebAssembly.*` call counts, iframes (cross-origin flagged), canvases, `.wasm` URLs in the HTML, `evalAllowed`. | `wasmcheat_diagnose` |
 | **Scan** | Value, type, mode, the instance, plus a **More options** fold holding the byte range, alignment and result limit (the defaults are right until a scan is too slow or too broad). The upper bound appears only for `between`, and the value is labelled optional for the delta modes. **First Scan** starts a list; **Next Scan** narrows it, the filled button is always the next step, and <kbd>Enter</kbd> in a value field runs it. | `wasmcheat_scan`, `wasmcheat_scan_results`, `wasmcheat_scan_drop` |
@@ -95,8 +94,8 @@ the forms" — the panel fills it in for you. Inside workers the same shape carr
 
 | Symptom | What to do |
 | --- | --- |
-| Panel says `no tab attached` | Click the row in **Tabs**; DevTools must be open on the tab you want |
-| `NEED_APPROVAL` in an output block | Press **Approve**, approve in the popup, or put the site on the trusted list |
+| Panel says `no tab attached` | DevTools must be open on a web page; extension pages and `chrome://` tabs cannot be inspected |
+| `NO_AGENT` in an output block | Press **Attach** (or **Reload & attach** when the game starts on a click) |
 | `NO_AGENT` | **Detach**, then **Attach**; if it repeats, **Reload & attach** |
 | Instances empty | **Diagnose**; all-zero call counts mean the module was compiled before the agent — reload and attach |
 | A hook call returns `HOOK_EVAL_BLOCKED` | The page forbids `new Function`; use a declarative fallback |

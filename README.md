@@ -5,7 +5,7 @@ in a Chrome tab, searches its linear memory, and lets you — or an MCP agent �
 watch addresses, then patch a function or wrap it in JavaScript. Nothing native is involved: no
 debugger flags, no DevTools protocol, no separate process holding the page.
 
-A human approves each tab before anything runs, and every mutation lands in an audit log.
+Open the panel on a tab and it is yours to inspect; every mutation lands in an audit log.
 
 Point it at programs you own or have written permission to test. See [Policy](#policy).
 
@@ -22,7 +22,7 @@ npm run demo        # serves and opens the demo game, prints the two things you 
 ```
 
 Then load `packages/extension/dist` as an unpacked extension, open DevTools on the demo tab, and press
-**Attach** in the WasmCheat panel. Approve the tab; everything else is forms.
+**Attach** in the WasmCheat panel; everything else is forms.
 
 ## Start here
 
@@ -42,7 +42,7 @@ Then load `packages/extension/dist` as an unpacked extension, open DevTools on t
 | --- | --- |
 | `packages/protocol` | The single shared contract: message envelopes, address format, value types, error codes, scan/hook/watch shapes. |
 | `packages/page-agent` | Runs in the page's **MAIN world** and in every Web Worker. Patches `WebAssembly.instantiate*` / `new WebAssembly.Instance` to capture instances, then does the real work: memory access, scanning, freezing, watches, hooks, watchpoint instrumentation. |
-| `packages/extension` | MV3 extension. Injects the page agent at `document_start`, relays RPC from the service worker, owns the human approval gate and the WebSocket to the MCP server, and ships the DevTools panel. |
+| `packages/extension` | MV3 extension. Injects the page agent at `document_start`, relays RPC from the service worker, owns the WebSocket to the MCP server, and ships the DevTools panel and popup. |
 | `packages/mcp-server` | Node 22 stdio MCP server. Exposes the `wasmcheat_*` tools, talks to the extension over a local WebSocket, writes the audit log. |
 | `packages/demo-app` | A tiny C game compiled to a standalone wasm module, plus a hand-written loader. The test target. |
 
@@ -75,7 +75,7 @@ npm run typecheck      # optional, same types the tests use
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
 3. **Load unpacked** → select `packages/extension/dist`.
-4. Pin the extension; the toolbar icon is where approvals happen.
+4. Pin the extension; the toolbar icon shows whether the bridge is paired.
 
 The extension connects to the MCP server on `ws://127.0.0.1:7331/extension` and reconnects with
 backoff if the server is not running yet. The port is baked in at build time, so to use another
@@ -88,15 +88,13 @@ which extension is real, so it is authenticated with a token the server mints in
 `$WASMCHEAT_HOME/token` on first run.
 
 You never see it. On the first connection the extension asks the server for the token over that same
-socket (pairing), stores it, and presents it from then on. The pair request is only answered while no
-live socket is authenticated, so a second process cannot take over a running bridge; a wrong token is
-still refused with `1008 bad bridge token` and never used for a request.
+socket (pairing), stores it, and presents it from then on. A wrong token is still refused with
+`1008 bad bridge token` and never used for a request.
 
-Two cases need the field anyway, and both are in the panel and the popup:
-
-- **Pairing is off.** `WASMCHEAT_PAIRING=off` (or a server started with `WASMCHEAT_TOKEN`) makes the
-  token the only way in. Paste `cat ~/.wasmcheat/token`.
-- **Something else already holds the bridge.** Same fix: paste the token.
+One case needs the field anyway, and it is in both the panel and the popup: **pairing is off**, because
+the server was started with `WASMCHEAT_PAIRING=off` or with `WASMCHEAT_TOKEN` set. Then paste
+`cat ~/.wasmcheat/token`. Pinning a token is the way to make the loopback socket useless to anything
+else on the machine.
 
 The panel pill says `bridge live · paired` when pairing worked, `token refused` with a red `!` badge
 when the server rejected the stored token, and `waiting for pairing` when the server is not up yet.
@@ -169,9 +167,8 @@ Environment knobs:
                                         │ chrome.runtime.sendMessage
 ┌───────────────────────────────────────▼───────────────────────────────────────┐
 │  extension service worker (sw.js)                                             │
-│  · approvals, per tab, in chrome.storage.session                              │
-│  · refuses every page.* RPC for a tab without a granted approval              │
-│  · injects relay + page-agent on demand, clears approval on navigation        │
+│  · injects relay + page-agent on demand, one realm per frame and worker       │
+│  · routes page.* RPC to the frame that holds the wasm                        │
 └───────────────────────────────────────┬───────────────────────────────────────┘
                                         │ ws://127.0.0.1:7331/extension
 ┌───────────────────────────────────────▼───────────────────────────────────────┐
@@ -187,12 +184,12 @@ Why it looks like this:
 - **The page agent has to run in the MAIN world.** `WebAssembly.Instance` objects only exist in
   the realm that created them; an isolated-world script sees nothing. The cost is that page
   scripts can also see (and spoof) the `postMessage` channel — the `channelId` handshake only
-  prevents cross-talk. The real trust boundary is the extension's approval gate, which lives
+  prevents cross-talk. The real trust boundary is the extension itself, which lives
   outside the page.
 - **The agent is injected at `document_start`, before the app instantiates.** There is no API to
   enumerate pre-existing `WebAssembly.Instance` objects, so capture only works if the patch is in
   place first. If you attach to an already-loaded page, pass `reload: true` and the tab reloads
-  with the agent already installed (the reload is audited, and the tab needs approval again).
+  with the agent already installed (the reload is audited).
 - **The extension dials the server, not the other way round.** Only the extension can reach tab
   contents, so the MCP server is the listener and the extension is the client. The newest
   connection wins; a stale socket is closed.
@@ -236,12 +233,12 @@ chain in `nested.html`.
 ### The DevTools panel
 
 Open DevTools → **WasmCheat**. The panel is a second front end on the same dispatcher the WebSocket
-uses (`wasmcheat.panel.call` → `handleBridgeRequest`), so it needs the same approval and cannot skip
+uses (`wasmcheat.panel.call` → `handleBridgeRequest`), so it cannot skip
 the gate.
 
 It follows the order you work in: what you are attached to, the scan, the hits, what you can do to one
 address, then the advanced tooling and the raw console. The header keeps the three facts you need on
-screen — target, approval, agent — and the `Now` line reads tab → instance → address, so a write is
+screen — target, tab, agent — and the `Now` line reads tab → instance → address, so a write is
 never aimed at something you have forgotten about.
 
 - The first screen is the loop — tab, instances, scan, hits, one address — and the scan card hides the
@@ -283,41 +280,33 @@ The demo target is a game window rather than a copy of the tool, so the two are 
 
 ---
 
-## The approval and audit model
+## Nothing to approve, and everything logged
 
-![The popup: the tab in front first, a pending row flagged, and the trusted sites you can forget](docs/img/popup.png)
+There is no approval prompt. Opening the panel on a tab is the decision: you are looking at that
+page, in DevTools, on purpose. Everything follows from that:
 
-- Every tab is denied until you approve it, unless the site is on your **trusted list**:
-  *Always allow this site* in the popup (or **Trust site** in the panel) grants the tab and records
-  the origin, so later tabs there attach with no prompt. The list is in the popup with a `Forget`
-  button per site; forgetting also revokes the tabs that were riding on that trust. Trusting is
-  deliberately not reachable over the bridge — an agent that could trust its own targets would be
-  approving itself.
-- Every tab is still denied until you approve it. An agent calls `wasmcheat_attach`, which reports the request
-  in the extension popup with the agent's one-line reason and then waits on the **approval event**, not on
-  a timer: the call returns the moment you click Approve. The same event-based rule applies to
-  `wasmcheat_find_writes` / `wasmcheat_find_reads`, which return on the first write/read event the page
-  agent reports instead of re-checking status every few hundred milliseconds.
-- The service worker refuses every `page.*` call for a tab whose stored approval is not
-  `granted` (`NEED_APPROVAL`), so a buggy or malicious agent cannot read memory around the gate.
-  The gate covers the memory API, not the bridge: the agent still needs a tab id.
-- The grant is scoped to the tab **and the site**: navigating or reloading inside the same site keeps it
-  (a game that reloads itself is the normal case), leaving the site revokes it, and closing the tab
-  discards it. Revoking (`wasmcheat_detach`, or the popup) takes effect immediately.
-- Every mutation is logged, and the extension reports it rather than each caller doing so: a write,
-  freeze set/clear, watch add/remove, scan begin/narrow/drop, text scan, hook
-  add/enable/disable/remove, patch add/remove/clear, watchpoint arm/stop/clear, pointer scan,
-  bookmark add/remove/clear, a speed change and every deliberate reload. That is one funnel
-  (`callTab`), so a human clicking Freeze in the DevTools panel produces the same line an agent's
-  `wasmcheat_freeze` would, with the tab, the address and, for writes, `before -> after`. Two things
-  are recorded by the MCP server instead, because they are not page calls: saved scan lists
-  (`wasmcheat_saved` save / open / delete, so the name and match count show up) and the
-  attach/detach/approval trail, and the trusted-site list. Reads, `scan_results`,
-  `pointer_resolve`, listing calls and watch polls are not logged: they change nothing and would bury
-  the writes.
-- Every write, freeze, hook add/remove, attach/detach and approval goes to
-  `$WASMCHEAT_HOME/audit.jsonl` (append-only JSON lines, timestamped, with the tab, the address
-  and the before/after value where relevant). Read it back with `wasmcheat_audit`.
+- **The panel drives the tab it lives on.** Opened from DevTools it is the inspected tab; opened
+  as a plain page it takes the tab in front. There is no tab picker, and the toolbar popup is only
+  a status card.
+- **Tools default to the tab in front.** `tabId` is optional on every MCP tool: an agent that does
+  not pass one gets the tab you are looking at, and `wasmcheat_list_tabs` exists only for the rare
+  case of a second tab.
+- **Attach is one click, and it can heal itself.** If the page has no agent yet, attach injects it;
+  if the app started before the agent existed, attach reloads the tab once, says so in its note,
+  and keeps going.
+- **The audit log is the record.** Every mutation is reported by the extension from a single
+  funnel (`callTab`), so a human clicking Freeze and an agent calling `wasmcheat_freeze` produce the
+  same line: tab, address, and `before -> after` for writes. Writes, freeze set/clear, watch
+  add/remove, scan begin/narrow/drop, text scan, hook add/enable/remove, patch add/remove/clear,
+  watchpoint arm/stop/clear, pointer scan, bookmark add/remove/clear, speed changes and reloads.
+  Saved scan lists and attach/detach are recorded by the MCP server, because they are not page
+  calls. Reads, `scan_results`, `pointer_resolve`, listing calls and watch polls are not logged:
+  they change nothing and would bury the writes.
+- **Lines land in `$WASMCHEAT_HOME/audit.jsonl`** (append-only, timestamped) and can be read back
+  with `wasmcheat_audit`.
+
+The page agent still runs in the MAIN world, so a hostile page can see its channel. The trust
+boundary is the browser extension itself plus `127.0.0.1`-only bridging, not secrecy from the page.
 
 ---
 
@@ -328,10 +317,9 @@ Addresses are `"<instanceId>:<offset>"`, e.g. `w1:0x408` or `w1:1032`. `instance
 
 | Tool | Purpose |
 | --- | --- |
-| `wasmcheat_list_tabs` | Tabs the extension can see, with approval state. |
-| `wasmcheat_attach` | Ask for approval and start the agent, then return the instances. |
-| `wasmcheat_approval_status` | Read a tab's approval state without starting anything. |
-| `wasmcheat_detach` | Revoke approval and cut access. |
+| `wasmcheat_list_tabs` | Tabs the extension can see, with agent state. Every other tool defaults to the tab in front. |
+| `wasmcheat_attach` | Start (or heal) the page agent and return the instances. |
+| `wasmcheat_detach` | Forget the tab and drop the agent it injected. |
 | `wasmcheat_list_instances` | Instances, memory sizes, exports, import patchability. |
 | `wasmcheat_scan` | Snapshot filtered memory, or narrow an existing scan. |
 | `wasmcheat_scan_text` | Find a string or byte pattern (ascii / utf8 / hex bytes). |
@@ -360,11 +348,11 @@ Addresses are `"<instanceId>:<offset>"`, e.g. `w1:0x408` or `w1:1032`. `instance
 ```jsonc
 // wasmcheat_list_tabs
 {}
-// → [{"tabId": 1310636703, "title": "Foundry", "url": "http://127.0.0.1:4173/", "approval": "none", …}]
+// → [{"tabId": 1310636703, "title": "Foundry", "url": "http://127.0.0.1:4173/", "active": true, …}]
 
 // wasmcheat_attach
 { "tabId": 1310636703, "reason": "find the score and patch get_score", "waitSeconds": 60 }
-// → {"approval": {"state": "granted"}, "pageAgent": {...}, "instances": [
+// → {"pageAgent": {...}, "instances": [
 //      {"id": "w1", "memory": {"byteLength": 131072, "growable": true},
 //       "exports": [{"name": "tick", "kind": "function", "arity": 1}, …],
 //       "importPatchability": "next-instantiation"}]}
@@ -490,8 +478,8 @@ How it works, because the constraint is the interesting part:
 
 1. WebAssembly gives the host no notification when a `store` executes, and a compiled module
    cannot be modified. So the watchpoint has to be in the binary *before* the engine sees it.
-2. The tool arms the watchpoint, then reloads the tab (the approval survives, since it is our
-   own reload of the page you already approved). Your module is rewritten as it streams past one
+2. The tool arms the watchpoint, then reloads the tab itself — an arm only counts before the module is
+   instantiated. Your module is rewritten as it streams past one
    mutable `i32` global, one import (`__wasmcheat.on_store` or `on_read`), one export
    (`__wc_arm`), and then:
    - **writes**: after every store instruction, `global.get flags; if (flags) { on_store(funcIndex) }`.
@@ -569,9 +557,9 @@ Open it, load the extension, start the MCP server, then an agent session looks l
 
 ```
 agent: wasmcheat_list_tabs {}
-       → one tab, "Foundry", approval: none
-agent: wasmcheat_attach { "tabId": 1310636703, "reason": "find the score" }
-       → blocked while you click Approve in the popup → instances: [w1, 131072 bytes]
+       → one tab, "Foundry", active: true
+agent: wasmcheat_attach {}
+       → instances: [w1, 131072 bytes]   (no tabId: the tab in front is the demo)
 agent: wasmcheat_scan { "tabId": …, "instanceId": "w1", "type": "i32", "mode": "exact", "value": 75 }
        → scanId s1, 2 matches
        (press Mine a few times in the page between passes)
@@ -598,7 +586,7 @@ that is not moving — the automated test does exactly that.
 ## Tests
 
 ```bash
-npm test           # build → vitest (127 unit) → playwright (23 end-to-end)
+npm test           # build → vitest (123 unit) → playwright (22 end-to-end)
 npm run test:unit  # page agent: memory, registry, scanner, hooks, trace, rewriter — no browser
 npm run test:e2e   # real Chromium, real extension, real MCP stdio client
 ```
@@ -606,8 +594,8 @@ npm run test:e2e   # real Chromium, real extension, real MCP stdio client
 The end-to-end suite (`tests/e2e/demo.spec.ts`) launches Chromium with the unpacked extension,
 serves the demo, connects a real MCP client to `dist/bin.js`, and then, in order:
 
-1. lists the tab and proves both `attach` and `read` are refused before approval;
-2. approves through the actual popup and attaches;
+1. lists the tab, and proves a tool with no `tabId` answers for the tab in front;
+2. attaches without any prompt and exposes the instance;
 3. pauses, resets, mines three times, scans for 75, narrows `unchanged` then `changed` to `w1:0x408`;
 4. writes 123456 and asserts the page DOM changes without a reload;
 5. freezes lives at 999 and clicks Hazard;
@@ -621,7 +609,7 @@ serves the demo, connects a real MCP client to `dist/bin.js`, and then, in order
     neighbouring export still works, then removes the patch;
 12. scans for a pointer chain and resolves it back to the score address;
 13. drives a worker the page creates, and asserts the worker is listed and its death reported;
-14. detaches and asserts access is refused again;
+14. detaches, then proves the next call re-attaches on its own;
 15. opens the demo inside a genuinely cross-origin iframe and drives it there;
 16. drives the tab from the DevTools panel alone, with no agent and no popup;
 17. saves a scan list, reloads the tab and keeps narrowing the restored list;
@@ -632,9 +620,7 @@ serves the demo, connects a real MCP client to `dist/bin.js`, and then, in order
     asserts the change reached the audit log;
 21. opens `nested.html`, where a worker starts the game worker, and drives `k1n1-1` through two
     worker hops: list it, click Mine, write to its memory, watch the page repaint, then scan it;
-22. trusts the demo origin from the popup, attaches to a second tab there with no prompt, then
-    forgets the site and proves the prompt comes back;
-23. wipes the stored token and proves the extension pairs with the bridge again on its own, with no
+22. wipes the stored token and proves the extension pairs with the bridge again on its own, with no
     paste and no human step.
 
 Costs and gotchas: one browser and one bridge port, so the suite runs with a single worker and
@@ -648,7 +634,7 @@ scripts/demo.mjs                    `npm run demo`: serves and opens the demo, p
 scripts/wasmcheat-cli.mjs           drive the tools from a shell, no agent
 packages/protocol/src/index.ts      shared contract: envelopes, errors, every tool's types
 packages/page-agent/src/            registry (capture), memory, scanner, hooks, trace, workers, runtime
-packages/extension/src/             sw.ts (approval + bridge), relay.ts, popup, panel + panel-help, devtools
+packages/extension/src/             sw.ts (bridge + injection), relay.ts, popup, panel + panel-help, devtools
 packages/extension/dist/            loadable unpacked extension (built)
 packages/wasm-instrument/src/       wasm rewriter: watchpoint instrumentation, function stubs
 packages/mcp-server/src/            bridge.ts (WebSocket), server.ts (tools), audit.ts, events.ts, bin.ts
@@ -668,7 +654,7 @@ tests/e2e/                          playwright: harness.ts, demo.spec.ts, screen
 - Import hooks need a (re)instantiation; exports of glue-cached apps (Emscripten default) cannot
   be patched from JS at all — the tool says so rather than pretending.
 - The page-agent runs in the MAIN world, so a hostile page can talk to (or lie to) the relay. The
-  approval gate protects you from the agent, not from the site you loaded.
+  extension protects you from a stray tool call; it is not a sandbox for the site you loaded.
 - Strict-CSP pages block hook bodies; declarative fallbacks still work.
 - The speed hack overrides `performance.now`, `Date.now` and `requestAnimationFrame` in the page realm
   and forwards the scale to every worker realm, so worker games speed up too. A game that derives

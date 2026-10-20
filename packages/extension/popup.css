@@ -26,23 +26,6 @@
   --danger-soft: #fbeceb;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --paper: #161615;
-    --surface: #1a1a19;
-    --surface-2: #232322;
-    --line: #2d2d2a;
-    --line-strong: #3c3c37;
-    --ink: #f2f0ea;
-    --ink-2: #b5afa2;
-    --ink-3: #948e83;
-    --accent: #38c3a4;
-    --accent-ink: #05221c;
-    --accent-soft: #14312b;
-    --danger: #ff8578;
-    --danger-soft: #33191a;
-  }
-}
 
 * {
   box-sizing: border-box;
@@ -163,260 +146,91 @@ h1 {
   line-height: 1.5;
 }
 
-.tabs {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  overflow-y: auto;
-}
-
-.tab {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "title state"
-    "url url"
-    "actions actions";
-  gap: 3px 8px;
-  padding: 9px 10px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 9px;
-}
-
-.tab__title {
-  grid-area: title;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-  font-size: 12px;
-}
-
-.tab__state {
-  grid-area: state;
-  color: var(--ink-3);
-  font-size: 10.5px;
-  white-space: nowrap;
-}
-
-.tab__state--pending {
-  padding: 1px 8px;
-  border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.tab__url {
-  grid-area: url;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ink-3);
-  font-family: var(--mono);
-  font-size: 10px;
-}
-
-.tab__actions {
-  grid-area: actions;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 2px;
-}
-
-button {
-  padding: 4px 10px;
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: 7px;
-  color: var(--ink);
-  font-family: var(--font);
-  font-size: 11.5px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background-color 120ms ease-out, border-color 120ms ease-out, color 120ms ease-out;
-}
-
-button:hover {
-  background: var(--surface-2);
-}
-
-button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-ink);
-  font-weight: 600;
-}
-
-button.primary:hover {
-  background: color-mix(in srgb, var(--accent) 88%, black);
-}
-
-button.danger {
-  color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 32%, var(--line));
-}
-
-button.danger:hover {
-  background: var(--danger-soft);
-}
-
-button.ghost {
-  padding: 3px 8px;
-  background: transparent;
-  border-color: var(--line);
-  color: var(--ink-2);
-  font-size: 11px;
-}
-
-button.ghost:hover {
-  border-color: var(--line-strong);
-  color: var(--ink);
-}
-
-.empty {
-  padding: 12px;
-  background: var(--surface-2);
-  border-radius: 9px;
-  color: var(--ink-2);
-  font-size: 11.5px;
-  line-height: 1.5;
-}
-
-.token {
+.card {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
 }
 
-.micro {
-  color: var(--ink-3);
-  font-size: 10.5px;
+.target {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.state {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.token {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 8px 10px;
+}
+
+.token > summary {
+  cursor: pointer;
 }
 
 .token__row {
   display: flex;
   gap: 6px;
+  margin-top: 8px;
 }
 
-input {
+.token__row input {
   flex: 1;
   min-width: 0;
-  padding: 4px 8px;
-  background: var(--surface-2);
-  border: 1px solid var(--line);
+  padding: 5px 7px;
+  border: 1px solid var(--line-strong);
   border-radius: 7px;
+  background: var(--surface-2);
   color: var(--ink);
   font-family: var(--mono);
   font-size: 11px;
-  transition: border-color 120ms ease-out;
 }
 
-input:hover {
-  border-color: var(--line-strong);
-}
-
-input:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+.micro {
+  color: var(--ink-3);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 footer {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-top: 6px;
   border-top: 1px solid var(--line);
-  color: var(--ink-3);
-  font-size: 10.5px;
+  padding-top: 8px;
 }
 
-#hint {
+footer #note {
   flex: 1;
-  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
 }
 
-/* ---------------------------------------------------------------- current tab */
-
-.tabs--current {
-  display: grid;
-  gap: 0;
-}
-
-/* The tab in front is the one card with a border: it is the reason the popup is usually open. */
-.tab--current {
-  border: 1px solid var(--line);
-  border-radius: 10px;
+.ghost {
+  padding: 4px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
   background: var(--surface);
-  padding: 10px 12px;
-}
-
-/* ---------------------------------------------------------------- other tabs, trusted sites */
-
-.others {
-  border-top: 1px solid var(--line);
-  padding-top: 8px;
-}
-
-.others > summary {
+  color: var(--ink);
+  font: inherit;
   cursor: pointer;
-  list-style: none;
-  padding: 2px 0;
 }
 
-.others > summary::before {
-  content: '+ ';
-  font-family: var(--mono);
-}
-
-.others[open] > summary::before {
-  content: '− ';
-}
-
-.others .tabs {
-  margin-top: 6px;
-}
-
-.trusted {
-  border-top: 1px solid var(--line);
-  padding-top: 8px;
-}
-
-.trusted__list {
-  display: grid;
-  gap: 4px;
-  margin: 4px 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.trusted__row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.trusted__origin {
-  flex: 1;
-  min-width: 0;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--ink-2);
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.trusted__empty {
-  display: block;
-  margin-top: 4px;
-  line-height: 1.45;
+.ghost:hover {
+  background: var(--surface-2);
 }

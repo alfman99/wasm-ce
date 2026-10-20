@@ -116,19 +116,8 @@ export interface TabInfo {
   active: boolean;
   /** True once the page agent has been injected and answered. */
   agentAttached: boolean;
-  approval: ApprovalState;
   /** Known frames with a live relay, once the page has announced itself. */
   frames?: FrameRef[];
-}
-
-export type ApprovalState = 'none' | 'pending' | 'granted' | 'revoked';
-
-export interface ApprovalRequest {
-  requestId: string;
-  tabId: number;
-  /** Shown verbatim in the extension popup so the human knows what is asking. */
-  reason: string;
-  createdAt: number;
 }
 
 /** Comparison applied by a scan pass. The first pass always snapshots; later passes filter. */
@@ -604,9 +593,6 @@ export type BridgeMessage = RequestMessage | ResponseMessage | EventMessage;
 
 export type ErrorCode =
   | 'BAD_PARAMS'
-  | 'NEED_APPROVAL'
-  | 'APPROVAL_DENIED'
-  | 'APPROVAL_TIMEOUT'
   | 'NO_TAB'
   | 'NO_INSTANCE'
   | 'NO_MEMORY'
@@ -658,9 +644,6 @@ export function isValueType(value: unknown): value is ValueType {
 export const Methods = {
   // MCP server -> extension service worker
   extListTabs: 'ext.listTabs',
-  extRequestApproval: 'ext.requestApproval',
-  extApprovalStatus: 'ext.approvalStatus',
-  extRevoke: 'ext.revoke',
   extDetach: 'ext.detach',
   extEnsureAgent: 'ext.ensureAgent',
   extCall: 'ext.call',
@@ -712,8 +695,6 @@ export const Methods = {
 /** Events the service worker pushes to the MCP server. */
 export const Events = {
   tabsChanged: 'tabs.changed',
-  approvalRequested: 'approval.requested',
-  approvalResolved: 'approval.resolved',
   disconnected: 'bridge.disconnected',
   /**
    * A page agent event (see `PageRuntime.onEvent`), relayed untouched. It carries

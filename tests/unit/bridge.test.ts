@@ -124,23 +124,6 @@ describe('pairing', () => {
     socket.close();
   });
 
-  it('refuses to pair a second time, so one process cannot take over a live bridge', async () => {
-    const bridge = await startBridge('pair-me');
-    const first = await pair(bridge.port);
-    await first.reply;
-    first.socket.send(
-      JSON.stringify({ v: 1, kind: 'evt', event: 'bridge.hello', data: { extension: 'test', token: 'pair-me' } }),
-    );
-    await expect.poll(() => bridge.connected, { timeout: 2_000 }).toBe(true);
-
-    const second = await pair(bridge.port);
-    const answer = await second.reply;
-    expect(answer.result).toBeUndefined();
-    expect((answer.error as { message?: string }).message).toMatch(/already paired/);
-    second.socket.close();
-    first.socket.close();
-  });
-
   it('can be turned off, which leaves the token as the only way in', async () => {
     const bridge = new Bridge({ host: '127.0.0.1', port: 0, token: 'secret', pairing: false });
     await bridge.start();

@@ -3,7 +3,6 @@ import { buildStoreModule } from '../helpers/wasm-builder';
 import {
   BRIDGE_PORT,
   DEMO_URL,
-  approveThroughPopup,
   assertPortFree,
   call,
   connectMcp,
@@ -17,16 +16,10 @@ import {
 } from './harness.js';
 
 /**
- * The demo the README promises, run for real: a human approves a tab in the popup, an agent
+ * The demo the README promises, run for real: an agent
  * scans and narrows to the score in linear memory, writes it, freezes lives, patches a wasm
  * export, and everything it did shows up in the audit log.
  */
-
-interface TabRow {
-  tabId: number;
-  url: string;
-  approval: string;
-}
 
 interface InstanceInfo {
   id: string;
@@ -111,7 +104,7 @@ test.afterAll(async () => {
   await Promise.race([teardown, sleep(20_000)]);
 });
 
-test('a tab is visible but unusable before the human approves it', async () => {
+test('a tab is listed, and a tool with no tabId uses the tab in front', async () => {
   // The service worker may still be reconnecting when the suite starts, so wait for the tab
   // instead of racing the first list.
   await expect
@@ -123,42 +116,23 @@ test('a tab is visible but unusable before the human approves it', async () => {
       { timeout: 20_000, message: 'the demo tab never appeared in list_tabs' },
     )
     .toBeGreaterThan(0);
-  const tabs = await call<{ tabId: number; url: string; approval: string; agentAttached: boolean }[]>(
-    mcp,
-    'wasmcheat_list_tabs',
-  );
+  const tabs = await call<{ tabId: number; url: string; active: boolean }[]>(mcp, 'wasmcheat_list_tabs');
   expect(tabs.isError, tabs.text).toBe(false);
   const tab = tabs.data.find((entry) => entry.url.startsWith(DEMO_URL));
   expect(tab, `the demo tab should be listed: ${JSON.stringify(tabs.data)} | ${tabs.text}`).toBeTruthy();
   tabId = tab!.tabId;
-  expect(tab!.approval).not.toBe('granted');
 
-  const refused = await call(mcp, 'wasmcheat_attach', { tabId, waitSeconds: 0, reason: 'e2e: expecting refusal' });
-  expect(refused.isError).toBe(true);
-  expect(refused.text).toContain('NEED_APPROVAL');
-
-  // The refusal is the service worker's own gate, not the popup's: memory stays untouched.
-  const read = await call(mcp, 'wasmcheat_read', { tabId, address: 'w1:0x408', type: 'i32' });
-  expect(read.isError).toBe(true);
-  expect(read.text).toContain('NEED_APPROVAL');
+  // No tabId: the extension answers for the tab in front, which is the demo because it is the only
+  // page and a tool call must never need a tab id it did not ask for.
+  const instances = await call<InstanceInfo[]>(mcp, 'wasmcheat_list_instances', {});
+  expect(instances.isError, instances.text).toBe(false);
+  expect(instances.data.length).toBeGreaterThan(0);
 });
 
-test('approving in the popup attaches the agent and exposes the wasm instance', async () => {
-  // The real sequence: the agent asks, then the human clicks in the popup, then the call resolves.
-  const pending = call<{ approval: { state: string }; instances: InstanceInfo[] }>(mcp, 'wasmcheat_attach', {
-    tabId,
-    waitSeconds: 30,
-    reason: 'e2e: find and change the score',
-  });
-  await approveThroughPopup(browser, tabId);
-  const attached = await pending;
-
+test('attaching starts the agent and exposes the wasm instance', async () => {
+  const attached = await call<{ instances: InstanceInfo[] }>(mcp, 'wasmcheat_attach', { tabId });
   expect(attached.isError, attached.text).toBe(false);
-  expect(attached.data.approval.state).toBe('granted');
   expect(attached.data.instances.length).toBeGreaterThan(0);
-
-  const status = await call<{ state: string }>(mcp, 'wasmcheat_approval_status', { tabId });
-  expect(status.data.state).toBe('granted');
 
   const instance = attached.data.instances[0]!;
   instanceId = instance.id;
@@ -445,7 +419,7 @@ test('every mutation is in the audit log, whoever made it', async () => {
   expect(entries.data.some((entry) => entry.kind === 'trace' && entry.summary.includes('trace armed'))).toBe(true);
   expect(entries.data.some((entry) => entry.summary.includes('pointer scan'))).toBe(true);
   // Attribution: every line that names a mutation also names the tab it happened on.
-  const mutations = entries.data.filter((entry) => entry.kind !== 'trace' && entry.kind !== 'approval');
+  const mutations = entries.data.filter((entry) => entry.kind !== 'trace');
   expect(mutations.length, 'audit should have lines').toBeGreaterThan(0);
   expect(mutations.every((entry) => typeof entry.tabId === 'number')).toBe(true);
   expect(entries.data.some((entry) => entry.summary.includes('w1:0x408'))).toBe(true);
@@ -473,7 +447,7 @@ test('a write watchpoint names the function that changed the score', async () =>
     timeoutSeconds: 25,
   });
 
-  // The reload is ours, so the approval the human already gave still applies.
+  // The reload is ours, so the agent is back in place by the time the call returns.
   await game.waitForLoadState('load');
   await expect(game.locator('#status')).toContainText('wasm ready', { timeout: 30_000 });
   await game.click('#reset');
@@ -657,11 +631,13 @@ test('a worker the page creates is visible, drivable, and reported when it dies'
   expect(noWorkers.data).toEqual([]);
 });
 
-test('detaching revokes access immediately', async () => {
-  await call(mcp, 'wasmcheat_detach', { tabId, reason: 'e2e teardown' });
-  const read = await call(mcp, 'wasmcheat_read', { tabId, address: 'w1:0x408', type: 'i32' });
-  expect(read.isError).toBe(true);
-  expect(read.text).toContain('NEED_APPROVAL');
+test('detaching forgets the tab, and the next call re-injects the agent', async () => {
+  const detached = await call(mcp, 'wasmcheat_detach', { tabId });
+  expect(detached.isError, detached.text).toBe(false);
+  // Forgetting a tab must not brick it: the next page call re-attaches on its own.
+  const read = await call<{ values: number[] }>(mcp, 'wasmcheat_read', { tabId, address: 'w1:0x408', type: 'i32' });
+  expect(read.isError, read.text).toBe(false);
+  expect(Number(read.data.values[0])).toBeGreaterThanOrEqual(0);
 });
 
 // Known flake, tracked: since the bridge port moved into chrome.storage this fails in under a
@@ -685,21 +661,11 @@ test('a game inside a cross-origin iframe is found and driven', async () => {
   framedTabId = host!.tabId;
 
   // The top frame sees a cross-origin iframe and no wasm of its own; the hint must say so.
-  const attached = await call<{ instances: InstanceInfo[]; pageAgent: { frameId?: number; url: string } }>(
+  const done = await call<{ instances: InstanceInfo[]; pageAgent: { frameId?: number; url: string } }>(
     mcp,
     'wasmcheat_attach',
-    { tabId: framedTabId, reason: 'e2e: drive a game inside an iframe', waitSeconds: 0 },
+    { tabId: framedTabId },
   );
-  expect(attached.isError, attached.text).toBe(true);
-  expect(attached.text).toContain('NEED_APPROVAL');
-
-  const approving = call(mcp, 'wasmcheat_attach', {
-    tabId: framedTabId,
-    reason: 'e2e: drive a game inside an iframe',
-    waitSeconds: 60,
-  });
-  await approveThroughPopup(browser, framedTabId);
-  const done = await approving;
   expect(done.isError, done.text).toBe(false);
 
   const diagnostics = await call<{ instances: number; iframes: { src: string; crossOrigin: boolean }[] }>(
@@ -741,7 +707,6 @@ test('a game inside a cross-origin iframe is found and driven', async () => {
 // A human at the keyboard, with no agent in the loop: the DevTools panel is a first-class panel,
 // not a popup, and it talks to the same dispatcher the MCP bridge uses.
 test('the DevTools panel drives the tab without an agent', async () => {
-  // Test 14 revoked this tab, so this test also proves the panel cannot skip the gate.
   await game.evaluate(() => (window as unknown as { __foundry: { pause: () => void } }).__foundry.pause());
 
   const panel = await browser.context.newPage();
@@ -749,32 +714,20 @@ test('the DevTools panel drives the tab without an agent', async () => {
   // The rare tools sit in a collapsed tray, which is the point of it; a human opens it the same way.
   await panel.locator('#advanced > summary').click();
 
-  // The panel finds its target by listing tabs: the inspected tab is a click, not a hidden channel.
-  const row = panel.locator(`li.tab[data-tab-id="${tabId}"]`);
-  await expect(row).toBeVisible({ timeout: 20_000 });
-  await row.click();
-  await expect(row).toHaveClass(/is-target/);
+  // The panel targets the tab it lives on. Opened as a plain page it takes the tab in front, which is
+  // this one, so a human never picks a tab at all.
+  await expect(panel.locator('#tab-state')).toContainText('this tab', { timeout: 20_000 });
 
   const rawMethod = panel.locator('#raw-method');
   const rawParams = panel.locator('#raw-params');
   const rawOut = panel.locator('#raw-out');
 
-  // An unapproved tab is refused exactly as it is for an agent: same code, same message.
-  await rawMethod.fill('page.read');
-  await rawParams.fill('{"address":"w1:0x408","type":"i32"}');
-  await panel.locator('#raw-send').click();
-  await expect(rawOut).toContainText('NEED_APPROVAL');
-
-  // The panel asks and the human answers *in the panel*: the request registers as pending, the click
-  // emits approval.resolved, and the waiting attach proceeds on that event rather than a poll.
-  const attaching = panel.evaluate(() => {
+  // Attach is the whole gate: one click, no approval prompt, because the human is already here.
+  const attaching = await panel.evaluate(() => {
     const hooks = (window as unknown as { __panel: { attach: (tabId?: number) => Promise<unknown> } }).__panel;
     return hooks.attach();
   });
-  await expect(panel.locator('#approval')).toContainText('pending');
-  await panel.locator('#approve').click();
-  expect(JSON.stringify(await attaching)).toContain('granted');
-  await expect(panel.locator('#approval')).toContainText('approved');
+  expect((attaching as { url: string }).url).toBe(DEMO_URL);
 
   // Write then read the score through the raw console; the DOM is the only thing asserted, so the
   // panel has to be showing what linear memory actually holds.
@@ -850,8 +803,8 @@ test('the DevTools panel drives the tab without an agent', async () => {
   await panel.locator('#ptr-resolve').click();
   await expect(chains).toContainText('final w1:0x408');
 
-  // The live log comes from the worker's port, which just carried this approval.
-  await expect(panel.locator('#event-log')).toContainText('approval');
+  // The live log comes from the worker's port, which carried this attach.
+  await expect(panel.locator('#event-log')).toContainText(/(tabs\.changed|audit\.appended|action\.audit)/);
 
   await panel.close();
 });
@@ -954,7 +907,7 @@ test('wasm instantiated inside a Web Worker is discovered and driven', async () 
     reason: 'e2e: wasm inside a worker',
     waitSeconds: 60,
   });
-  await approveThroughPopup(browser, workerTabId);
+
   const attached = await pending;
   expect(attached.isError, attached.text).toBe(false);
 
@@ -1123,7 +1076,7 @@ test('wasm instantiated by a worker inside a worker is discovered and driven', a
     reason: 'e2e: wasm inside a worker inside a worker',
     waitSeconds: 60,
   });
-  await approveThroughPopup(browser, nestedTabId);
+
   const attached = await pending;
   expect(attached.isError, attached.text).toBe(false);
 
@@ -1169,80 +1122,6 @@ test('wasm instantiated by a worker inside a worker is discovered and driven', a
   await nestedPage.close();
 });
 
-test('a trusted site attaches without a second prompt, and forgetting it brings the prompt back', async () => {
-  const first = await browser.context.newPage();
-  await first.goto(DEMO_URL);
-  await expect(first.locator('#status')).toContainText('wasm ready', { timeout: 30_000 });
-
-  const tabs1 = await call<TabRow[]>(mcp, 'wasmcheat_list_tabs', {});
-  expect(tabs1.isError, tabs1.text).toBe(false);
-  const firstTab = tabs1.data.filter((tab) => tab.url === DEMO_URL && tab.tabId !== tabId).at(-1);
-  expect(firstTab, tabs1.text).toBeDefined();
-
-  // Untrusted: the same origin still asks.
-  const asked = await call(mcp, 'wasmcheat_attach', { tabId: firstTab!.tabId, waitSeconds: 0 });
-  expect(asked.isError).toBe(true);
-  expect(asked.text).toContain('NEED_APPROVAL');
-
-  // The human approves this tab and, with the same click, trusts the site.
-  const popup = await browser.context.newPage();
-  const popupUrl = `chrome-extension://${browser.extensionId}/popup.html`;
-  // Right after a reload the extension is briefly unloadable, so wait for the page instead of
-  // treating the first blocked navigation as a product failure.
-  await expect
-    .poll(
-      async () => {
-        try {
-          await popup.goto(popupUrl, { timeout: 5_000 });
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      { timeout: 30_000, intervals: [500, 1_000] },
-    )
-    .toBe(true);
-  const row = popup.locator(`li.tab[data-tab-id="${firstTab!.tabId}"]`);
-  await row.waitFor({ state: 'visible', timeout: 20_000 });
-  await row.getByRole('button', { name: 'Always allow this site', exact: true }).click();
-  await expect(popup.locator('.trusted__origin')).toContainText('127.0.0.1:4174');
-  await popup.close();
-
-  const attached = await call(mcp, 'wasmcheat_attach', { tabId: firstTab!.tabId, waitSeconds: 0 });
-  expect(attached.isError, attached.text).toBe(false);
-
-  // A second tab on the same origin is granted with no popup at all.
-  const second = await browser.context.newPage();
-  await second.goto(DEMO_URL);
-  await expect(second.locator('#status')).toContainText('wasm ready', { timeout: 30_000 });
-  const tabs2 = await call<TabRow[]>(mcp, 'wasmcheat_list_tabs', {});
-  const secondTab = tabs2.data.filter((tab) => tab.url === DEMO_URL && tab.tabId !== firstTab!.tabId && tab.tabId !== tabId).at(-1);
-  expect(secondTab, tabs2.text).toBeDefined();
-
-  const silent = await call(mcp, 'wasmcheat_attach', { tabId: secondTab!.tabId, waitSeconds: 0 });
-  expect(silent.isError, silent.text).toBe(false);
-  expect(silent.text).toContain('trusted-site');
-
-  // Forgetting the site revokes the tabs that were riding on it and the prompt is back.
-  const forget = await browser.context.newPage();
-  await forget.goto(`chrome-extension://${browser.extensionId}/popup.html`);
-  await forget.locator('.trusted__row').getByRole('button', { name: 'Forget', exact: true }).click();
-  await expect(forget.locator('#trusted-empty')).toBeVisible();
-  await forget.close();
-
-  const third = await browser.context.newPage();
-  await third.goto(DEMO_URL);
-  await expect(third.locator('#status')).toContainText('wasm ready', { timeout: 30_000 });
-  const tabs3 = await call<TabRow[]>(mcp, 'wasmcheat_list_tabs', {});
-  const thirdTab = tabs3.data.filter((tab) => tab.url === DEMO_URL && tab.tabId !== firstTab!.tabId && tab.tabId !== secondTab!.tabId && tab.tabId !== tabId).at(-1);
-  const askedAgain = await call(mcp, 'wasmcheat_attach', { tabId: thirdTab!.tabId, waitSeconds: 0 });
-  expect(askedAgain.text).toContain('NEED_APPROVAL');
-
-  await first.close();
-  await second.close();
-  await third.close();
-});
-
 test('an extension with no token pairs with the bridge by itself', async () => {
   const worker = browser.context.serviceWorkers()[0];
   expect(worker, 'no service worker').toBeDefined();
@@ -1254,7 +1133,7 @@ test('an extension with no token pairs with the bridge by itself', async () => {
   await expect
     .poll(
       async () => {
-        const listed = await call<TabRow[]>(mcp, 'wasmcheat_list_tabs', {});
+        const listed = await call<{ url: string }[]>(mcp, 'wasmcheat_list_tabs', {});
         return listed.isError ? listed.text : 'ok';
       },
       { timeout: 30_000, intervals: [500, 1_000, 2_000] },

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BridgeError } from '@wasmcheat/protocol';
-import { waitForApproval, waitForPageEvent } from '../../packages/mcp-server/src/events';
+import { waitForPageEvent } from '../../packages/mcp-server/src/events';
 
 /**
  * Stands in for the WebSocket bridge: the same `on(event, listener): unsubscribe` contract, but
@@ -60,30 +60,4 @@ describe('waitForPageEvent', () => {
   });
 });
 
-describe('waitForApproval', () => {
-  it('resolves with the state the request settled on for that tab', async () => {
-    const bridge = new FakeBridge();
-    const waiting = waitForApproval(bridge, 7, { timeoutMs: 5_000 });
 
-    // Navigation and revoke for other tabs must not end this wait.
-    bridge.emit('approval.resolved', { tabId: 9, state: 'revoked' });
-    bridge.emit('approval.resolved', { tabId: 7, state: 'granted' });
-
-    await expect(waiting).resolves.toBe('granted');
-    expect(bridge.count('approval.resolved')).toBe(0);
-  });
-
-  it('reports a denial as a resolved state rather than an error', async () => {
-    const bridge = new FakeBridge();
-    const waiting = waitForApproval(bridge, 7, { timeoutMs: 5_000 });
-    bridge.emit('approval.resolved', { tabId: 7, state: 'revoked' });
-    await expect(waiting).resolves.toBe('revoked');
-  });
-
-  it('rejects with APPROVAL_TIMEOUT when nobody answers inside the bound', async () => {
-    const bridge = new FakeBridge();
-    const waiting = waitForApproval(bridge, 7, { timeoutMs: 5 });
-    await expect(waiting).rejects.toMatchObject({ code: 'APPROVAL_TIMEOUT' });
-    expect(bridge.count('approval.resolved')).toBe(0);
-  });
-});

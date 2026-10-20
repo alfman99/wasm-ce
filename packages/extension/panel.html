@@ -19,11 +19,12 @@
         <span class="topbar__spacer"></span>
         <div class="topbar__state">
           <span id="bridge" class="pill pill--idle">bridge ?</span>
-          <span id="approval" class="pill pill--idle">approval ?</span>
+          <span id="tab-state" class="pill pill--idle">no tab</span>
           <span id="agent" class="pill pill--idle">agent ?</span>
           <span id="versions" class="versions"></span>
         </div>
         <div class="targetbar__actions">
+          <button id="refresh-status" type="button" class="quiet" title="Re-read the tab and the bridge">Refresh</button>
           <button id="help-open" type="button" class="quiet" title="How the panel works (press ?)">Help</button>
           <button id="theme-toggle" type="button" class="quiet" title="Light or dark (press T)">Theme</button>
         </div>
@@ -37,12 +38,7 @@
         <div class="targetbar__actions">
           <button id="attach" type="button" class="primary">Attach</button>
           <button id="attach-reload" type="button">Reload &amp; attach</button>
-          <button id="approve" type="button">Approve</button>
-          <button id="deny" type="button">Deny</button>
           <button id="detach" type="button">Detach</button>
-          <button id="revoke" type="button">Revoke</button>
-          <button id="trust" type="button" title="Skip the approval prompt for every tab on this site">Trust site</button>
-          <button id="refresh-status" type="button">Refresh</button>
         </div>
       </div>
 
@@ -52,7 +48,7 @@
       </div>
 
       <nav class="steps" aria-label="The three steps this panel is built around">
-        <a href="#card-tabs" data-step="1">Pick a tab</a>
+        <a href="#card-instances" data-step="1">Attach to this tab</a>
         <a href="#card-scan" data-step="2">Scan for a value</a>
         <a href="#card-found" data-step="3">Change it</a>
       </nav>
@@ -329,13 +325,6 @@
             <button id="mem-write" type="button" class="primary">Write</button>
           </div>
           <pre id="memory-out" class="out"></pre>
-        </fieldset>
-
-        <fieldset class="group" id="card-tabs">
-          <legend>Tabs</legend>
-          <p class="hint">Every tab the extension can see, with its approval state and any frames inside it.</p>
-          <p class="note">click a row to make it the target; attaching still needs an approval</p>
-          <ul id="tabs" class="list list--tabs"></ul>
         </fieldset>
 
         <fieldset class="group" id="card-instances">

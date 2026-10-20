@@ -1,4 +1,4 @@
-import { BridgeError, Events, type ApprovalState } from '@wasmcheat/protocol';
+import { BridgeError, Events } from '@wasmcheat/protocol';
 import type { Bridge } from './bridge.js';
 
 /**
@@ -47,40 +47,6 @@ export function waitForPageEvent(
       clearTimeout(timer);
       unsubscribe();
       resolve(pageEvent.data);
-    });
-  });
-}
-
-/**
- * Resolves with the state the human (or a navigation, or a revoke) settled the request on.
- *
- * Rejects with `APPROVAL_TIMEOUT` when nobody answered inside the bound; the caller decides what
- * an unanswered request means, this helper does not.
- */
-export function waitForApproval(
-  bridge: EventSource,
-  tabId: number,
-  options: { timeoutMs: number },
-): Promise<ApprovalState> {
-  const timeoutMs = Math.max(0, options.timeoutMs);
-  return new Promise<ApprovalState>((resolve, reject) => {
-    let unsubscribe = (): void => {};
-    const timer = setTimeout(() => {
-      unsubscribe();
-      reject(
-        new BridgeError('APPROVAL_TIMEOUT', `nobody answered the approval request for tab ${tabId} within ${timeoutMs}ms`, {
-          tabId,
-        }),
-      );
-    }, timeoutMs);
-    unsubscribe = bridge.on(Events.approvalResolved, (payload) => {
-      const resolved = payload as { tabId?: number; state?: ApprovalState } | null;
-      if (!resolved || resolved.tabId !== tabId) return;
-      clearTimeout(timer);
-      unsubscribe();
-      // A resolved event always carries a state; an empty one means "not granted", which is what
-      // an absent state has always meant for the caller.
-      resolve(resolved.state ?? 'pending');
     });
   });
 }

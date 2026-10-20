@@ -40,13 +40,19 @@ layout is one readable column in the order you work: what you are attached to â†
 | `--ink-3` | `#6b665c` | `#948e83` | Labels, notes, empty states |
 | `--accent` | `#0d7461` | `#38c3a4` | Primary action, live state, links |
 | `--danger` | `#ad382b` | `#ff8578` | Refusals, failed calls |
-| `--warn` | `#7d5200` | `#f0b451` | Pending approval, refused token |
+| `--warn` | `#7d5200` | `#f0b451` | A refused token, or a page whose CSP blocks hooks |
 
 The demo is the exception: it is a game, so it runs a molten palette (`#ff7a2f` on `#0e100f`) and a
 44px score. A target that looks like the inspector makes it harder to tell which window you are about
 to write to.
 
 Radii: 10px cards, 7px controls, 999px pills only. Spacing is a 4px scale, 12px between cards.
+
+## Theme
+
+Light is the default; <kbd>T</kbd> (or **Theme**) switches to dark and the choice is remembered. The
+panel does not follow `prefers-color-scheme`: a panel that silently turns dark at night is a
+different product than the one described here.
 
 ## Type
 
@@ -57,8 +63,8 @@ number can change. No display face, no wide-tracked uppercase labels, no monospa
 
 - **Empty** states name the cause and the next action (`list .empty`): "No hits yet. Run First Scan
   with a value you can see on screen." Never a bare "No data".
-- **Pending** approval is a warning pill plus buttons, never a spinner that ends nowhere.
-- **Refused** (`NEED_APPROVAL`, `NO_AGENT`, `HOOK_EVAL_BLOCKED`) shows the code and the sentence that
+- **Waiting** states (pairing, an attach in flight) are a warning pill on the header, never a spinner that ends nowhere.
+- **Refused** (`NO_AGENT`, `HOOK_EVAL_BLOCKED`, `BAD_PARAMS`) shows the code and the sentence that
   fixes it, because those codes are the ones a human hits first.
 - **Error** output is tinted with `--danger` and keeps the text on screen; a failed call must not
   clear the previous answer.
@@ -106,6 +112,6 @@ the card surface: `--ink` 16.9:1 light / 14.8:1 dark, `--ink-2` 7.3:1 / 8.0:1, `
 WASMCHEAT_SHOTS=1 npx playwright test tests/e2e/screenshots.spec.ts
 ```
 
-It drives the real extension: approves the demo tab, scans, freezes, books a mark, then captures the
+It drives the real extension: attaches the demo tab, scans, freezes, books a mark, then captures the
 panel in light and dark, the help sheet, the popup and the demo window. If a screenshot and the UI ever
 disagree, the screenshot is stale, not the other way round.
