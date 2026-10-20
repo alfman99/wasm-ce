@@ -1,6 +1,12 @@
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, type WebSocket } from 'ws';
 import {
+  BRIDGE_CHALLENGE,
+  BRIDGE_HELLO,
+  BRIDGE_NONCE,
   BRIDGE_PAIR,
+  BRIDGE_WELCOME,
+  bridgeProofInput,
   BridgeError,
   Events,
   PROTOCOL_VERSION,
@@ -19,8 +25,10 @@ import {
  *
  * The extension is the client because only it can reach browser tabs; the MCP server
  * therefore has to be the listener. One extension connection at a time; a newer one
- * replaces the older (a reloaded extension, a second browser) only once it presents the token,
- * so a connection that cannot authenticate never disturbs the one in use.
+ * replaces the older (a reloaded extension, a second browser) only once it proves it holds the
+ * token, so a connection that cannot authenticate never disturbs the one in use. The handshake is
+ * mutual and never sends the token (see `BRIDGE_CHALLENGE` in @wasmcheat/protocol): the extension
+ * also checks this server, so a stand-in on the port while this one is down gets nothing.
  */
 
 export interface BridgeOptions {
@@ -34,10 +42,9 @@ export interface BridgeOptions {
    */
   reconnectGraceMs?: number;
   /**
-   * Shared secret the extension must present in its `bridge.hello`. Without it any local process —
-   * or any page that guesses the port — could connect and answer this server's tool calls with
-   * invented data. When omitted the bridge refuses to authenticate anyone, which is only useful in
-   * a unit test.
+   * Shared secret both ends prove they hold during the handshake, without sending it. Without it
+   * any local process could connect and answer this server's tool calls with invented data. When
+   * omitted the bridge refuses to authenticate anyone, which is only useful in a unit test.
    */
   token?: string;
   /**
@@ -63,13 +70,15 @@ interface Pending {
 export class Bridge {
   private server: WebSocketServer | null = null;
   /**
-   * The socket that presented the token, and the only one requests go to or anything is accepted
+   * The socket that proved it holds the token, and the only one requests go to or anything is accepted
    * from. It is cleared on its 'close', not when it starts closing, so pairing stays refused until
    * it is really gone, while an extension that dropped its own socket (a restart, a reinstall, a
    * wiped token) can still ask for the token again. Unauthenticated sockets are never stored here.
    */
   private socket: WebSocket | null = null;
   private readonly pending = new Map<string, Pending>();
+  /** The nonce each socket was challenged with, until its one hello uses it up. */
+  private readonly challenges = new WeakMap<WebSocket, string>();
   private readonly listeners = new Map<string, Set<(data: unknown) => void>>();
   private waiters: Array<() => void> = [];
   private nextId = 1;
@@ -221,6 +230,9 @@ export class Bridge {
     socket.on('error', () => {
       // 'close' follows and does the cleanup.
     });
+    const nonce = randomBytes(16).toString('hex');
+    this.challenges.set(socket, nonce);
+    this.reply(socket, { v: PROTOCOL_VERSION, kind: 'evt', event: BRIDGE_CHALLENGE, data: { nonce } });
   }
 
   private onMessage(socket: WebSocket, raw: unknown): void {
@@ -238,13 +250,13 @@ export class Bridge {
       return;
     }
 
-    if (isEvent(parsed) && parsed.event === 'bridge.hello') {
+    if (isEvent(parsed) && parsed.event === BRIDGE_HELLO) {
       this.onHello(socket, parsed.data);
       return;
     }
 
     // Everything else (answers, page events, audit lines) is only believed from the socket that
-    // presented the token: anything else on the port could invent it.
+    // proved it holds the token: anything else on the port could invent it.
     if (socket !== this.socket) return;
 
     if (isResponse(parsed)) {
@@ -261,8 +273,12 @@ export class Bridge {
   }
 
   private onHello(socket: WebSocket, raw: unknown): void {
-    const data = raw as { extension?: string; token?: unknown } | null;
-    if (!this.checkToken(data?.token)) {
+    const data = raw as { extension?: string; nonce?: unknown; proof?: unknown } | null;
+    // One hello per challenge: a socket cannot retry proofs against the same nonce.
+    const challenge = this.challenges.get(socket);
+    this.challenges.delete(socket);
+    const nonce = typeof data?.nonce === 'string' && BRIDGE_NONCE.test(data.nonce) ? data.nonce : null;
+    if (!challenge || !nonce || !this.checkProof(data?.proof, this.proof('ext', challenge, nonce))) {
       // Refuse the socket and say so on stderr: a wrong token is a configuration problem a human
       // has to see, not something to retry silently.
       process.stderr.write('[wasmcheat] rejected an extension connection: bad bridge token\n');
@@ -284,13 +300,20 @@ export class Bridge {
         // already gone
       }
     }
+    // The welcome goes out before any request can: the extension runs nothing until it checks out.
+    this.reply(socket, {
+      v: PROTOCOL_VERSION,
+      kind: 'evt',
+      event: BRIDGE_WELCOME,
+      data: { proof: this.proof('srv', challenge, nonce) },
+    });
     this.socket = socket;
     this.extensionVersion = data?.extension ?? 'unknown';
     process.stderr.write('[wasmcheat] extension authenticated\n');
     const waiters = this.waiters;
     this.waiters = [];
     for (const waiter of waiters) waiter();
-    this.emit('bridge.hello', raw);
+    this.emit(BRIDGE_HELLO, raw);
   }
 
   /**
@@ -344,17 +367,18 @@ export class Bridge {
     }
   }
 
-  /** Constant-time-ish comparison: length differs rarely and the values are short. */
-  private checkToken(presented: unknown): boolean {
-    const expected = this.options.token;
-    if (!expected) return false;
-    if (typeof presented !== 'string') return false;
-    if (presented.length !== expected.length) return false;
-    let diff = 0;
-    for (let index = 0; index < expected.length; index += 1) {
-      diff |= expected.charCodeAt(index) ^ presented.charCodeAt(index);
-    }
-    return diff === 0;
+  /** HMAC-SHA256 in hex; `bridgeProof` in @wasmcheat/protocol is the extension's WebCrypto twin. */
+  private proof(role: 'ext' | 'srv', serverNonce: string, extensionNonce: string): string {
+    return createHmac('sha256', this.options.token ?? '')
+      .update(bridgeProofInput(role, serverNonce, extensionNonce))
+      .digest('hex');
+  }
+
+  private checkProof(presented: unknown, expected: string): boolean {
+    if (!this.options.token || typeof presented !== 'string') return false;
+    const a = Buffer.from(presented);
+    const b = Buffer.from(expected);
+    return a.length === b.length && timingSafeEqual(a, b);
   }
 
   private emit(event: string, data: unknown): void {

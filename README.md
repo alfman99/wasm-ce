@@ -89,18 +89,32 @@ which extension is real, so it is authenticated with a token the server mints in
 `$WASMCHEAT_HOME/token` on first run.
 
 You never see it. On the first connection the extension asks the server for the token over that same
-socket (pairing), stores it, and presents it from then on. A wrong token is still refused with
-`1008 bad bridge token`.
+socket (pairing) and stores it. From then on the token itself never crosses the socket; each side
+proves it holds it:
+
+1. the server opens with `bridge.challenge` and a random nonce;
+2. the extension answers `bridge.hello` with a nonce of its own and an HMAC-SHA256 of both nonces,
+   keyed with the token. A wrong proof is refused with `1008 bad bridge token`;
+3. the server answers `bridge.welcome` with its own HMAC of the same nonces, under a different label.
 
 What keeps that socket honest:
 
+- The extension runs no request and sends nothing (no page events, no audit lines) until the
+  welcome checks out, and hangs up when it does not. A program that grabs the port while the MCP
+  server is down learns neither the token nor anything about your tabs.
 - Pairing is answered only while no authenticated extension is connected, so a second client cannot
   ask for the token while the real extension holds the bridge.
-- A connection only replaces the current one after it presents the token.
-- Until a socket presents the token, everything it sends except `bridge.hello` and `bridge.pair` is
+- A connection only replaces the current one after its proof checks out, and each challenge is good
+  for one hello.
+- Until a socket proves the token, everything it sends except `bridge.hello` and `bridge.pair` is
   dropped: it cannot answer a request, raise an event or write an audit line.
 - An upgrade whose `Origin` is a web page (anything but `chrome-extension://`) is refused, so a site
   open in the browser cannot dial the port.
+
+Two limits. Pairing is trust on first use: an extension with no token believes whoever answers
+`bridge.pair`, so a program on the port at that moment could hand it a token of its own (pin one with
+`WASMCHEAT_TOKEN` to rule that out). And the handshake authenticates the socket, not each message, so
+it does not stop a relay that sits between the extension and a real server on another port.
 
 One case needs the field anyway, and it is in both the panel and the popup: **pairing is off**, because
 the server was started with `WASMCHEAT_PAIRING=off` or with `WASMCHEAT_TOKEN` set. Then paste
@@ -108,7 +122,8 @@ the server was started with `WASMCHEAT_PAIRING=off` or with `WASMCHEAT_TOKEN` se
 else on the machine.
 
 The panel pill says `bridge live · paired` when pairing worked, `token refused` with a red `!` badge
-when the server rejected the stored token, and `waiting for pairing` when the server is not up yet.
+when the server rejected the stored token or the program on the port could not prove it holds it, and
+`waiting for pairing` when the server is not up yet.
 
 ## Point an MCP client at it
 
@@ -155,7 +170,7 @@ Environment knobs:
 | `WASMCHEAT_PORT` | `7331` | WebSocket port the extension dials. Must match the extension build. |
 | `WASMCHEAT_HOST` | `127.0.0.1` | Bind address. Off loopback the server refuses to start unless `WASMCHEAT_PAIRING=off`, because pairing would hand the token to the network. |
 | `WASMCHEAT_HOME` | `~/.wasmcheat` | Where `audit.jsonl` and `token` live. Created `0700`; both files are `0600`. |
-| `WASMCHEAT_TOKEN` | read from `$WASMCHEAT_HOME/token` | Shared secret the extension must present. Minted on first run; set to mode `0600` on every start. Setting it turns pairing off. |
+| `WASMCHEAT_TOKEN` | read from `$WASMCHEAT_HOME/token` | Shared secret both ends prove they hold. Minted on first run; set to mode `0600` on every start. Setting it turns pairing off. |
 | `WASMCHEAT_PAIRING` | `on` (`off` when `WASMCHEAT_TOKEN` is set) | `off` refuses pairing, so only a pasted token connects. |
 | `WASMCHEAT_RECONNECT_GRACE_MS` | `8000` | How long a tool call waits for the extension to dial back in (or to finish its hello) before reporting `NO_AGENT`. MV3 suspends the service worker after ~30s idle, so the first call after a pause usually arrives mid-reconnect. |
 | `WASMCHEAT_CLANG` | auto-detected | LLVM used to compile `packages/demo-app/src/game.c`. |
@@ -204,7 +219,7 @@ Why it looks like this:
   with the agent already installed (the reload is audited).
 - **The extension dials the server, not the other way round.** Only the extension can reach tab
   contents, so the MCP server is the listener and the extension is the client. A new
-  connection takes over only after it presents the token; the old socket is then closed and its
+  connection takes over only after it proves the token; the old socket is then closed and its
   pending calls fail at once with `NO_AGENT`.
 - **Scanning runs inside the page.** Snapshot passes loop over typed arrays in the page and only
   addresses plus a small sample travel back over the bridge, so a 16 MB heap scan is not a

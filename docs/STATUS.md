@@ -46,8 +46,12 @@ Last verified on 2026-10-20 (`npm run build`, then the checks below):
 - Live Playables game ("My Mini Mart", cross-origin iframe): found the coin counter as **i64**, froze
   two mirrored copies at 99,999,999 and the game showed it. See "Three WebAssembly facts" in the
   README for why i32 scans missed it.
-- Bridge authentication: token minted into `$WASMCHEAT_HOME/token` (or `WASMCHEAT_TOKEN`), required
-  in `bridge.hello`, wrong token closed with `1008 bad bridge token`. The extension pairs for it on
+- Bridge authentication, mutual: token minted into `$WASMCHEAT_HOME/token` (or `WASMCHEAT_TOKEN`) and
+  never sent after pairing. The server opens with `bridge.challenge` (a nonce), the extension proves
+  the token in `bridge.hello` (its nonce plus an HMAC-SHA256 of both), a bad proof is closed with
+  `1008 bad bridge token`, and the server proves it back in `bridge.welcome`. Until that welcome
+  checks out the extension runs no request and sends no event, so a program holding the port while
+  the server is down gets nothing (unit-tested against the real `sw.ts`). The extension pairs for it on
   first connect (`bridge.pair`, refused until the authenticated socket has closed); pairing is off
   when the token is pinned or `WASMCHEAT_PAIRING=off`. A web-page `Origin` is refused at the
   upgrade, and an unauthenticated socket can neither answer requests nor send events or audit lines. A paired token is stored with its source, so

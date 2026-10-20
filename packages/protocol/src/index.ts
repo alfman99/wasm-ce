@@ -13,6 +13,50 @@ export const PROTOCOL_VERSION = 1;
  */
 export const BRIDGE_PAIR = 'bridge.pair';
 
+/**
+ * The bridge handshake. Both sides prove they hold the token without sending it:
+ *
+ * 1. server -> `bridge.challenge` `{ nonce }`, the first thing on every new socket;
+ * 2. extension -> `bridge.hello` `{ extension, protocol, nonce, proof }`, its own nonce and
+ *    `bridgeProof(token, 'ext', serverNonce, nonce)`; the server closes a bad one with 1008;
+ * 3. server -> `bridge.welcome` `{ proof }`, `bridgeProof(token, 'srv', serverNonce, nonce)`.
+ *
+ * The extension runs no request and sends nothing but `bridge.pair` and its hello until step 3
+ * checks out, so whatever else listens on the port while the MCP server is down learns neither
+ * the token nor anything about the browser.
+ */
+export const BRIDGE_CHALLENGE = 'bridge.challenge';
+export const BRIDGE_HELLO = 'bridge.hello';
+export const BRIDGE_WELCOME = 'bridge.welcome';
+
+/** Hex, 128 bits at least, so a nonce cannot smuggle the separator into the proof input. */
+export const BRIDGE_NONCE = /^[0-9a-f]{32,128}$/;
+
+/** What each side signs. The role keeps one side's proof from being replayed as the other's. */
+export function bridgeProofInput(role: 'ext' | 'srv', serverNonce: string, extensionNonce: string): string {
+  return `wasmcheat-bridge-${role}\n${serverNonce}\n${extensionNonce}`;
+}
+
+/** HMAC-SHA256 over `bridgeProofInput`, in hex, with WebCrypto (the service worker; Node has it too). */
+export async function bridgeProof(
+  token: string,
+  role: 'ext' | 'srv',
+  serverNonce: string,
+  extensionNonce: string,
+): Promise<string> {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey('raw', encoder.encode(token), { name: 'HMAC', hash: 'SHA-256' }, false, [
+    'sign',
+  ]);
+  const mac = await crypto.subtle.sign('HMAC', key, encoder.encode(bridgeProofInput(role, serverNonce, extensionNonce)));
+  return [...new Uint8Array(mac)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/** A fresh 128-bit nonce in hex. */
+export function bridgeNonce(): string {
+  return [...crypto.getRandomValues(new Uint8Array(16))].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 /** Value types a scan, read or write can use. Matches wasm's numeric types. */
 export const VALUE_TYPES = [
   'i8',

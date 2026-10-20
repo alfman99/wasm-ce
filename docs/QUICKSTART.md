@@ -33,7 +33,8 @@ One case still uses the field, in the panel and in the popup: the server runs wi
 `WASMCHEAT_PAIRING=off` (or with `WASMCHEAT_TOKEN` set). Then paste `cat ~/.wasmcheat/token`.
 
 Why a token exists at all: the bridge listens on `ws://127.0.0.1:7331`, and without a secret any local
-process could answer this server's tool calls with made-up data.
+process could answer this server's tool calls with made-up data, or, while the server is down, pose as
+it. Once paired, both ends prove they hold the token without sending it.
 
 ## 4. Start the target
 

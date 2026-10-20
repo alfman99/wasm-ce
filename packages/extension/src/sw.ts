@@ -1,5 +1,8 @@
 import {
+  BRIDGE_CHALLENGE,
+  BRIDGE_HELLO,
   BRIDGE_PAIR,
+  BRIDGE_WELCOME,
   BridgeError,
   Events,
   PROTOCOL_VERSION,
@@ -14,6 +17,8 @@ import {
   type TabInfo,
   formatAddress,
   type ValueType,
+  bridgeNonce,
+  bridgeProof,
 } from '@wasmcheat/protocol';
 
 /**
@@ -187,6 +192,13 @@ sessionReady = restoreSession();
 const TOKEN_KEY = 'bridgeToken';
 const TOKEN_SOURCE_KEY = 'bridgeTokenSource';
 let bridgeRejected = false;
+/**
+ * Per socket: whether the server sent its challenge, the welcome proof it must answer the hello
+ * with, and whether it did. Until `bridgeTrusted`, `send` drops everything and requests are ignored.
+ */
+let challenged = false;
+let expectedWelcome = '';
+let bridgeTrusted = false;
 /** Set while a `bridge.pair` request is in flight, keyed by message id. */
 const pairWaiters = new Map<string, (message: unknown) => void>();
 
@@ -232,7 +244,7 @@ async function pairWithBridge(timeoutMs = 4_000): Promise<string> {
       processHint = reply.error?.message ?? 'pairing failed';
       resolve('');
     });
-    send({ v: PROTOCOL_VERSION, kind: 'req', id, method: BRIDGE_PAIR, params: {} });
+    sendUntrusted({ v: PROTOCOL_VERSION, kind: 'req', id, method: BRIDGE_PAIR, params: {} });
   });
 }
 
@@ -249,50 +261,33 @@ async function connect(): Promise<void> {
     return;
   }
   socket = ws;
+  challenged = false;
+  expectedWelcome = '';
+  bridgeTrusted = false;
 
   // Every listener closes over its own socket. A late 'close' from a socket we already replaced must
   // not null out, or schedule work for, the one that is now connecting: that race silently orphans
   // the fresh socket and the bridge never comes back.
-  ws.addEventListener('open', async () => {
-    if (socket !== ws) return;
-    reconnectDelay = RECONNECT_BASE_MS;
-    let token = await bridgeToken();
-    if (token === '') token = await pairWithBridge();
-    if (socket !== ws) return;
-    send({
-      v: PROTOCOL_VERSION,
-      kind: 'evt',
-      event: 'bridge.hello',
-      data: {
-        extension: chrome.runtime.getManifest().version,
-        protocol: PROTOCOL_VERSION,
-        token,
-        paired: token !== '' && (await tokenSource()) === 'paired',
-      },
-    });
+  ws.addEventListener('open', () => {
+    if (socket === ws) reconnectDelay = RECONNECT_BASE_MS;
   });
 
   ws.addEventListener('message', (event) => {
-    void onBridgeMessage(event.data);
+    if (socket === ws) void onBridgeMessage(ws, event.data);
   });
 
   ws.addEventListener('close', (event) => {
     if (socket !== ws) return;
     socket = null;
+    bridgeTrusted = false;
     if (event.code === 1008) {
-      // The server refused the token. Retrying fast would only spam the log, so back right off and
-      // tell the panel what to do; a changed token reconnects immediately.
-      bridgeRejected = true;
-      reconnectDelay = RECONNECT_MAX_MS;
-      const hint =
+      // The server refused the hello. Retrying fast would only spam the log; a changed token
+      // reconnects immediately.
+      refuseBridge(
         processHint !== ''
           ? `the bridge refused this extension: ${processHint}`
-          : 'the bridge refused this extension: pairing failed, so paste the token from ~/.wasmcheat/token into the WasmCheat panel';
-      emit('bridge.unauthorized', { hint });
-      void chrome.action.setBadgeBackgroundColor({ color: '#c92a2a' });
-      void chrome.action.setBadgeText({ text: '!' });
-      scheduleReconnect();
-      return;
+          : 'the bridge refused this extension: pairing failed, so paste the token from ~/.wasmcheat/token into the WasmCheat panel',
+      );
     }
     scheduleReconnect();
   });
@@ -311,7 +306,74 @@ function scheduleReconnect(): void {
   }, reconnectDelay);
 }
 
+/**
+ * Answers the server's challenge: pairs first if there is no token, then proves the token without
+ * sending it and remembers the proof the server has to send back.
+ */
+async function sayHello(ws: WebSocket, data: unknown): Promise<void> {
+  const serverNonce = (data as { nonce?: unknown } | null)?.nonce;
+  if (challenged || typeof serverNonce !== 'string') return;
+  challenged = true;
+  processHint = '';
+  let token = await bridgeToken();
+  if (token === '') token = await pairWithBridge();
+  const nonce = bridgeNonce();
+  // No token means pairing failed: the empty hello makes the server close with 1008, and that
+  // path tells the panel what to paste.
+  const proof = token === '' ? '' : await bridgeProof(token, 'ext', serverNonce, nonce);
+  const welcome = token === '' ? '' : await bridgeProof(token, 'srv', serverNonce, nonce);
+  const paired = token !== '' && (await tokenSource()) === 'paired';
+  if (socket !== ws) return;
+  expectedWelcome = welcome;
+  sendUntrusted({
+    v: PROTOCOL_VERSION,
+    kind: 'evt',
+    event: BRIDGE_HELLO,
+    data: { extension: chrome.runtime.getManifest().version, protocol: PROTOCOL_VERSION, nonce, proof, paired },
+  });
+}
+
+/**
+ * The server's half of the proof. Checked synchronously, before the requests queued behind it are
+ * read. A wrong one means something else holds the port, so drop it and back off.
+ */
+function onWelcome(ws: WebSocket, data: unknown): void {
+  const proof = (data as { proof?: unknown } | null)?.proof;
+  if (expectedWelcome !== '' && typeof proof === 'string' && sameText(proof, expectedWelcome)) {
+    bridgeTrusted = true;
+    bridgeRejected = false;
+    processHint = '';
+    void chrome.action.setBadgeText({ text: '' });
+    return;
+  }
+  processHint =
+    'the program on the bridge port could not prove it holds the token; stop whatever else listens there and start the WasmCheat MCP server';
+  refuseBridge(processHint);
+  ws.close();
+}
+
+function refuseBridge(hint: string): void {
+  bridgeRejected = true;
+  reconnectDelay = RECONNECT_MAX_MS;
+  broadcastToPanels('bridge.unauthorized', { hint });
+  void chrome.action.setBadgeBackgroundColor({ color: '#c92a2a' });
+  void chrome.action.setBadgeText({ text: '!' });
+}
+
+function sameText(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let index = 0; index < a.length; index += 1) diff |= a.charCodeAt(index) ^ b.charCodeAt(index);
+  return diff === 0;
+}
+
+/** Everything the extension says goes to a server that proved it holds the token, or nowhere. */
 function send(payload: unknown): void {
+  if (bridgeTrusted) sendUntrusted(payload);
+}
+
+/** Only for the handshake: the pairing request and the hello. */
+function sendUntrusted(payload: unknown): void {
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
 }
 
@@ -396,7 +458,7 @@ function auditTail(params: { limit?: number } | undefined): { lines: unknown[]; 
   };
 }
 
-async function onBridgeMessage(raw: unknown): Promise<void> {
+async function onBridgeMessage(ws: WebSocket, raw: unknown): Promise<void> {
   let parsed: unknown;
   try {
     parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -404,14 +466,18 @@ async function onBridgeMessage(raw: unknown): Promise<void> {
     return;
   }
   if (isEvent(parsed)) {
-    onBridgeEvent(parsed.event, parsed.data);
+    if (parsed.event === BRIDGE_CHALLENGE) void sayHello(ws, parsed.data);
+    else if (parsed.event === BRIDGE_WELCOME) onWelcome(ws, parsed.data);
+    else if (bridgeTrusted) onBridgeEvent(parsed.event, parsed.data);
     return;
   }
   if (isResponse(parsed)) {
+    // The pairing answer is the one thing believed before the server's proof: it is what gives the
+    // extension a token to check that proof with (trust on first use).
     pairWaiters.get(parsed.id)?.(parsed);
     return;
   }
-  if (!isRequest(parsed)) return;
+  if (!isRequest(parsed) || !bridgeTrusted) return;
 
   try {
     const result = await handleBridgeRequest(parsed.method, parsed.params);
@@ -439,7 +505,7 @@ async function handleBridgeRequest(method: string, params: unknown, origin: Call
         ok: true,
         extension: chrome.runtime.getManifest().version,
         protocol: PROTOCOL_VERSION,
-        bridgeConnected: socket?.readyState === WebSocket.OPEN,
+        bridgeConnected: bridgeTrusted && socket?.readyState === WebSocket.OPEN,
         bridgeRejected,
         tokenConfigured: (await bridgeToken()).length > 0,
         tokenSource: await tokenSource(),
@@ -1141,7 +1207,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse: (v
       sendResponse({
         tabs: await listTabs(),
         activeTabId: await pickActiveTab(),
-        bridgeConnected: socket?.readyState === WebSocket.OPEN,
+        bridgeConnected: bridgeTrusted && socket?.readyState === WebSocket.OPEN,
         bridgeRejected,
         tokenConfigured: (await bridgeToken()).length > 0,
         tokenSource: await tokenSource(),

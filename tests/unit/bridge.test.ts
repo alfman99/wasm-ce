@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { WebSocket } from 'ws';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { WebSocket, WebSocketServer } from 'ws';
+import { bridgeNonce, bridgeProof } from '../../packages/protocol/src/index';
 import { Bridge } from '../../packages/mcp-server/src/bridge';
 import { isAuditKind } from '../../packages/mcp-server/src/audit';
 
@@ -16,24 +17,41 @@ async function startBridge(token: string, reconnectGraceMs = 0): Promise<Bridge>
   return bridge;
 }
 
-function connect(port: number, token: string): Promise<{ socket: WebSocket; closed: Promise<number> }> {
+/** The nonce each test socket was challenged with. */
+const challenges = new WeakMap<WebSocket, string>();
+
+/** Opens a socket the way the service worker does and waits for the server's challenge. */
+function open(port: number, origin?: string): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://127.0.0.1:${port}/extension`);
-    const closed = new Promise<number>((done) => socket.once('close', (code) => done(code)));
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/extension`, origin ? { origin } : {});
     socket.once('error', reject);
-    socket.once('open', () => {
-      socket.send(
-        JSON.stringify({ v: 1, kind: 'evt', event: 'bridge.hello', data: { extension: 'test', token } }),
-      );
-      resolve({ socket, closed });
+    socket.once('message', (raw) => {
+      const message = JSON.parse(String(raw)) as { event?: string; data?: { nonce?: string } };
+      if (message.event === 'bridge.challenge' && message.data?.nonce) challenges.set(socket, message.data.nonce);
+      resolve(socket);
     });
   });
+}
+
+/** The extension's hello. Resolves with the welcome proof a server that holds `token` must send. */
+async function hello(socket: WebSocket, token: string): Promise<string> {
+  const serverNonce = challenges.get(socket) ?? '';
+  const nonce = bridgeNonce();
+  const proof = await bridgeProof(token, 'ext', serverNonce, nonce);
+  socket.send(JSON.stringify({ v: 1, kind: 'evt', event: 'bridge.hello', data: { extension: 'test', nonce, proof } }));
+  return bridgeProof(token, 'srv', serverNonce, nonce);
+}
+
+function closeCode(socket: WebSocket): Promise<number> {
+  return new Promise((done) => socket.once('close', (code) => done(code)));
 }
 
 describe('bridge token', () => {
   it('refuses a hello with the wrong token and never becomes usable', async () => {
     const bridge = await startBridge('right-token');
-    const { socket, closed } = await connect(bridge.port, 'wrong-token');
+    const socket = await open(bridge.port);
+    const closed = closeCode(socket);
+    await hello(socket, 'wrong-token');
 
     expect(await closed).toBe(1008);
     // The socket was accepted at the transport level, yet the bridge remains unusable: that is the
@@ -44,17 +62,34 @@ describe('bridge token', () => {
     socket.terminate();
   });
 
-  it('accepts the right token and rejects a connection with none at all', async () => {
+  it('refuses the token itself in place of a proof, and a hello with no challenge behind it', async () => {
     const bridge = await startBridge('right-token');
-    const anonymous = await connect(bridge.port, '');
-    expect(await anonymous.closed).toBe(1008);
-    anonymous.socket.terminate();
+    const plain = await open(bridge.port);
+    const plainClosed = closeCode(plain);
+    plain.send(JSON.stringify({ v: 1, kind: 'evt', event: 'bridge.hello', data: { token: 'right-token' } }));
+    expect(await plainClosed).toBe(1008);
 
-    const good = await connect(bridge.port, 'right-token');
+    // A proof is good for one hello: a second one on the same socket has no challenge left.
+    const replay = await open(bridge.port);
+    const replayClosed = closeCode(replay);
+    await hello(replay, 'right-token');
+    await expect.poll(() => bridge.connected, { timeout: 2_000 }).toBe(true);
+    await hello(replay, 'right-token');
+    expect(await replayClosed).toBe(1008);
+  });
+
+  it('accepts a proof of the right token and proves itself back', async () => {
+    const bridge = await startBridge('right-token');
+    const good = await open(bridge.port);
+    const welcome = new Promise<{ proof?: string }>((done) => {
+      good.once('message', (raw) => done((JSON.parse(String(raw)) as { data: { proof?: string } }).data));
+    });
+    const expected = await hello(good, 'right-token');
+    expect((await welcome).proof).toBe(expected);
     await expect.poll(() => bridge.connected, { timeout: 2_000 }).toBe(true);
     await expect(bridge.waitForExtension(500)).resolves.toBeUndefined();
     expect(bridge.version).toBe('test');
-    good.socket.terminate();
+    good.terminate();
   });
 });
 
@@ -68,18 +103,10 @@ describe('reconnect while a call is in flight', () => {
     await new Promise((done) => setTimeout(done, 150));
     expect(bridge.connected).toBe(false);
 
-    const socket = new WebSocket(`ws://127.0.0.1:${bridge.port}/extension`);
-    socket.on('open', () => {
-      socket.send(
-        JSON.stringify({ v: 1, kind: 'evt', event: 'bridge.hello', data: { extension: 'test', token: 'right-token' } }),
-      );
-    });
-    socket.on('message', (raw) => {
-      const message = JSON.parse(String(raw)) as { kind: string; id: string };
-      if (message.kind !== 'req') return;
-      // Answer the way the real service worker does, so this proves the round trip, not just the wait.
-      socket.send(JSON.stringify({ v: 1, kind: 'res', id: message.id, result: { ok: true } }));
-    });
+    const socket = await open(bridge.port);
+    // Answer the way the real service worker does, so this proves the round trip, not just the wait.
+    answer(socket, { ok: true });
+    await hello(socket, 'right-token');
 
     await expect(pending).resolves.toEqual({ ok: true });
     socket.terminate();
@@ -93,23 +120,16 @@ describe('reconnect while a call is in flight', () => {
   });
 });
 
-function pair(port: number): Promise<{ socket: WebSocket; reply: Promise<Record<string, unknown>> }> {
-    return new Promise((resolve, reject) => {
-      const socket = new WebSocket(`ws://127.0.0.1:${port}/extension`);
-      const reply = new Promise<Record<string, unknown>>((done) => {
-        socket.once('message', (raw) => done(JSON.parse(String(raw)) as Record<string, unknown>));
-      });
-      socket.once('error', reject);
-      socket.once('open', () => {
-        socket.send(JSON.stringify({ v: 1, kind: 'req', id: 'p1', method: 'bridge.pair', params: {} }));
-        resolve({ socket, reply });
-      });
-    });
+async function pair(port: number): Promise<{ socket: WebSocket; reply: Promise<Record<string, unknown>> }> {
+  const socket = await open(port);
+  const reply = new Promise<Record<string, unknown>>((done) => {
+    socket.once('message', (raw) => done(JSON.parse(String(raw)) as Record<string, unknown>));
+  });
+  socket.send(JSON.stringify({ v: 1, kind: 'req', id: 'p1', method: 'bridge.pair', params: {} }));
+  return { socket, reply };
 }
 
 describe('pairing', () => {
-  
-
   it('hands the token to an extension that asks before anything is authenticated', async () => {
     const bridge = await startBridge('pair-me');
     const { socket, reply } = await pair(bridge.port);
@@ -118,9 +138,7 @@ describe('pairing', () => {
     expect((answer.result as { token?: string }).token).toBe('pair-me');
     // Having the token is not the same as being trusted: the hello still has to present it.
     expect(bridge.connected).toBe(false);
-    socket.send(
-      JSON.stringify({ v: 1, kind: 'evt', event: 'bridge.hello', data: { extension: 'test', token: 'pair-me' } }),
-    );
+    await hello(socket, 'pair-me');
     await expect.poll(() => bridge.connected, { timeout: 2_000 }).toBe(true);
     socket.close();
   });
@@ -142,9 +160,7 @@ describe('pairing again after a dropped socket', () => {
     const bridge = await startBridge('re-pair');
     const first = await pair(bridge.port);
     await first.reply;
-    first.socket.send(
-      JSON.stringify({ v: 1, kind: 'evt', event: 'bridge.hello', data: { extension: 'test', token: 're-pair' } }),
-    );
+    await hello(first.socket, 're-pair');
     await expect.poll(() => bridge.connected, { timeout: 2_000 }).toBe(true);
 
     // The extension dropped its socket (a restart) and forgot the token: it must be able to ask again,
@@ -159,18 +175,6 @@ describe('pairing again after a dropped socket', () => {
   });
 });
 
-function open(port: number, origin?: string): Promise<WebSocket> {
-  return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://127.0.0.1:${port}/extension`, origin ? { origin } : {});
-    socket.once('error', reject);
-    socket.once('open', () => resolve(socket));
-  });
-}
-
-function hello(socket: WebSocket, token: string): void {
-  socket.send(JSON.stringify({ v: 1, kind: 'evt', event: 'bridge.hello', data: { extension: 'test', token } }));
-}
-
 /** Answers every request with `result`, the way the service worker does. */
 function answer(socket: WebSocket, result: unknown): void {
   socket.on('message', (raw) => {
@@ -183,7 +187,7 @@ describe('a second connection cannot take over', () => {
   it('refuses pairing while the authenticated socket is live, and leaves it in place', async () => {
     const bridge = await startBridge('keep-me');
     const legit = await open(bridge.port);
-    hello(legit, 'keep-me');
+    await hello(legit, 'keep-me');
     await expect.poll(() => bridge.connected, { timeout: 2_000 }).toBe(true);
 
     const intruder = await pair(bridge.port);
@@ -211,10 +215,10 @@ describe('every message is judged by the socket that sent it', () => {
     const first = await open(bridge.port);
     const second = await open(bridge.port);
     const firstClosed = new Promise<number>((done) => first.once('close', (code) => done(code)));
-    hello(first, 'wrong');
+    await hello(first, 'wrong');
     expect(await firstClosed).toBe(1008);
 
-    hello(second, 'mine');
+    await hello(second, 'mine');
     await expect.poll(() => bridge.connected, { timeout: 2_000 }).toBe(true);
     answer(second, 'from second');
     await expect(bridge.request('ext.ping')).resolves.toBe('from second');
@@ -224,7 +228,7 @@ describe('every message is judged by the socket that sent it', () => {
   it('ignores answers, events and audit lines from a socket that never authenticated', async () => {
     const bridge = await startBridge('trusted');
     const legit = await open(bridge.port);
-    hello(legit, 'trusted');
+    await hello(legit, 'trusted');
     await expect.poll(() => bridge.connected, { timeout: 2_000 }).toBe(true);
 
     const audits: unknown[] = [];
@@ -260,13 +264,13 @@ describe('a replaced or half-open socket', () => {
     await bridge.start();
     openBridges.push(bridge);
     const old = await open(bridge.port);
-    hello(old, 'swap');
+    await hello(old, 'swap');
     await expect.poll(() => bridge.connected, { timeout: 2_000 }).toBe(true);
 
     const started = Date.now();
     const pending = bridge.request('ext.ping').catch((error: { code?: string }) => error.code);
     const fresh = await open(bridge.port);
-    hello(fresh, 'swap');
+    await hello(fresh, 'swap');
     expect(await pending).toBe('NO_AGENT');
     expect(Date.now() - started).toBeLessThan(2_000);
     fresh.close();
@@ -278,8 +282,91 @@ describe('a replaced or half-open socket', () => {
     answer(socket, { ok: true });
     const pending = bridge.request('ext.ping');
     await new Promise((done) => setTimeout(done, 150));
-    hello(socket, 'late-hello');
+    await hello(socket, 'late-hello');
     await expect(pending).resolves.toEqual({ ok: true });
     socket.close();
+  });
+});
+
+/**
+ * Loads the real service worker against a stand-in `chrome`: storage reads `store`, listeners are
+ * collected so a test can fire them, every call is logged in `calls`, and the rest resolve to `{}`.
+ */
+const calls: string[] = [];
+const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
+async function loadServiceWorker(store: Record<string, unknown>): Promise<void> {
+  const stub = (path: string): unknown =>
+    new Proxy(() => undefined, {
+      get: (_target, key) => (key === 'then' ? undefined : stub(`${path}.${String(key)}`)),
+      apply: (_target, _this, args: unknown[]) => {
+        calls.push(path);
+        if (path === 'chrome.storage.local.get') return Promise.resolve({ ...store });
+        if (path === 'chrome.storage.local.set') return Promise.resolve(Object.assign(store, args[0]));
+        if (path === 'chrome.runtime.getManifest') return { version: 'test' };
+        if (path.endsWith('.addListener')) return void (listeners[path] ??= []).push(args[0] as () => void);
+        return Promise.resolve({});
+      },
+    });
+  vi.stubGlobal('chrome', stub('chrome'));
+  vi.resetModules();
+  await import('../../packages/extension/src/sw');
+}
+
+describe('the extension checks the server before trusting it', () => {
+  // One service worker for the whole block, as in the browser: the impostor is met first, then the
+  // real bridge comes up, the way a human would fix it.
+  const store: Record<string, unknown> = { bridgeToken: 'real-secret', bridgeTokenSource: 'pasted' };
+
+  it('an impostor server never receives the token, and gets no answer before or after a bad proof', async () => {
+    const impostor = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await new Promise((done) => impostor.once('listening', done));
+    store.wasmcheatPort = (impostor.address() as { port: number }).port;
+    const heard: string[] = [];
+    const closed = new Promise<void>((resolve) => {
+      impostor.on('connection', (socket) => {
+        socket.on('message', (raw) => {
+          heard.push(String(raw));
+          // Ask for the tabs at once: no proof has been sent yet.
+          socket.send(JSON.stringify({ v: 1, kind: 'req', id: 'early', method: 'ext.listTabs', params: {} }));
+          // And let a page report something: it must not reach a server that has not proved itself.
+          for (const listener of listeners['chrome.runtime.onMessage.addListener'] ?? []) {
+            listener({ type: 'wasmcheat.event', event: 'watch.hit', data: {} }, { tab: { id: 7 } }, () => undefined);
+          }
+        });
+        socket.on('close', () => resolve());
+        socket.send(JSON.stringify({ v: 1, kind: 'evt', event: 'bridge.challenge', data: { nonce: bridgeNonce() } }));
+        setTimeout(() => {
+          // A forged welcome, then a request behind it: the extension must hang up instead.
+          socket.send(JSON.stringify({ v: 1, kind: 'evt', event: 'bridge.welcome', data: { proof: '0'.repeat(64) } }));
+          socket.send(JSON.stringify({ v: 1, kind: 'req', id: 'late', method: 'ext.listTabs', params: {} }));
+        }, 300);
+      });
+    });
+
+    await loadServiceWorker(store);
+    await closed;
+    impostor.close();
+
+    expect(heard).toHaveLength(1);
+    const helloMessage = JSON.parse(heard[0]!) as { event: string; data: Record<string, unknown> };
+    expect(helloMessage.event).toBe('bridge.hello');
+    expect(helloMessage.data.proof).toMatch(/^[0-9a-f]{64}$/);
+    expect(heard.join('')).not.toContain('real-secret');
+    // Not answered, and not run either: listing tabs would have asked Chrome for them.
+    expect(calls.filter((path) => path.startsWith('chrome.tabs.') && !path.endsWith('.addListener'))).toEqual([]);
+  });
+
+  it('pairs with the real bridge, checks its proof and only then answers', async () => {
+    const bridge = await startBridge('real-secret', 4_000);
+    store.wasmcheatPort = bridge.port;
+    delete store.bridgeToken;
+    // A changed token is what reconnects at once, the way the panel's token field does.
+    for (const listener of listeners['chrome.storage.onChanged.addListener'] ?? []) {
+      listener({ bridgeToken: { newValue: undefined } }, 'local');
+    }
+
+    const ping = await bridge.request<{ ok: boolean; bridgeConnected: boolean; tokenSource: string }>('ext.ping');
+    expect(ping).toMatchObject({ ok: true, bridgeConnected: true, tokenSource: 'paired' });
+    expect(store.bridgeToken).toBe('real-secret');
   });
 });
