@@ -45,12 +45,18 @@ export class TraceStore {
   private armed = false;
   private installed = false;
   private note: string | undefined;
-  private watch: { offset: number; type: ValueType; last: number } | null = null;
+  private watch: { offset: number; type: ValueType } | null = null;
   private kind: TraceKind = 'write';
-  /** Hits per function, counted even after `maxHits` stops the list from growing. */
-  private readonly counts = new Map<number, number>();
-  private current: TrackedInstance | null = null;
-  private functionNames: Record<number, string> = {};
+  /**
+   * Hits per function, counted even after `maxHits` stops the list from growing. Keyed by instance
+   * and function, because two instrumented modules share function indices but not functions.
+   */
+  private readonly counts = new Map<string, { instance: TrackedInstance; funcIndex: number; hits: number }>();
+  /**
+   * Every instrumented instance, each with the value it last held at the watched offset in its own
+   * memory. A page that instantiates a helper module after the game is armed for both.
+   */
+  private readonly watched = new Map<TrackedInstance, { last: number }>();
   private maxHits = DEFAULT_MAX_HITS;
   private armedInstanceId = 'w1';
   private hitListener: ((hit: WriteTraceHit) => void) | null = null;
@@ -71,14 +77,14 @@ export class TraceStore {
       installed: this.installed,
       hits: this.hitList.slice(),
       dropped: this.dropped,
-      functions: [...this.counts.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .map(([funcIndex, hits]) => {
-          const name = this.functionNames[funcIndex];
-          return { funcIndex, hits, ...(name ? { name } : {}) };
+      functions: [...this.counts.values()]
+        .sort((a, b) => b.hits - a.hits)
+        .map(({ instance, funcIndex, hits }) => {
+          const name = instance.functionNames?.[funcIndex];
+          return { funcIndex, hits, instanceId: instance.id, ...(name ? { name } : {}) };
         }),
-      ...(this.watch ? { address: this.describeAddress(), type: this.watch.type, kind: this.kind } : {}),
-      ...(this.current ? { instanceId: this.current.id } : {}),
+      ...(this.watch ? { address: this.describeAddress(this.primary()), type: this.watch.type, kind: this.kind } : {}),
+      ...(this.primary() ? { instanceId: this.primary()!.id } : {}),
       ...(this.note ? { note: this.note } : {}),
     };
   }
@@ -108,9 +114,9 @@ export class TraceStore {
     this.maxHits = Math.max(1, options.maxHits ?? DEFAULT_MAX_HITS);
     this.kind = kind;
     this.counts.clear();
-    this.watch = { offset: address.offset, type, last: 0 };
+    this.watch = { offset: address.offset, type };
     this.armedInstanceId = address.instanceId;
-    this.current = null;
+    this.watched.clear();
     this.onWiringChange();
 
     // An instance compiled before arming can never report stores: say so once, plainly.
@@ -128,7 +134,7 @@ export class TraceStore {
     this.armed = false;
     this.installed = false;
     this.watch = null;
-    this.current = null;
+    this.watched.clear();
     this.counts.clear();
     this.onWiringChange();
     return this.status();
@@ -142,7 +148,7 @@ export class TraceStore {
   clear(): WriteTraceStatus {
     this.hitList = [];
     this.dropped = 0;
-    if (this.current) this.watchState();
+    for (const instance of this.watched.keys()) this.watchState(instance);
     return this.status();
   }
 
@@ -158,71 +164,79 @@ export class TraceStore {
   /** The registry tells us when an instrumented instance is ready to be watched. */
   onInstrumented(tracked: TrackedInstance): void {
     if (!this.armed || !this.watch) return;
-    this.current = tracked;
+    // The first instrumentation answers the "reload to arm it" note; later ones keep any note.
+    if (!this.installed) this.note = undefined;
     this.installed = true;
-    this.functionNames = tracked.functionNames ?? {};
-    this.watchState();
-    this.note = undefined;
+    this.watchState(tracked);
   }
 
-  /** Drops state for instances that went away with a navigation or a hook removal. */
-  forget(instanceId: string): void {
-    if (this.current?.id !== instanceId) return;
-    this.current = null;
-    this.installed = false;
+  /** The registry saw an instance it could not instrument while this watchpoint was armed. */
+  onMissedInstrumentation(tracked: TrackedInstance): void {
+    if (!this.armed) return;
+    this.note =
+      `${tracked.id} was created from a module whose bytes were never seen (compiled before the ` +
+      'agent installed, or handed in from another realm), so the watchpoint cannot attach to it';
   }
 
-  private watchState(): void {
+  private watchState(instance: TrackedInstance): void {
     if (!this.watch) return;
-    const access = this.access();
-    this.watch.last = access.read(this.watch.offset, this.watch.type);
+    this.watched.set(instance, { last: this.access(instance).read(this.watch.offset, this.watch.type) });
   }
 
-  /**
-   * A load of `address` about to happen. Every load in the module reports here, so the watched
-   * address is the only thing worth doing work for.
-   */
+  /** The instance the status speaks for: the one the address names, else the first instrumented. */
+  private primary(): TrackedInstance | null {
+    let first: TrackedInstance | null = null;
+    for (const instance of this.watched.keys()) {
+      if (instance.id === this.armedInstanceId) return instance;
+      first ??= instance;
+    }
+    return first;
+  }
+
   /** What the rewriter has to do for the current watchpoint, or null when disarmed. */
   modes(): InstrumentModes | null {
     if (!this.armed) return null;
     return { reads: this.kind === 'read', writes: this.kind === 'write' };
   }
 
-  /** Called by the instrumenter the runtime composed (see `refreshInstrumenter`). */
-  handleStore(funcIndex: number): void {
-    this.record(funcIndex);
+  /**
+   * Called by the instrumenter the runtime composed (see `refreshInstrumenter`), with the instance
+   * whose module performed the store.
+   */
+  handleStore(funcIndex: number, instance: TrackedInstance): void {
+    this.record(funcIndex, instance);
   }
 
-  handleRead(address: number, funcIndex: number): void {
-    this.onRead(address, funcIndex);
-  }
-
-  private onRead(address: number, funcIndex: number): void {
+  /** Every load in the module reports here, so the watched address is the only one worth work. */
+  handleRead(address: number, funcIndex: number, instance: TrackedInstance): void {
     if (!this.watch || address !== this.watch.offset) return;
-    this.record(funcIndex);
+    this.record(funcIndex, instance);
   }
 
-  private record(funcIndex: number): void {
-    if (!this.armed || !this.watch || !this.current) return;
-    const access = this.access();
-    const value = access.read(this.watch.offset, this.watch.type);
+  private record(funcIndex: number, instance: TrackedInstance): void {
+    const state = this.watched.get(instance);
+    if (!this.armed || !this.watch || !state) return;
+    const value = this.access(instance).read(this.watch.offset, this.watch.type);
     // A store that writes the same value still ran, but reporting it as a write would be noise
     // for the "changed" question this answers; reads carry no such ambiguity.
-    if (this.kind === 'write' && value === this.watch.last) return;
-    const previous = this.watch.last;
-    this.watch.last = value;
-    this.counts.set(funcIndex, (this.counts.get(funcIndex) ?? 0) + 1);
+    if (this.kind === 'write' && value === state.last) return;
+    const previous = state.last;
+    state.last = value;
+    const key = `${instance.id}:${funcIndex}`;
+    const count = this.counts.get(key) ?? { instance, funcIndex, hits: 0 };
+    count.hits += 1;
+    this.counts.set(key, count);
     if (this.hitList.length >= this.maxHits) {
       this.dropped += 1;
       return;
     }
-    const name = this.functionNames[funcIndex];
+    const name = instance.functionNames?.[funcIndex];
     const hit: WriteTraceHit = {
       at: Date.now(),
       kind: this.kind,
       funcIndex,
       ...(name ? { funcName: name } : {}),
-      address: this.describeAddress(),
+      address: this.describeAddress(instance),
       previous,
       value,
     };
@@ -230,16 +244,16 @@ export class TraceStore {
     this.hitListener?.(hit);
   }
 
-  private access(): MemoryAccess {
-    if (!this.current?.memory) {
+  private access(instance: TrackedInstance): MemoryAccess {
+    if (!instance.memory) {
       throw new BridgeError('NO_MEMORY', 'the instrumented instance exposes no memory');
     }
-    return new MemoryAccess(this.current.memory);
+    return new MemoryAccess(instance.memory);
   }
 
-  private describeAddress(): string {
+  private describeAddress(instance: TrackedInstance | null): string {
     if (!this.watch) return '';
-    return formatAddress({ instanceId: this.current?.id ?? this.armedInstanceId, offset: this.watch.offset });
+    return formatAddress({ instanceId: instance?.id ?? this.armedInstanceId, offset: this.watch.offset });
   }
 }
 

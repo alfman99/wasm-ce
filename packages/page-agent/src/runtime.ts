@@ -135,6 +135,7 @@ export class PageRuntime {
     this.workerId = options.workerId ?? null;
     this.registry = new WasmRegistry({
       onInstrumented: (tracked) => this.trace.onInstrumented(tracked),
+      onMissedInstrumentation: (tracked) => this.trace.onMissedInstrumentation(tracked),
     });
     this.hooks = new HookStore(this.registry, detectEvalAllowed());
     this.trace = new TraceStore(
@@ -180,8 +181,8 @@ export class PageRuntime {
     this.registry.setInstrumenter({
       modes: modes ?? { reads: false, writes: false },
       rewrite: (bytes, requested) => this.rewriteBinary(bytes, requested),
-      onStore: (funcIndex) => this.trace.handleStore(funcIndex),
-      onRead: (address, funcIndex) => this.trace.handleRead(address, funcIndex),
+      onStore: (funcIndex, instance) => this.trace.handleStore(funcIndex, instance),
+      onRead: (address, funcIndex, instance) => this.trace.handleRead(address, funcIndex, instance),
     });
   }
 

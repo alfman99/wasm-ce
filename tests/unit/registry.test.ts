@@ -66,6 +66,16 @@ describe('WasmRegistry', () => {
     expect((instance.exports.add as (a: number, b: number) => number)(2, 3)).toBe(5);
   });
 
+  it('hashes a module compiled synchronously with new WebAssembly.Module', () => {
+    const module = new WebAssembly.Module(buildDemoModule());
+    const instance = new WebAssembly.Instance(module, imports());
+    const tracked = registry.list().at(-1)!;
+    expect(tracked.instance).toBe(instance);
+    expect(tracked.module).toBe(module);
+    expect(tracked.moduleHash).toMatch(/^[0-9a-f]{8}$/);
+    expect(() => (WebAssembly.Module as unknown as (bytes: BufferSource) => unknown)(buildDemoModule())).toThrow(TypeError);
+  });
+
   it('captures instantiateStreaming and hashes the module asynchronously', async () => {
     const typed = await WebAssembly.instantiateStreaming(wasmResponse(buildDemoModule()), imports());
     const tracked = registry.list().at(-1)!;

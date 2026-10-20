@@ -512,8 +512,11 @@ export interface WriteTraceStatus {
   hits: WriteTraceHit[];
   /** Hits dropped after `maxHits`. */
   dropped: number;
-  /** Functions that touched the address, most hits first. */
-  functions: { funcIndex: number; name?: string; hits: number }[];
+  /**
+   * Functions that touched the address, most hits first. `instanceId` names the instance whose
+   * module the function belongs to, since every instrumented instance is watched in its own memory.
+   */
+  functions: { funcIndex: number; name?: string; hits: number; instanceId?: string }[];
   /** Why the trace cannot install, when it cannot. */
   note?: string;
 }

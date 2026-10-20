@@ -29,8 +29,8 @@ function makeTrace(registry: WasmRegistry): TraceStore {
     registry.setInstrumenter({
       modes,
       rewrite: (bytes, requested) => rewriter(bytes, requested),
-      onStore: (funcIndex) => trace.handleStore(funcIndex),
-      onRead: (address, funcIndex) => trace.handleRead(address, funcIndex),
+      onStore: (funcIndex, instance) => trace.handleStore(funcIndex, instance),
+      onRead: (address, funcIndex, instance) => trace.handleRead(address, funcIndex, instance),
     });
   });
   return trace;
@@ -104,6 +104,70 @@ describe('TraceStore', () => {
     expect(announced).toEqual([11]);
     expect(trace.status().dropped).toBe(1);
     expect(trace.status().functions[0]?.hits).toBe(2);
+  });
+
+  it('watches two armed instances in their own memory, named with their own functions', async () => {
+    const registry = new WasmRegistry({
+      onInstrumented: (tracked) => trace.onInstrumented(tracked),
+    });
+    registry.install();
+    const trace = makeTrace(registry);
+    trace.arm({ address: 'w1:0x30', type: 'i32' });
+
+    // The game first, then a smaller helper: the last instrumented instance must not take over.
+    const game = (await WebAssembly.instantiate(buildStoreModule(), { env: {} })).instance;
+    const helper = (await WebAssembly.instantiate(buildLoadModule(), { env: {} })).instance;
+    const [gameId, helperId] = registry.list().map((tracked) => tracked.id);
+
+    (game.exports as unknown as { store_at: (addr: number, value: number) => void }).store_at(0x30, 4242);
+    (helper.exports as unknown as { bump: () => number }).bump();
+
+    const status = trace.status();
+    expect(status.hits.map(({ address, funcName, previous, value }) => ({ address, funcName, previous, value }))).toEqual([
+      { address: `${gameId}:0x30`, funcName: 'store_at', previous: 0, value: 4242 },
+      { address: `${helperId}:0x30`, funcName: 'bump', previous: 0, value: 7 },
+    ]);
+    expect(status.instanceId).toBe(gameId);
+    expect(status.functions.map(({ instanceId, name }) => `${instanceId}:${name}`).sort()).toEqual(
+      [`${gameId}:store_at`, `${helperId}:bump`].sort(),
+    );
+  });
+
+  it('instruments the synchronous new Module + new Instance path (wasm-bindgen initSync)', () => {
+    const registry = new WasmRegistry({
+      onInstrumented: (tracked) => trace.onInstrumented(tracked),
+    });
+    registry.install();
+    const trace = makeTrace(registry);
+    trace.arm({ address: 'w1:0x100', type: 'i32' });
+
+    const module = new WebAssembly.Module(buildStoreModule());
+    const instance = new WebAssembly.Instance(module, { env: {} });
+    expect(module instanceof WebAssembly.Module).toBe(true);
+    expect(WebAssembly.Module.exports(module).map((entry) => entry.name)).toContain('store_at');
+
+    const tracked = registry.list()[0]!;
+    expect(tracked.instrumented).toBe(true);
+    expect(registry.describe(tracked).moduleHash).toMatch(/^[0-9a-f]{8}$/);
+
+    (instance.exports as unknown as { store_at: (addr: number, value: number) => void }).store_at(0x100, 99);
+    expect(trace.status().hits[0]).toMatchObject({ funcName: 'store_at', value: 99 });
+  });
+
+  it('hands back a bare Instance when an armed page instantiates a compiled Module', async () => {
+    const registry = new WasmRegistry({
+      onInstrumented: (tracked) => trace.onInstrumented(tracked),
+    });
+    registry.install();
+    const trace = makeTrace(registry);
+    trace.arm({ address: 'w1:0x100', type: 'i32' });
+
+    const module = await WebAssembly.compile(buildStoreModule());
+    const instance = (await WebAssembly.instantiate(module, { env: {} })) as unknown as WebAssembly.Instance;
+    expect(instance instanceof WebAssembly.Instance).toBe(true);
+    expect(registry.list()[0]?.instrumented).toBe(true);
+    (instance.exports as unknown as { store_at: (addr: number, value: number) => void }).store_at(0x100, 5);
+    expect(trace.status().hits[0]).toMatchObject({ funcName: 'store_at', value: 5 });
   });
 
   it('records a read with the function that loaded the address, and nothing when disarmed', async () => {
