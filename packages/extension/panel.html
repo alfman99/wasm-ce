@@ -79,6 +79,8 @@
       </details>
 
       <pre id="status-out" class="out" hidden></pre>
+      <!-- The instance fields suggest every module the page runs; renderInstances fills it. -->
+      <datalist id="instance-options"></datalist>
 
       <!-- Top row: the found list on the left, the scan controls on the right, like a memory scanner. -->
       <div class="top">
@@ -138,7 +140,7 @@
             <div class="row">
               <label class="field">
                 <span>Instance:</span>
-                <input id="scan-instance" type="text" placeholder="from Instances" spellcheck="false" />
+                <input id="scan-instance" type="text" list="instance-options" placeholder="w1" spellcheck="false" />
               </label>
             </div>
             <details class="advanced">
@@ -202,7 +204,7 @@
             <div class="row">
               <label class="field">
                 <span>Instance:</span>
-                <input id="text-instance" type="text" placeholder="from Instances" spellcheck="false" />
+                <input id="text-instance" type="text" list="instance-options" placeholder="w1" spellcheck="false" />
               </label>
               <label class="field field--check">
                 <input id="text-case" type="checkbox" />
@@ -451,7 +453,7 @@
           <div class="row">
             <label class="field">
               <span>Instance:</span>
-              <input id="hook-instance" type="text" placeholder="from Instances" spellcheck="false" />
+              <input id="hook-instance" type="text" list="instance-options" placeholder="w1" spellcheck="false" />
             </label>
             <label class="field">
               <span>Target:</span>

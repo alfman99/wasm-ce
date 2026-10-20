@@ -795,8 +795,26 @@ function renderInstances(instances: InstanceInfo[]): void {
   }
   body.replaceChildren(...rows);
 
-  const single = instances.length === 1 ? instances[0] : undefined;
-  if (single && selectedInstanceId === undefined) selectInstance(single.id);
+  el('instance-options').replaceChildren(
+    ...instances.map((instance) => {
+      const option = document.createElement('option');
+      option.value = instance.id;
+      option.label = `${instance.host === 'worker' ? 'worker' : 'page'} · ${megabytes(instance.memory?.byteLength)}`;
+      return option;
+    }),
+  );
+  // Pick one so the human can scan straight away. The game is the module with the most memory (a
+  // threaded build lists the same shared memory once per thread; the page's copy wins the tie).
+  const current = instances.find((instance) => instance.id === selectedInstanceId);
+  const best = [...instances].sort(
+    (a, b) => (b.memory?.byteLength ?? 0) - (a.memory?.byteLength ?? 0) || Number(a.host === 'worker') - Number(b.host === 'worker'),
+  )[0];
+  if (!current && best) selectInstance(best.id);
+}
+
+function megabytes(bytes: number | undefined): string {
+  if (!bytes) return 'no memory';
+  return bytes < 2 ** 20 ? `${Math.round(bytes / 1024)} KiB` : `${Math.round(bytes / 2 ** 20)} MiB`;
 }
 
 function cell(content: string | HTMLElement): HTMLTableCellElement {
