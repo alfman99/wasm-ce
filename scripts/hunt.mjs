@@ -49,9 +49,9 @@ async function serve() {
     // no stale socket
   }
   const run = async (line) => {
-    const [name, ...parts] = line.trim().split(/\s+/);
+    // Split at the first space only: the JSON after it may hold code whose spacing matters.
+    const [name, joined = ''] = line.trim().split(/\s(.*)/s);
     if (!name) return '';
-    const joined = parts.join(' ');
     const args = joined.startsWith('{') ? JSON.parse(joined) : {};
     const tool = name.startsWith('wasmcheat_') ? name : `wasmcheat_${name}`;
     const start = Date.now();
