@@ -37,7 +37,8 @@ await copyFile(join(HERE, '../page-agent/dist/page-agent.js'), join(DIST, 'page-
 await copyFile(join(HERE, '../page-agent/dist/worker-agent.js'), join(DIST, 'worker-agent.js'));
 
 // dist/ is the loadable extension root, so the manifest's paths are relative to it.
-for (const file of ['manifest.json', 'popup.html', 'popup.css', 'devtools.html', 'panel.html', 'panel.css']) {
+await mkdir(join(DIST, 'icons'), { recursive: true });
+for (const file of ['manifest.json', 'popup.html', 'popup.css', 'devtools.html', 'panel.html', 'panel.css', ...[16, 32, 48, 128].map((size) => `icons/${size}.png`)]) {
   await copyFile(join(file === 'manifest.json' ? SRC : HERE, file), join(DIST, file));
 }
 

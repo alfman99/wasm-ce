@@ -557,6 +557,17 @@ fieldset.group--wide {
   gap: 6px;
 }
 
+.quick {
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+
+.quick__label {
+  color: var(--ink-2);
+  font-size: 12px;
+  margin-right: 2px;
+}
+
 .field {
   display: flex;
   flex-direction: column;

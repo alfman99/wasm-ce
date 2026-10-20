@@ -113,7 +113,7 @@
         <div class="top__right">
           <fieldset class="group" id="card-scan">
           <legend>Scan</legend>
-          <p class="hint">Type a number you can see in the game and press First Scan. When it changes in the game, type the new number and press Next Scan. Repeat until one or two addresses are left.</p>
+          <p class="hint">Type a number you can see in the game and press First Scan. When it changes in the game, type the new number and press Next Scan. Repeat until one or two addresses are left. Cannot read it as a number, like a health bar? Leave Value empty, press First Scan, then use Went up or Went down.</p>
             <div class="row">
               <label class="field">
                 <span>Value:</span>
@@ -163,13 +163,21 @@
                 </label>
                 <label class="field">
                   <span>Max results:</span>
-                  <input id="scan-max" type="number" min="1" placeholder="1000" />
+                  <input id="scan-max" type="number" min="1" placeholder="250000" />
                 </label>
               </div>
             </details>
             <div class="row row--buttons">
               <button id="scan-begin" type="button" class="primary">First Scan</button>
               <button id="scan-narrow" type="button">Next Scan</button>
+            </div>
+            <!-- For a value you cannot read as a number (a health bar, a timer): narrow by how it moved. -->
+            <div class="row row--tight quick" id="scan-quick" hidden>
+              <span class="quick__label">Since the last scan, the value:</span>
+              <button type="button" data-mode="changed">Changed</button>
+              <button type="button" data-mode="unchanged">Stayed the same</button>
+              <button type="button" data-mode="increased">Went up</button>
+              <button type="button" data-mode="decreased">Went down</button>
             </div>
           </fieldset>
 
@@ -635,7 +643,7 @@
             <ol>
               <li><b>Open the panel on the game's page.</b> That is the whole setup: the panel finds the WebAssembly by itself. If the page was open before WasmCheat loaded, it reloads it once to get in.</li>
               <li><b>No instance?</b> The game may not have started, or it lives in a frame or a worker. Open More tools, then Instances, and press Diagnose: it says which.</li>
-              <li><b>Scan.</b> Pick a type and a value you can see on screen, then First Scan. Play, watch the number change, type the new value and Next Scan. Repeat until one address is left.</li>
+              <li><b>Scan.</b> Pick a type and a value you can see on screen, then First Scan. Play, watch the number change, type the new value and Next Scan. Repeat until one address is left. For a value you cannot read, leave Value empty and narrow with Went up, Went down, Changed or Stayed the same.</li>
               <li><b>Change it.</b> Click an address in Found, type the new value, and press Write, or Freeze to hold it there. Games redraw a number when they change it, so the screen can lag behind memory.</li>
             </ol>
 

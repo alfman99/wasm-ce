@@ -1,31 +1,58 @@
 # WasmCheat
 
-WasmCheat is a memory scanner for WebAssembly that runs in the browser. It attaches to a wasm app
-in a Chrome tab, searches its linear memory, and lets you (or an MCP agent) read, write, freeze and
-watch addresses, then patch a function or wrap it in JavaScript. Nothing native is involved: no
-debugger flags, no DevTools protocol, no separate process holding the page.
+Find a number in a browser game and change it. WasmCheat is a memory scanner for WebAssembly, the
+way Cheat Engine is for desktop games, except it lives in your browser: a DevTools panel, no
+download besides the extension, nothing native, no debugger.
 
-Open the panel on a tab and it is yours to inspect; every mutation lands in an audit log.
+![The WasmCheat panel: the found list with live values beside the scan controls, and an editor open
+on the address that holds the score](docs/img/panel.png)
 
-Point it at programs you own or have written permission to test. See [Policy](#policy).
+It works on games built for the web with Unity, Godot, Emscripten or Rust, including the ones inside
+YouTube Playables and itch.io embeds. Every change you make is written to a log.
 
-![The DevTools panel: target and status on top, the found list beside the scan controls, then the
-tools for one address](docs/img/panel.png)
+Use it on games and programs you own or are allowed to test, not to cheat other people in online
+games. See [Policy](#policy).
 
-The panel is the human front end for the same calls an agent makes: scan, narrow, change. Open it on
-the game's tab and it is already pointed at the game's wasm; on a page without any it says there is
-nothing to analyze.
+## Install
 
-## The fastest path
+No programming needed. Works in Chrome, Brave, Edge and other Chromium browsers (version 116+).
+
+1. Download `wasmcheat-extension-v….zip` from the
+   [latest release](https://github.com/alfman99/wasm-ce/releases/latest) and unzip it.
+2. Open `chrome://extensions` (`brave://extensions`, `edge://extensions`) and turn on
+   **Developer mode**.
+3. Press **Load unpacked** and pick the unzipped `wasmcheat` folder.
+
+That is all. The MCP server below is optional, for letting an AI agent drive it.
+
+## Use it
+
+1. Open the game and let it start.
+2. Open DevTools (<kbd>F12</kbd>, or <kbd>⌥</kbd><kbd>⌘</kbd><kbd>I</kbd> on a Mac) and choose the
+   **WasmCheat** tab. If you do not see it, look under <kbd>»</kbd>.
+3. Type a number you can see in the game (your coins, say) and press **First Scan**.
+4. Make the number change in the game, type the new value and press **Next Scan**. Repeat until one
+   or two addresses are left. The list updates live, and a value that moved is highlighted.
+5. Click an address, type a new value, and press **Write**, or **Freeze** to hold it there.
+
+For something you cannot read as a number, like a health bar, set the value type (bars are usually
+`f32`), leave **Value** empty and press **First Scan**. Every address starts as a candidate; then
+press **Went down**, **Went up** or **Stayed the same** each time the bar moves, or does not. Coins
+in engine-built games are often `i64` or `f64` rather than `i32`.
+
+When a page has no WebAssembly the panel says so. If the game was already running before you
+installed WasmCheat, the panel reloads the page once so it can see it.
+
+## Build from source
 
 ```bash
+git clone https://github.com/alfman99/wasm-ce.git && cd wasm-ce
 npm install && npm run build
-npm run demo        # serves and opens the demo game, prints the two things you need
+npm run demo        # serves and opens a small demo game
 ```
 
-Then load `packages/extension/dist` as an unpacked extension, open DevTools on the demo tab, and open
-the WasmCheat panel. Type the score you see into **Scan**, press **First Scan**, and click the address
-it finds to change it.
+Load `packages/extension/dist` with **Load unpacked**, open DevTools on the demo tab, and follow
+the steps above. [CONTRIBUTING.md](CONTRIBUTING.md) has the tests and the layout.
 
 ## Start here
 
@@ -62,7 +89,7 @@ it finds to change it.
 ## Install and build
 
 ```bash
-git clone <this repo> wasm-cheat && cd wasm-cheat
+git clone https://github.com/alfman99/wasm-ce.git && cd wasm-ce
 npm install
 npm run build          # protocol, page-agent, extension, mcp-server, demo
 npm run typecheck      # optional, same types the tests use
@@ -78,7 +105,8 @@ npm run typecheck      # optional, same types the tests use
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
 3. **Load unpacked** → select `packages/extension/dist`.
-4. Pin the extension; the toolbar icon shows whether the bridge is paired.
+4. Pin the extension; its popup shows whether the page agent is running and whether the MCP server
+   is connected.
 
 The extension connects to the MCP server on `ws://127.0.0.1:7331/extension` and reconnects with
 backoff if the server is not running yet. The port is baked in at build time, so to use another
@@ -622,7 +650,7 @@ that is not moving. The automated test does exactly that.
 ## Tests
 
 ```bash
-npm test           # build → vitest (155 unit) → playwright (25 end-to-end)
+npm test           # build → vitest (158 unit) → playwright (26 end-to-end)
 npm run test:unit  # page agent: memory, registry, scanner, hooks, trace, rewriter (no browser)
 npm run test:e2e   # real Chromium, real extension, real MCP stdio client
 ```
@@ -662,8 +690,9 @@ serves the demo, connects a real MCP client to `dist/bin.js`, and then, in order
 `tests/e2e/quiet.spec.ts` then runs with no MCP server at all: the panel finds the demo's wasm with
 no Attach step, shows **Nothing to analyze in this tab** on a plain page, switches to the scan cards
 when that page instantiates a module, and the extensions page and every console stay free of errors.
-It also proves the Found list, the editor and bookmarks stay live without a button press, and that a
-cross-origin game frame that instantiates late is found without a reload.
+It also proves the Found list, the editor and bookmarks stay live without a button press, that a
+cross-origin game frame that instantiates late is found without a reload, and that an unknown-value
+scan narrowed with Went up ends on the score.
 
 Costs and gotchas: one browser and one bridge port, so the suite runs with a single worker and
 fails fast if the port is already taken (it picks `7399` by default so it does not collide with a

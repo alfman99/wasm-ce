@@ -434,3 +434,49 @@ describe('first-pass fast paths', () => {
     }
   });
 });
+
+// "Unknown initial value": a health bar you cannot read. The first pass keeps every position as a
+// copy of the bytes rather than a list that would cut off at 250,000, and narrowing finds the one.
+describe('unknown-value scans', () => {
+  it('keeps every position, then narrows against the copy', () => {
+    const memory = new WebAssembly.Memory({ initial: 2 });
+    const access = new MemoryAccess(memory);
+    const scans = new ScanStore();
+    access.write(0x2000, 'f32', 100);
+    const summary = scans.pass(access, { instanceId: INSTANCE, type: 'f32', mode: 'unchanged' });
+    expect(summary.matchCount).toBe(131072 / 4);
+    expect(scans.results(summary.scanId, access, 0, 100)).toEqual({ hits: [], total: 131072 / 4 });
+    expect(() => scans.serialize(summary.scanId)).toThrow(/narrow it once/);
+
+    access.write(0x2000, 'f32', 72.5);
+    const narrowed = scans.narrow(access, summary.scanId, 'decreased', {});
+    expect(narrowed.matchCount).toBe(1);
+    const hits = scans.results(summary.scanId, access, 0, 10).hits;
+    expect(hits).toEqual([{ address: { instanceId: INSTANCE, offset: 0x2000 }, value: 72.5, previous: 72.5 }]);
+  });
+
+  it('narrows unaligned and with a target through the general path', () => {
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const access = new MemoryAccess(memory);
+    const scans = new ScanStore();
+    const first = scans.pass(access, { instanceId: INSTANCE, type: 'i16', mode: 'changed', alignment: 1 });
+    access.write(0x301, 'i16', 500);
+    const narrowed = scans.narrow(access, first.scanId, 'increased-by', { value: 500 });
+    // 0x301 went 0 -> 500; the overlapping positions 0x300 and 0x302 moved by other amounts.
+    expect(scans.results(first.scanId, access, 0, 10).hits.map((hit) => hit.address.offset)).toEqual([0x301]);
+    expect(narrowed.matchCount).toBe(1);
+  });
+
+  it('stays a bitmap while more than a million positions are left', () => {
+    const memory = new WebAssembly.Memory({ initial: 80 }); // 5 MiB: 1.3 million i32 positions
+    const access = new MemoryAccess(memory);
+    const scans = new ScanStore();
+    const first = scans.pass(access, { instanceId: INSTANCE, type: 'i32', mode: 'changed' });
+    const still = scans.narrow(access, first.scanId, 'unchanged', {});
+    expect(still.matchCount).toBe(first.matchCount);
+    access.write(0x40000, 'i32', 9);
+    const moved = scans.narrow(access, first.scanId, 'increased', {});
+    expect(moved.matchCount).toBe(1);
+    expect(scans.results(first.scanId, access, 0, 5).hits[0]?.address.offset).toBe(0x40000);
+  });
+});

@@ -10,7 +10,7 @@ import {
   type ValueType,
   VALUE_TYPE_BYTES,
 } from '@wasmcheat/protocol';
-import { MemoryAccess, defaultTolerance, type TypedArrayLike } from './memory.js';
+import { MemoryAccess, defaultTolerance, viewReader, type TypedArrayLike } from './memory.js';
 
 export interface ScanSession {
   id: string;
@@ -26,10 +26,22 @@ export interface ScanSession {
   passes: number;
   /** Set when memory grew since the previous pass, so zero-filled bytes are new candidates. */
   grewDuringLastPass?: boolean;
+  /**
+   * An unknown-value scan: every aligned position in the range is a candidate, too many to list,
+   * so they are a bitmap and the previous values are a copy of the bytes. `addresses` stays empty
+   * until a narrowing pass leaves few enough to list.
+   */
+  snapshot?: { start: number; end: number; alignment: number; bytes: Uint8Array; bits: Uint8Array };
   createdAt: number;
 }
 
 const DEFAULT_MAX_RESULTS = 250_000;
+/** An unknown-value scan copies the memory it covers; past this, ask for a range instead. */
+const MAX_SNAPSHOT_BYTES = 1024 * 1024 * 1024;
+/** The movements a snapshot narrows by with a plain comparison, in the order the fast loop tests them. */
+const MOVEMENT: ScanMode[] = ['changed', 'unchanged', 'increased', 'decreased'];
+/** A snapshot scan becomes a plain address list once at most this many candidates are left. */
+const SNAPSHOT_LIST_MAX = 1_000_000;
 
 /** Modes that compare the current value against the value seen in the previous pass. */
 const DELTA_MODES: ScanMode[] = ['changed', 'unchanged', 'increased', 'decreased', 'increased-by', 'decreased-by'];
@@ -222,6 +234,12 @@ export class ScanStore {
     }
     const maxResults = options.maxResults ?? DEFAULT_MAX_RESULTS;
 
+    // "Unknown initial value": a delta mode with no target keeps everything, which a 250,000-entry
+    // list cannot hold for a real game. Keep a copy of the bytes instead and narrow against it.
+    if (options.value === undefined && isDeltaMode(options.mode)) {
+      return this.snapshotPass(access, options, start, end, alignment, width);
+    }
+
     const isFloat = options.type === 'f32' || options.type === 'f64';
     // A first pass has no previous value, so delta modes degrade to "keep everything".
     const compare: CompareOptions = { value: options.value, value2: options.value2, tolerance, isFloat };
@@ -312,6 +330,120 @@ export class ScanStore {
     return summarise(session, options.instanceId, options.mode, access);
   }
 
+  private snapshotPass(access: MemoryAccess, options: ScanOptions, start: number, end: number, alignment: number, width: number): ScanSummary {
+    if (end - start > MAX_SNAPSHOT_BYTES) {
+      throw new BridgeError(
+        'BAD_PARAMS',
+        `an unknown-value scan keeps a copy of the memory it covers, and ${Math.round((end - start) / 2 ** 20)} MiB is more than ${MAX_SNAPSHOT_BYTES / 2 ** 20} MiB: scan for a value you can see, or pass a range`,
+      );
+    }
+    const positions = end - start >= width ? Math.floor((end - start - width) / alignment) + 1 : 0;
+    const bits = new Uint8Array(Math.ceil(positions / 8)).fill(0xff);
+    const id = `s${this.nextId++}`;
+    const session: ScanSession = {
+      id,
+      instanceId: options.instanceId,
+      type: options.type,
+      mode: options.mode,
+      addresses: new Uint32Array(0),
+      values: new Float64Array(0),
+      count: positions,
+      truncated: false,
+      memoryByteLength: access.byteLength,
+      passes: 1,
+      createdAt: Date.now(),
+      snapshot: { start, end, alignment, bytes: access.readBytes(start, end - start), bits },
+    };
+    this.sessions.set(id, session);
+    return summarise(session, options.instanceId, options.mode, access);
+  }
+
+  /** Narrows a snapshot scan: each candidate bit is tested against the copy and cleared if it fails. */
+  private narrowSnapshot(access: MemoryAccess, session: ScanSession, mode: ScanMode, compare: CompareOptions): void {
+    const snapshot = session.snapshot!;
+    const width = VALUE_TYPE_BYTES[session.type];
+    const limit = Math.min(snapshot.end, access.byteLength);
+    const readNow = access.reader(session.type);
+    const readThen = viewReader(new DataView(snapshot.bytes.buffer, snapshot.bytes.byteOffset, snapshot.bytes.byteLength), session.type);
+    const addresses = new Uint32Array(SNAPSHOT_LIST_MAX);
+    const values = new Float64Array(SNAPSHOT_LIST_MAX);
+    const { bits, start, alignment } = snapshot;
+    let survivors = 0;
+    // The common case (aligned, up to 32 bits, a plain movement with no target or tolerance) is a
+    // straight comparison of two typed arrays: 67 million positions in a fraction of a second.
+    const movement = MOVEMENT.indexOf(mode);
+    const fast =
+      movement !== -1 && width <= 4 && alignment === width && start % width === 0 &&
+      compare.value === undefined && compare.tolerance === 0;
+    if (fast) {
+      const now = access.typedArray(session.type) as Exclude<TypedArrayLike, BigInt64Array | BigUint64Array>;
+      const Typed = now.constructor as new (buffer: ArrayBufferLike, offset: number, length: number) => typeof now;
+      const then = new Typed(snapshot.bytes.buffer, snapshot.bytes.byteOffset, Math.floor(snapshot.bytes.byteLength / width));
+      const base = start / width;
+      const last = Math.floor(limit / width) - base; // exclusive position
+      for (let byte = 0; byte < bits.length; byte++) {
+        let mask = bits[byte]!;
+        if (mask === 0) continue;
+        for (let bit = 0; bit < 8; bit++) {
+          const flag = 1 << bit;
+          if ((mask & flag) === 0) continue;
+          const position = byte * 8 + bit;
+          if (position >= last) {
+            mask &= ~flag;
+            continue;
+          }
+          const current = now[base + position]!;
+          const previous = then[position]!;
+          const keep =
+            movement === 0 ? current !== previous : movement === 1 ? current === previous : movement === 2 ? current > previous : current < previous;
+          if (!keep) {
+            mask &= ~flag;
+            continue;
+          }
+          if (survivors < SNAPSHOT_LIST_MAX) {
+            addresses[survivors] = (base + position) * width;
+            values[survivors] = current;
+          }
+          survivors++;
+        }
+        bits[byte] = mask;
+      }
+    }
+    for (let byte = 0; !fast && byte < bits.length; byte++) {
+      let mask = bits[byte]!;
+      if (mask === 0) continue;
+      for (let bit = 0; bit < 8; bit++) {
+        const flag = 1 << bit;
+        if ((mask & flag) === 0) continue;
+        const offset = start + (byte * 8 + bit) * alignment;
+        if (offset + width > limit || offset + width > snapshot.end) {
+          mask &= ~flag;
+          continue;
+        }
+        const current = readNow(offset);
+        if (!satisfies(mode, current, readThen(offset - start), compare)) {
+          mask &= ~flag;
+          continue;
+        }
+        if (survivors < SNAPSHOT_LIST_MAX) {
+          addresses[survivors] = offset;
+          values[survivors] = current;
+        }
+        survivors++;
+      }
+      bits[byte] = mask;
+    }
+    if (survivors <= SNAPSHOT_LIST_MAX) {
+      session.snapshot = undefined;
+      session.addresses = addresses.slice(0, Math.max(survivors, 1));
+      session.values = values.slice(0, Math.max(survivors, 1));
+    } else {
+      // Still too many to list: the bytes now are what the next pass compares against.
+      snapshot.bytes = access.readBytes(start, Math.min(snapshot.end, access.byteLength) - start);
+    }
+    session.count = survivors;
+  }
+
   /** Narrows an existing session against its previous snapshot. */
   narrow(
     access: MemoryAccess,
@@ -338,6 +470,14 @@ export class ScanStore {
     // A few ulps of the larger operand (f32 epsilon is 2^-23); only when the caller set no tolerance.
     const relative = options.tolerance !== undefined || !isFloat ? 0 : session.type === 'f32' ? 2 ** -22 : 2 ** -50;
     const compare: CompareOptions = { value: options.value, value2: options.value2, tolerance, isFloat, relative };
+    if (session.snapshot) {
+      this.narrowSnapshot(access, session, mode, compare);
+      session.mode = mode;
+      session.passes++;
+      session.memoryByteLength = byteLength;
+      session.grewDuringLastPass = grew;
+      return summarise(session, session.instanceId, mode, access);
+    }
 
     const width = VALUE_TYPE_BYTES[session.type];
     const read = access.reader(session.type);
@@ -372,6 +512,9 @@ export class ScanStore {
    */
   serialize(scanId: string): SavedScanData {
     const session = this.get(scanId);
+    if (session.snapshot) {
+      throw new BridgeError('UNSUPPORTED', 'this scan still has every address as a candidate; narrow it once (went up, went down) before saving it');
+    }
     const addresses = session.addresses.slice(0, session.count);
     const values = session.values.slice(0, session.count);
     return {
@@ -426,6 +569,8 @@ export class ScanStore {
   results(scanId: string, access: MemoryAccess, offset: number, limit: number): { hits: ScanHit[]; total: number } {
     const session = this.get(scanId);
     const total = session.count;
+    // Every address is a candidate: listing the first hundred of millions would only mislead.
+    if (session.snapshot) return { hits: [], total };
     const start = Math.max(0, Math.min(offset, total));
     const end = Math.min(total, start + Math.max(0, limit));
     const hits: ScanHit[] = [];
@@ -518,7 +663,7 @@ function indexOfBytes(haystack: Uint8Array, needle: Uint8Array, from: number): n
 }
 
 function summarise(session: ScanSession, instanceId: string, mode: ScanMode, access: MemoryAccess): ScanSummary {
-  const sampleSize = Math.min(8, session.count);
+  const sampleSize = session.snapshot ? 0 : Math.min(8, session.count);
   const sample: ScanHit[] = [];
   for (let i = 0; i < sampleSize; i++) {
     const offset = session.addresses[i]!;

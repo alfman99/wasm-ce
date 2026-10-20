@@ -2,7 +2,7 @@
   "name": "wasmcheat",
   "version": "0.1.0",
   "private": true,
-  "description": "Browser-only Cheat Engine-style memory tool for WebAssembly, driven by an MCP agent.",
+  "description": "Find a number in a WebAssembly game and change it: a browser memory scanner with a DevTools panel and an MCP server.",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -23,7 +23,9 @@
     "test:unit": "vitest run",
     "test:e2e": "playwright test",
     "start": "node packages/mcp-server/dist/bin.js",
-    "demo": "node scripts/demo.mjs"
+    "demo": "node scripts/demo.mjs",
+    "package": "node scripts/package.mjs",
+    "icons": "node scripts/icons.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",
@@ -33,5 +35,14 @@
     "esbuild": "^0.24.0",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alfman99/wasm-ce.git"
+  },
+  "homepage": "https://github.com/alfman99/wasm-ce#readme",
+  "bugs": {
+    "url": "https://github.com/alfman99/wasm-ce/issues"
   }
 }

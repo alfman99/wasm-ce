@@ -354,7 +354,9 @@ export function createServer(bridge: Bridge): McpServer {
         'Cheat Engine-style scan over one instance\'s linear memory. Without scanId it takes a fresh snapshot and filters it ' +
         '(mode "exact" needs a value; the other modes work on the snapshot alone). With scanId it narrows that earlier scan, ' +
         'which is the normal way to converge: begin with "exact" or "changed", then narrow with changed / increased / decreased ' +
-        'after the value moves in the app. Returns a scanId and a match count; use wasmcheat_scan_results to read hits.',
+        'after the value moves in the app. A first pass with a delta mode and no value is an unknown-value scan: every ' +
+        'position stays a candidate (a copy of the memory, not a capped list), results are empty until a narrowing pass ' +
+        'leaves at most a million. Returns a scanId and a match count; use wasmcheat_scan_results to read hits.',
       inputSchema: {
         tabId: TAB_ID,
         instanceId: z.string().describe('Instance id from wasmcheat_list_instances, e.g. "w1".'),

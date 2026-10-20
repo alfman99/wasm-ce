@@ -58,29 +58,7 @@ export class MemoryAccess {
    * detaches the buffer under it.
    */
   reader(type: ValueType): (offset: number) => number {
-    const view = this.view();
-    switch (type) {
-      case 'i8':
-        return (offset) => view.getInt8(offset);
-      case 'u8':
-        return (offset) => view.getUint8(offset);
-      case 'i16':
-        return (offset) => view.getInt16(offset, true);
-      case 'u16':
-        return (offset) => view.getUint16(offset, true);
-      case 'i32':
-        return (offset) => view.getInt32(offset, true);
-      case 'u32':
-        return (offset) => view.getUint32(offset, true);
-      case 'i64':
-        return (offset) => Number(view.getBigInt64(offset, true));
-      case 'u64':
-        return (offset) => Number(view.getBigUint64(offset, true));
-      case 'f32':
-        return (offset) => view.getFloat32(offset, true);
-      case 'f64':
-        return (offset) => view.getFloat64(offset, true);
-    }
+    return viewReader(this.view(), type);
   }
 
   write(offset: number, type: ValueType, value: number): void {
@@ -168,6 +146,32 @@ export class MemoryAccess {
         `address 0x${offset.toString(16)} (+${width} bytes) is outside memory of ${byteLength} bytes`,
       );
     }
+  }
+}
+
+/** A little-endian reader of one type over any view: live memory, or a snapshot of it. */
+export function viewReader(view: DataView, type: ValueType): (offset: number) => number {
+  switch (type) {
+    case 'i8':
+      return (offset) => view.getInt8(offset);
+    case 'u8':
+      return (offset) => view.getUint8(offset);
+    case 'i16':
+      return (offset) => view.getInt16(offset, true);
+    case 'u16':
+      return (offset) => view.getUint16(offset, true);
+    case 'i32':
+      return (offset) => view.getInt32(offset, true);
+    case 'u32':
+      return (offset) => view.getUint32(offset, true);
+    case 'i64':
+      return (offset) => Number(view.getBigInt64(offset, true));
+    case 'u64':
+      return (offset) => Number(view.getBigUint64(offset, true));
+    case 'f32':
+      return (offset) => view.getFloat32(offset, true);
+    case 'f64':
+      return (offset) => view.getFloat64(offset, true);
   }
 }
 

@@ -3,6 +3,10 @@
 From a clean clone to changing a value in a WebAssembly game, without an agent, in about five
 minutes. Every command below runs from the repository root.
 
+Only want to use it on a game? Install the zip from the
+[latest release](https://github.com/alfman99/wasm-ce/releases/latest) as the README says and skip
+to step 5; steps 1 to 4 are for working from source and trying the demo.
+
 ## 1. Build it
 
 ```bash
@@ -80,6 +84,10 @@ There is nothing to pick, attach or approve: the panel works on the tab you open
 - To hold a value, find **Lives** the same way, type `999` and press **Freeze**, then click
   **Hazard**. Lives stay at `999`: the page rewrites the value every 16 ms. The button now says
   **Unfreeze**.
+- A value with no number on screen (a bar, a timer): leave Value empty and press **First Scan**,
+  then press **Went up**, **Went down** or **Stayed the same** each time it moves or does not. On
+  the demo the score only ever climbs, so press **Went up** a few times, a second apart, and the
+  score's address is among the few left.
 - Trust the `before -> after` line over the screen. A game redraws a number when it changes it, so
   the display can lag behind memory.
 

@@ -1093,6 +1093,7 @@ function markScanStep(step: 'first' | 'narrow'): void {
   // Only one filled button at a time, and it is always the next thing to press.
   el('scan-begin').classList.toggle('primary', step === 'first');
   el('scan-narrow').classList.toggle('primary', step === 'narrow');
+  el('scan-quick').hidden = step === 'first';
 }
 
 /**
@@ -1107,7 +1108,7 @@ function syncScanFields(): void {
   // A value is optional for the delta modes (it narrows to "changed AND now equals N"); say so
   // instead of removing the field, because typing a target there is a real technique.
   const optional = ['changed', 'unchanged', 'increased', 'decreased'].includes(mode);
-  el<HTMLInputElement>('scan-value').placeholder = optional ? 'optional' : 'the value on screen';
+  el<HTMLInputElement>('scan-value').placeholder = optional ? 'optional' : '75, or empty';
   if (valueField) valueField.classList.toggle('field--optional', optional);
 }
 
@@ -1148,7 +1149,7 @@ function renderScanHits(hits: ScanHit[], total: number): void {
     },
     total === 0
       ? 'No address holds that value. Check the type (coins are often i64 or f64), or start again with First Scan.'
-      : 'No hits in this answer. Narrow again with Next Scan, or widen the byte range.',
+      : `Every address is still a candidate (${count(total, 'position')}). Change the value in the game, then press Went up, Went down, Changed or Stayed the same.`,
     hidden > 0 ? `${count(hidden, 'more address', 'more addresses')} not shown. Narrow with Next Scan.` : '',
   );
 }
@@ -1189,8 +1190,15 @@ function scanSummaryLine(summary: ScanSummary, verb: string): string {
   } · memory ${summary.memoryByteLength} B`;
 }
 
+/** Delta modes compare with the previous pass; with no value they start an unknown-value scan. */
+const DELTA_SCAN_MODES: readonly string[] = ['changed', 'unchanged', 'increased', 'decreased', 'increased-by', 'decreased-by'];
+
 async function scanBegin(): Promise<string> {
-  const mode = selectOf('scan-mode').value as ScanMode;
+  const picked = selectOf('scan-mode').value as ScanMode;
+  // An empty value means "I cannot read it" (a health bar): start from every address and narrow by
+  // how it moves, instead of refusing because exact needs a number.
+  const unknown = !el<HTMLInputElement>('scan-value').value.trim() && !DELTA_SCAN_MODES.includes(picked);
+  const mode: ScanMode = unknown ? 'unchanged' : picked;
   const params: Record<string, unknown> = {
     instanceId: requireInstance(),
     type: typeOf('scan-type'),
@@ -1206,6 +1214,9 @@ async function scanBegin(): Promise<string> {
   const summary = await pageCall<ScanSummary>('page.scan.begin', params);
   renderScanSummary(summary);
   await liveFound();
+  if (unknown || (summary.sample.length === 0 && summary.matchCount > 0)) {
+    return `began ${summary.scanId} · unknown value ${summary.type} · every address is a candidate (${count(summary.matchCount, 'position')}). Change it in the game, then press Went up, Went down, Changed or Stayed the same.`;
+  }
   return scanSummaryLine(summary, 'began');
 }
 
@@ -1214,6 +1225,14 @@ async function scanNarrow(): Promise<string> {
     scanId: requireScanId(),
     ...scanCompareParams(selectOf('scan-mode').value as ScanMode),
   });
+  renderScanSummary(summary);
+  await liveFound();
+  return scanSummaryLine(summary, 'narrowed');
+}
+
+/** One click per movement: the same narrowing as picking the mode and pressing Next Scan. */
+async function scanMoved(mode: ScanMode): Promise<string> {
+  const summary = await pageCall<ScanSummary>('page.scan.next', { scanId: requireScanId(), mode });
   renderScanSummary(summary);
   await liveFound();
   return scanSummaryLine(summary, 'narrowed');
@@ -1852,6 +1871,9 @@ function wire(): void {
   bind('scan-begin', el('scan-out'), scanBegin);
   bind('scan-narrow', el('scan-out'), scanNarrow);
   bind('scan-drop', el('scan-out'), scanDrop);
+  for (const button of el('scan-quick').querySelectorAll<HTMLButtonElement>('button[data-mode]')) {
+    button.addEventListener('click', () => void run(el('scan-out'), () => scanMoved(button.dataset.mode as ScanMode)));
+  }
   bind('text-scan', el('text-out'), scanText);
   bind('saved-save', el('saved-out'), savedSave);
   bind('saved-list', el('saved-out'), savedList);

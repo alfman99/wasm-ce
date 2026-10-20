@@ -3,8 +3,8 @@
 Last verified from a clean tree on 2026-10-20 (`rm -rf packages/*/dist`, `npm ci`):
 
 - `npm ci` clean, `npm run build` 0 errors, `npm run typecheck` 0 errors
-- `npx vitest run` **155 passed** (15 files)
-- `npx playwright test` **25 passed, 0 skipped** (~35 s, real Chromium, real extension, no mocks)
+- `npx vitest run` **158 passed** (15 files)
+- `npx playwright test` **26 passed, 0 skipped** (~35 s, real Chromium, real extension, no mocks)
 - `npm audit --omit=dev` 0 vulnerabilities. The full audit flags 6 in test tooling only (vitest 2,
   the esbuild inside vite); fixing them needs a vitest major upgrade.
 
@@ -33,6 +33,10 @@ Last verified from a clean tree on 2026-10-20 (`rm -rf packages/*/dist`, `npm ci
 - Scan speed on 256 MiB (Node, M-series): exact i32 ~80 ms, f32 ~120 ms, i64 ~45 ms, greater i32
   ~95 ms, unaligned (alignment 1) ~260 ms. Each type and mode family has its own loop; a unit test
   pins every loop to the reference predicate for every type, mode and alignment.
+- Unknown-value scans: First Scan with no value keeps every aligned position as a bitmap plus a copy
+  of the bytes (256 MiB: 61 ms), and a movement pass narrows against it (~210 ms) until at most a
+  million candidates are left, when it becomes a plain list. Unit and e2e tested. Saving such a scan
+  before its first narrowing is refused with a sentence.
 - Scan / narrow (13 modes: exact, not-equal, less, greater, less-or-equal, greater-or-equal,
   between, changed, unchanged, increased, decreased, increased-by, decreased-by), text scan
   (ascii / utf8 / hex bytes), read, write, freeze, watch.

@@ -1,0 +1,35 @@
+name: Bug report
+description: Something in the panel, the extension or the MCP server does not work.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead. Paste the panel's message if it showed one.
+    validations:
+      required: true
+  - type: input
+    id: page
+    attributes:
+      label: Page
+      description: The URL of the game or page, if it is public. A page we can open is the fastest way to a fix.
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and version
+      placeholder: Chrome 131, Brave 1.73, Edge 131
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: WasmCheat version
+      description: Shown at the bottom left of the panel.
+      placeholder: extension 0.1.0 · protocol 1
+  - type: textarea
+    id: diagnose
+    attributes:
+      label: Why is it empty? / Diagnose output
+      description: If the panel found no wasm, press "Why is it empty?" and paste what it printed.
+      render: text

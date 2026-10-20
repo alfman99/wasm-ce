@@ -125,6 +125,11 @@ test('the panel keeps scan hits, the picked address and bookmarks live', async (
     await expect(row.locator('.hit--moved')).toHaveCount(1);
     expect(await row.evaluate((item, before) => item === before, first)).toBe(true);
 
+    // One click narrows by movement: the score went up, so "Went up" keeps exactly that address.
+    await expect(panel.locator('#scan-quick')).toBeVisible();
+    await panel.click('#scan-quick button[data-mode="increased"]');
+    await expect(panel.locator('#scan-id')).toContainText('1 match');
+
     await row.locator('button').click();
     const now = await panel.locator('#pick-now').textContent();
     await game.click('#mine');
@@ -172,5 +177,45 @@ test('a game frame that instantiates late is found without a reload', async () =
   } finally {
     await browser.close();
     host.close();
+  }
+});
+
+// A value you cannot read (a health bar): First Scan with Value empty keeps every address as a copy
+// of memory, and the movement buttons narrow it. The demo's score is the value that moves.
+test('an unknown-value scan narrows by movement to the address that moved', async () => {
+  await assertPortFree(DEAD_BRIDGE_PORT);
+  const demo = await startDemoServer();
+  const browser = await launchBrowser();
+  try {
+    const worker = browser.context.serviceWorkers()[0] ?? (await browser.context.waitForEvent('serviceworker'));
+    await worker.evaluate((port) => chrome.storage.local.set({ wasmcheatPort: port }), DEAD_BRIDGE_PORT);
+    const game = await browser.context.newPage();
+    await game.goto(DEMO_URL);
+    await game.waitForFunction(() => document.querySelector('#status')?.textContent?.includes('wasm ready'));
+    await game.evaluate(() => (window as unknown as { __foundry: { pause: () => void } }).__foundry.pause());
+    const panel = await browser.context.newPage();
+    await panel.goto(`chrome-extension://${browser.extensionId}/panel.html`);
+    await expect(panel.locator('#scan-instance')).toHaveValue('w1');
+
+    await panel.click('#scan-begin');
+    await expect(panel.locator('#scan-hits')).toContainText('Every address is still a candidate');
+    // Each pass reports "narrowed …" when it returns; clearing the line first makes every wait real.
+    const narrow = async (mode: string) => {
+      await panel.evaluate(() => {
+        document.querySelector('#scan-out')!.textContent = '';
+      });
+      await panel.click(`#scan-quick button[data-mode="${mode}"]`);
+      await expect(panel.locator('#scan-out')).toContainText('narrowed');
+    };
+    await narrow('unchanged');
+    await game.click('#mine');
+    await narrow('increased');
+    await narrow('unchanged');
+    await game.click('#mine');
+    await narrow('increased');
+    await expect(panel.locator('#scan-hits button', { hasText: 'w1:0x408' })).toHaveCount(1);
+  } finally {
+    await browser.close();
+    await demo.stop();
   }
 });

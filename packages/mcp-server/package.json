@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": { "wasmcheat-mcp": "./dist/bin.js" },
+  "bin": {
+    "wasmcheat-mcp": "./dist/bin.js"
+  },
   "scripts": {
     "build": "node build.mjs",
     "start": "node dist/bin.js"
@@ -17,5 +19,6 @@
   "devDependencies": {
     "@types/ws": "^8.5.13",
     "esbuild": "^0.24.0"
-  }
+  },
+  "license": "MIT"
 }

@@ -9,5 +9,6 @@
   },
   "devDependencies": {
     "esbuild": "^0.24.0"
-  }
+  },
+  "license": "MIT"
 }

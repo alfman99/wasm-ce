@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "WasmCheat",
   "version": "0.1.0",
-  "description": "Cheat Engine-style memory tool for WebAssembly, driven by an MCP agent or the DevTools panel. Every change is audited.",
+  "description": "Find a number in a WebAssembly game and change it, from a DevTools panel or an MCP agent. Every change is logged.",
   "minimum_chrome_version": "116",
   "permissions": ["scripting", "tabs", "storage", "activeTab", "alarms"],
   "host_permissions": ["http://*/*", "https://*/*"],
@@ -17,9 +17,19 @@
     "service_worker": "sw.js",
     "type": "module"
   },
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "WasmCheat"
+    "default_title": "WasmCheat",
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png"
+    }
   },
   "content_scripts": [
     {
