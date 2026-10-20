@@ -644,8 +644,8 @@ async function refreshStatus(): Promise<void> {
   const wasm = knownInstances.length === 0 ? 'no wasm' : count(knownInstances.length, 'wasm module');
   setPill(
     'agent',
-    info.evalAllowed || knownInstances.length === 0 ? wasm : `${wasm} · scripts blocked`,
-    knownInstances.length > 0 && info.evalAllowed ? 'live' : 'idle',
+    info.evalAllowed !== false || knownInstances.length === 0 ? wasm : `${wasm} · scripts blocked`,
+    knownInstances.length > 0 && info.evalAllowed !== false ? 'live' : 'idle',
   );
   if (knownInstances.length === 0) {
     showNothing(
@@ -747,7 +747,7 @@ function attachAndReport(reload: boolean): () => Promise<string> {
         ? 'Reloaded. Still no WebAssembly in this page.'
         : `Reloaded. Found ${count(knownInstances.length, 'wasm module')}: ${knownInstances.map((instance) => instance.id).join(', ')}.`,
     ];
-    if (!agent.evalAllowed) lines.push('This page blocks scripts, so hooks need a declarative fallback.');
+    if (agent.evalAllowed === false) lines.push('This page blocks scripts, so hooks need a declarative fallback.');
     if (knownInstances.length === 0) {
       lines.push('', await diagnose().catch((error: unknown) => String(error)));
       lines.push('', 'If the game only starts on a click, start it first, then press Reload page.');
@@ -850,7 +850,7 @@ async function diagnose(): Promise<string> {
     info.hint,
     `url: ${info.url}${info.frameId === undefined ? '' : ` (frame ${info.frameId})`}`,
     `readyState: ${info.readyState} · agent ${info.version} · ${info.agentAgeMs} ms old · eval ${
-      info.evalAllowed ? 'allowed' : 'blocked'
+      info.evalAllowed === undefined ? 'not tried yet' : info.evalAllowed ? 'allowed' : 'blocked'
     }`,
     `instances: ${info.instances} · canvases: ${info.canvases} · iframes: ${info.iframes.length}`,
     `calls: ${compact(info.calls)}`,

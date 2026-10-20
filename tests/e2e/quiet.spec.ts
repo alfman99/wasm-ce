@@ -89,6 +89,50 @@ test('no MCP server: no extension errors, no console errors, and an empty tab sa
   }
 });
 
+// YouTube enforces Trusted Types, where compiling a string is itself a reported violation. The agent
+// used to probe `new Function` at start-up, so every YouTube visit left an error on the extension.
+test('a page that enforces Trusted Types leaves no extension error', async () => {
+  await assertPortFree(DEAD_BRIDGE_PORT);
+  const wasm = '[0,97,115,109,1,0,0,0,5,3,1,0,1,7,10,1,6,109,101,109,111,114,121,2,0]';
+  const strict = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html', 'content-security-policy': "require-trusted-types-for 'script'" });
+    res.end(
+      `<!doctype html><title>Strict page</title><link rel="icon" href="data:," /><canvas></canvas><script>WebAssembly.instantiate(new Uint8Array(${wasm})).then((r) => { window.keep = r; });</script>`,
+    );
+  }).listen(PLAIN_PORT);
+  const browser = await launchBrowser();
+  try {
+    const worker = browser.context.serviceWorkers()[0] ?? (await browser.context.waitForEvent('serviceworker'));
+    await worker.evaluate((port) => chrome.storage.local.set({ wasmcheatPort: port }), DEAD_BRIDGE_PORT);
+    const admin = await browser.context.newPage();
+    await admin.goto('chrome://extensions');
+    await admin.evaluate(async (id) => {
+      const dev = (chrome as unknown as {
+        developerPrivate: { updateProfileConfiguration: (c: object) => Promise<void>; reload: (id: string, o: object) => Promise<void> };
+      }).developerPrivate;
+      await dev.updateProfileConfiguration({ inDeveloperMode: true });
+      await dev.reload(id, { failQuietly: true });
+    }, browser.extensionId);
+    await sleep(1_500);
+    const page = await browser.context.newPage();
+    await page.goto(`http://127.0.0.1:${PLAIN_PORT}/`);
+    const panel = await browser.context.newPage();
+    await panel.goto(`chrome-extension://${browser.extensionId}/panel.html`);
+    await expect(panel.locator('#agent')).toHaveText('1 wasm module', { timeout: 20_000 });
+    await sleep(2_000);
+    const runtimeErrors = await admin.evaluate(async (id) => {
+      const info = await (chrome as unknown as {
+        developerPrivate: { getExtensionInfo: (id: string) => Promise<{ runtimeErrors: { message: string }[] }> };
+      }).developerPrivate.getExtensionInfo(id);
+      return info.runtimeErrors.map((error) => error.message);
+    }, browser.extensionId);
+    expect(runtimeErrors).toEqual([]);
+  } finally {
+    await browser.close();
+    strict.close();
+  }
+});
+
 // The Found list, the editor and the bookmarks are read four times a second. A value that moved in
 // the game with no button pressed in the panel proves the panel is live, and the same
 // <li> before and after proves it updates in place instead of rebuilding under the cursor.

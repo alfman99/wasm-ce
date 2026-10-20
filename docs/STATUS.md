@@ -120,7 +120,9 @@ Last verified from a clean tree on 2026-10-20 (`rm -rf packages/*/dist`, `npm ci
   glue caches exports in a local (`_get_score = wasmExports['get_score']`), which is why the demo
   ships a hand-written loader; the README documents this.
 - **`evalAllowed: false`** (strict CSP, e.g. YouTube): free-form hook bodies are refused with
-  `HOOK_EVAL_BLOCKED`; declarative fallbacks (`replace-return`, `offset-result`) still work.
+  `HOOK_EVAL_BLOCKED`; declarative fallbacks (`replace-return`, `offset-result`) still work. The
+  check runs on the first hook with a body, not at start-up, because on a Trusted Types page the
+  check is itself a reported violation; until then `evalAllowed` is absent.
 - **Frame pick is a heuristic**: the service worker probes frames with `page.diagnose` and takes the
   one holding the most instances. `wasmcheat_attach {frameId}` overrides it.
 - **The memory viewer is read-only**: it dumps and navigates, and writes go through the typed write
