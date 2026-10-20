@@ -2,7 +2,8 @@
   "name": "wasmcheat",
   "version": "0.1.0",
   "private": true,
-  "description": "Find a number in a WebAssembly game and change it: a browser memory scanner with a DevTools panel and an MCP server.",
+  "description": "Change any web app or browser game from an AI agent or a DevTools panel: run JavaScript in the page, edit WebAssembly memory, and keep the change as a mod.",
+  "author": "The WasmCheat contributors",
   "type": "module",
   "engines": {
     "node": ">=22"

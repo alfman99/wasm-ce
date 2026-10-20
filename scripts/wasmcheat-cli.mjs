@@ -2,7 +2,7 @@
 // One-shot MCP client for manual probing: same stdio path an agent uses, from the shell.
 //
 //   node scripts/wasmcheat-cli.mjs tabs
-//   node scripts/wasmcheat-cli.mjs attach 123456 '{"reason":"find the score","waitSeconds":120}'
+//   node scripts/wasmcheat-cli.mjs attach 123
 //   node scripts/wasmcheat-cli.mjs scan '{"tabId":123,"instanceId":"w1","type":"i32","mode":"exact","value":75}'
 //   node scripts/wasmcheat-cli.mjs audit 40
 //
@@ -52,7 +52,7 @@ await client.connect(transport);
 
 const start = Date.now();
 let result = await client.callTool({ name: tool, arguments: args }, undefined, {
-    // The SDK client gives up after 60 s by default, while an approval wait can last minutes.
+    // The SDK client gives up after 60 s by default, while a watchpoint or a reload can take longer.
     timeout: Number(process.env.WASMCHEAT_RPC_TIMEOUT ?? 900_000),
   });
 
@@ -86,7 +86,7 @@ function toolName(raw) {
 /** `attach 123`, `instances 123`, `audit 40`, `detach 123`, `read w1:0x408`. */
 function shorthand(raw, first) {
   const tabId = Number(first);
-  if (raw.includes('attach')) return { tabId, reason: 'manual check from wasmcheat-cli', waitSeconds: 120 };
+  if (raw.includes('attach')) return { tabId };
   if (raw.includes('detach') || raw.includes('instances')) return { tabId };
   if (raw.includes('audit')) return { limit: tabId };
   return Number.isFinite(tabId) ? { tabId } : { address: first };

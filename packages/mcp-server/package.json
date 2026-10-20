@@ -2,6 +2,7 @@
   "name": "@wasmcheat/mcp-server",
   "version": "0.1.0",
   "private": true,
+  "description": "The MCP server that lets an AI agent drive the WasmCheat extension over a local WebSocket bridge.",
   "type": "module",
   "bin": {
     "wasmcheat-mcp": "./dist/bin.js"
@@ -20,5 +21,10 @@
     "@types/ws": "^8.5.13",
     "esbuild": "^0.24.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alfman99/wasm-ce.git",
+    "directory": "packages/mcp-server"
+  }
 }

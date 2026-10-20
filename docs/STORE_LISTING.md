@@ -11,7 +11,7 @@ store requires.
 
 **Summary** (132 characters max):
 
-> Find a number in a browser game and change it. A WebAssembly memory scanner in a DevTools panel.
+> Change any web app or browser game from an AI agent or a DevTools panel: run JavaScript, edit WebAssembly memory, keep it as a mod.
 
 **Category:** Developer Tools
 
@@ -19,8 +19,9 @@ store requires.
 
 **Description:**
 
-> WasmCheat is a memory scanner for games and apps built with WebAssembly (Unity, Godot,
-> Emscripten, Rust), the way Cheat Engine is for desktop programs, but inside your browser.
+> WasmCheat changes web apps and browser games running in your browser. It runs JavaScript in the
+> page, reads and writes the memory of games built with WebAssembly (Unity, Godot, Emscripten, Rust),
+> and keeps a change as a mod that comes back every time the page loads.
 >
 > Open DevTools on the game's tab and choose the WasmCheat tab:
 >
@@ -53,8 +54,9 @@ store requires.
 
 **Single purpose:**
 
-> Lets a person read and change the memory of a WebAssembly program running in a web page, from a
-> DevTools panel, to inspect or modify games and apps they own or may test.
+> Lets a person, or an AI agent they connect on their own machine, inspect and change a web app or game
+> running in a page: its WebAssembly memory and its JavaScript, including changes kept to run on every
+> load, for apps they own or may test.
 
 **Permission justifications:**
 
@@ -73,8 +75,7 @@ not fetched from anywhere, and every run is written to the audit log.
 **Data usage:** the extension collects none of the listed data types. Certify all three
 disclosures (no sale, no unrelated use, no creditworthiness use).
 
-**Privacy policy URL:** https://github.com/alfman99/wasm-ce/blob/main/PRIVACY.md (works once the
-repository is public).
+**Privacy policy URL:** https://github.com/alfman99/wasm-ce/blob/main/PRIVACY.md
 
 ## Review risks to expect
 

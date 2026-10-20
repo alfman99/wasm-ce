@@ -1,23 +1,25 @@
 # Quick start
 
-From a clean clone to changing a value in a WebAssembly game, without an agent, in about five
-minutes. Every command below runs from the repository root.
+From a clean clone to changing a value in a WebAssembly game, then handing the same job to an agent,
+in about five minutes. Every command below runs from the repository root.
 
-Only want to use it on a game? Install the zip from the
-[latest release](https://github.com/alfman99/wasm-ce/releases/latest) as the README says and skip
-to step 5; steps 1 to 4 are for working from source and trying the demo.
+The zip on the [latest release](https://github.com/alfman99/wasm-ce/releases/latest) holds the
+extension only, so it gives you the panel but no MCP server for an agent. This guide builds both
+from source.
 
 ## 1. Build it
 
+You need Node 22 or newer and git.
+
 ```bash
+git clone https://github.com/alfman99/wasm-ce.git && cd wasm-ce
 npm install
 npm run build
 ```
 
 `npm run build` compiles the protocol, the page agent, the extension, the MCP server and the demo.
-It also compiles `packages/demo-app/src/game.c` to `packages/demo-app/prebuilt/game.wasm`, when it
-can find a wasm-capable clang (see [README](../README.md#requirements)); otherwise the committed
-`.wasm` is used unchanged.
+It also compiles `packages/demo-app/src/game.c` to `packages/demo-app/prebuilt/game.wasm` when it
+finds a clang that can target wasm; otherwise the committed `.wasm` is used unchanged.
 
 ## 2. Load the extension
 
@@ -41,7 +43,7 @@ Why a token exists at all: the bridge listens on `ws://127.0.0.1:7331`, and with
 process could answer this server's tool calls with made-up data, or, while the server is down, pose as
 it. Once paired, both ends prove they hold the token without sending it.
 
-## 4. Start the target
+## 4. Start the demo
 
 ```bash
 npm run demo
@@ -50,8 +52,9 @@ npm run demo
 That serves the demo on <http://127.0.0.1:4173/>, opens it, and prints the extension path and the MCP
 config block. (`node packages/demo-app/serve.mjs` does the same without opening anything.)
 
-Foundry is a clicker: a score, ore, lives and a depth. Its state lives in linear memory, which is
-what makes it a target rather than a toy. Click **Mine** a few times and leave the tab open.
+Foundry is a clicker: a score, ore, lives and a depth. Its state lives in linear memory, the single
+block of bytes a WebAssembly module reads and writes, which is what the panel scans. Click **Mine** a
+few times and leave the tab open.
 
 ## 5. Open the panel
 
@@ -91,17 +94,32 @@ There is nothing to pick, attach or approve: the panel works on the tab you open
 - Trust the `before -> after` line over the screen. A game redraws a number when it changes it, so
   the display can lag behind memory.
 
-## 8. Next
+## 8. Let an agent do it
+
+1. Register the MCP server with your agent: the one line for each client is in the README under
+   [Connect your agent](../README.md#connect-your-agent).
+2. Check that the panel's pill says `MCP live`.
+3. Ask in plain words. First prompts that work:
+   - "list my tabs"
+   - "in the open tab, set my coins to 5000"
+   - "add an aim line to this game and keep it"
+
+The agent finds the value, changes it, reads it back, and with "keep it" saves the change as a mod
+that runs again every time the game loads. [docs/AGENT_GUIDE.md](AGENT_GUIDE.md) is the method it
+follows.
+
+## Next
 
 - [docs/PANEL.md](PANEL.md): every card, the shortcuts, and what each one maps to over MCP.
-- [docs/AGENT_GUIDE.md](AGENT_GUIDE.md): the same loop, driven by an MCP client.
+- [docs/AGENT_GUIDE.md](AGENT_GUIDE.md): the loop an agent runs, and its traps.
+- [docs/TOOLS.md](TOOLS.md): every MCP tool with examples.
 - [docs/DESIGN.md](DESIGN.md): why the panel looks and reads the way it does.
 
 ## When it does not work
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| Popup says `bridge offline` | No MCP server running, or a wrong port | Start the server; the popup retries with backoff |
+| Popup says `MCP off` | No MCP server running, or a wrong port | Start the server; the popup retries with backoff |
 | Popup says `MCP token refused` | Pairing is off and the saved token does not match `~/.wasmcheat/token` | Paste the current file contents and save |
 | Panel says `MCP off` while the server runs | Its port differs from the extension's | Check `WASMCHEAT_PORT` |
 | `NO_AGENT` | The page has no agent (it loaded before the extension, or the tab was replaced) | Press **Reload page** |
@@ -109,4 +127,4 @@ There is nothing to pick, attach or approve: the panel works on the tab you open
 | Instances empty, Diagnose lists a cross-origin frame | The game is in an iframe | Attach with the frame the panel reports, or let the extension pick it |
 | Instances empty, Diagnose lists `.wasm` URLs, no frames | The wasm runs in a worker | Open **More tools** and check **Workers** |
 | Scan finds 0 hits | Wrong width or wrong type | Try `i64` and `f64` before deciding the address is wrong |
-| Hook calls fail with `HOOK_EVAL_BLOCKED` | The page's CSP forbids `new Function` | Use the declarative fallback (`passthrough`, `replace-return`, `offset-result`) |
+| Hook calls fail with `HOOK_EVAL_BLOCKED` | The page's content security policy (CSP) forbids `new Function` | Use the declarative fallback (`passthrough`, `replace-return`, `offset-result`) |

@@ -2,6 +2,7 @@
   "name": "@wasmcheat/demo-app",
   "version": "0.1.0",
   "private": true,
+  "description": "A small WebAssembly demo game and test pages (iframes, a worker) to try the extension on and to run the end-to-end tests against.",
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
@@ -10,5 +11,10 @@
   "devDependencies": {
     "esbuild": "^0.24.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alfman99/wasm-ce.git",
+    "directory": "packages/demo-app"
+  }
 }

@@ -22,7 +22,7 @@ reaches the value wins, and JavaScript beats memory whenever the state is in Jav
 - `ytgame.engagement.sendScore` and the game's own score reporting go to YouTube: never change scores.
 - Some saves carry a cheat flag (`G_Cheated`): leave it at 0.
 - A headless browser reaches the game frame directly at its `playables.usercontent.goog` URL;
-  youtube.com itself stops at a consent page that must not be accepted for the owner.
+  youtube.com itself stops at a consent page, which an agent must never accept for the user.
 
 ## JavaScript engines (state lives in JS objects)
 

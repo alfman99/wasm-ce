@@ -2,6 +2,7 @@
   "name": "@wasmcheat/protocol",
   "version": "0.1.0",
   "private": true,
+  "description": "Message types and error codes shared by the extension, the page agent and the MCP server.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -14,5 +15,10 @@
   "devDependencies": {
     "typescript": "^5.7.2"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alfman99/wasm-ce.git",
+    "directory": "packages/protocol"
+  }
 }

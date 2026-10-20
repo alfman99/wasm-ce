@@ -39,6 +39,7 @@ import {
 import { Bridge } from './bridge.js';
 import { waitForPageEvent } from './events.js';
 import { isAuditKind, onRecord, record, tail, type AuditLine } from './audit.js';
+import { GUIDE, GUIDE_TOPICS, INSTRUCTIONS } from './guide.js';
 
 export type ToolResult = CallToolResult;
 
@@ -112,7 +113,7 @@ const TAB_ID = z
   .describe('Tab id from wasmcheat_list_tabs. Omit for the tab in front.');
 
 export function createServer(bridge: Bridge): McpServer {
-  const server = new McpServer({ name: 'wasmcheat', version: '0.1.0' });
+  const server = new McpServer({ name: 'wasmcheat', version: '0.1.0' }, { instructions: INSTRUCTIONS });
 
   // Mirror every appended audit line to the extension so the DevTools panel can show it: a
   // browser cannot read $WASMCHEAT_HOME/audit.jsonl, and this keeps `record` the one producer.
@@ -1204,6 +1205,29 @@ export function createServer(bridge: Bridge): McpServer {
   );
 
   server.registerTool(
+    'wasmcheat_guide',
+    {
+      title: 'How to mod any app with these tools',
+      description:
+        'Returns part of the method for changing a web app or game with WasmCheat, or a script to run with ' +
+        'wasmcheat_run_script. Start with "workflow". Topics: ' +
+        Object.entries(GUIDE_TOPICS)
+          .map(([topic, what]) => `"${topic}" (${what})`)
+          .join(', ') +
+        '. A script topic returns code to pass as `code` as it is; il2cpp takes a parameter line before it ' +
+        '(its header says which).',
+      inputSchema: {
+        topic: z.enum(Object.keys(GUIDE_TOPICS) as [string, ...string[]]).optional().describe('Defaults to "workflow".'),
+      },
+    },
+    async ({ topic }) => {
+      const text = GUIDE[topic ?? 'workflow'];
+      if (text === undefined) return fail(new BridgeError('UNSUPPORTED', 'this build of the server has no guide; build it with npm run build'));
+      return { content: [{ type: 'text', text }] };
+    },
+  );
+
+  server.registerTool(
     'wasmcheat_mod',
     {
       title: 'Keep a script for a site (a mod)',
@@ -1249,7 +1273,7 @@ export function createServer(bridge: Bridge): McpServer {
     'wasmcheat_audit',
     {
       title: 'Read the audit log',
-      description: 'Return the most recent audit entries (every write, freeze and hook, plus attaches and approvals).',
+      description: 'Return the most recent audit entries: every write, freeze, hook, patch, script run and mod change, plus attaches.',
       inputSchema: { limit: z.number().int().min(1).max(500).optional() },
     },
     async ({ limit }) => {

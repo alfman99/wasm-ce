@@ -1,7 +1,9 @@
 // IL2CPP reflection from memory alone, for any Unity WebGL game, with no il2cpp_* exports needed.
-//   all assemblies:  node scripts/wc.mjs run_script '{"tabId":TAB}' --code .agents/skills/mod-any-webapp/scripts/il2cpp.js
-//   class names:     ... --var ASSEMBLY='"Assembly-CSharp.dll"' --var MATCH='"player|enemy|health"'
-//   fields + objects:... --var CLASSES='["PlayerStatsHandler","Character"]'
+// Pass this file as the `code` of wasmcheat_run_script (wasmcheat_guide returns it as the "il2cpp"
+// topic). What it returns depends on a line you put before it:
+//   nothing:                                   the assemblies and how many classes each has;
+//   const ASSEMBLY = 'AssetsAssembly.dll'; const MATCH = 'player|enemy|health';   matching class names;
+//   const CLASSES = ['PlayerStatsHandler', 'Character'];   fields with offsets, sample values, objects.
 // A mod copies the functions it needs (findClass, objects) and finds everything again by name on
 // every load, because addresses move. Layout, metadata v24 to v31 on wasm32:
 //   metadata header: 0xFAB11BAF, then the string table offset and size at words 6 and 7;

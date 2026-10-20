@@ -2,33 +2,110 @@
 
 [![CI](https://github.com/alfman99/wasm-ce/actions/workflows/ci.yml/badge.svg)](https://github.com/alfman99/wasm-ce/actions/workflows/ci.yml)
 
-Find a number in a browser game and change it. WasmCheat is a memory scanner for WebAssembly, the
-way Cheat Engine is for desktop games, except it lives in your browser: a DevTools panel, no
-download besides the extension, nothing native, no debugger.
+Change any web app or browser game from your AI agent. WasmCheat is a browser extension and an MCP
+server: your agent looks at what the page is built with, changes it while it runs, and keeps the change
+as a mod that comes back every time the page loads. A DevTools panel does the same by hand.
 
 ![The WasmCheat panel: the found list with live values beside the scan controls, and an editor open
 on the address that holds the score](docs/img/panel.png)
 
-It works on games built for the web with Unity, Godot, Emscripten or Rust, including the ones inside
-YouTube Playables and itch.io embeds. Every change you make is written to a log.
+What an agent has done with it, each in one conversation:
 
-Use it on games and programs you own or are allowed to test, not to cheat other people in online
-games. See [Policy](#policy).
+- **Added a feature a game shipped turned off.** An aim line in a PlayCanvas bubble shooter, plus
+  swap, recolour and a fireball on demand, from a menu drawn over the game.
+- **Found a value in a compiled game and kept it changed.** Coins and tokens in a Unity game, by the
+  names its save uses, and the game's own god mode and run speed, by reading Unity's class layout
+  straight from memory.
+- **Kept it.** Both menus come back on every reload, with nobody pasting anything.
+
+It reaches what a page keeps in JavaScript (any engine or framework: PlayCanvas, three.js, Phaser,
+React) and what a compiled game keeps in WebAssembly memory (Unity, Godot, Emscripten, Rust), including
+games inside cross-origin iframes such as YouTube Playables and itch.io embeds. Every change is logged,
+and nothing leaves your machine: see [PRIVACY.md](PRIVACY.md). Read the [Policy](#policy) before you use it.
 
 ## Install
 
-No programming needed. Works in Chrome, Brave, Edge and other Chromium browsers (version 116+).
+You need Node 22 or newer and a Chromium browser, version 116 or newer (Chrome, Brave, Edge).
 
-1. Download `wasmcheat-extension-v….zip` from the
-   [latest release](https://github.com/alfman99/wasm-ce/releases/latest) and unzip it.
-2. Open `chrome://extensions` (`brave://extensions`, `edge://extensions`) and turn on
-   **Developer mode**.
-3. Press **Load unpacked** and pick the unzipped `wasmcheat` folder.
+```bash
+git clone https://github.com/alfman99/wasm-ce.git && cd wasm-ce
+npm install
+npm run build
+```
 
-That is all: a welcome tab opens and shows where the panel is. The MCP server below is optional, for letting an AI agent drive it. WasmCheat collects
-nothing and talks to no server but your own machine: see [PRIVACY.md](PRIVACY.md).
+Then load the extension:
 
-## Use it
+1. Open `chrome://extensions` (`brave://extensions`, `edge://extensions`) and turn on **Developer mode**.
+2. Press **Load unpacked** and pick the `packages/extension/dist` folder.
+3. Pin WasmCheat to the toolbar. A welcome tab shows where the panel is.
+
+Each [release](https://github.com/alfman99/wasm-ce/releases) also carries the extension as a zip, for the
+panel alone; the agent needs the MCP server, which is built from source.
+
+## Connect your agent
+
+The MCP server is `packages/mcp-server/dist/bin.js`, started by your agent's client over stdio. Print its
+full path from the repo folder with `echo "$PWD/packages/mcp-server/dist/bin.js"` and use it below.
+
+**Claude Code**
+
+```bash
+claude mcp add wasmcheat --scope user -- node /full/path/to/wasm-ce/packages/mcp-server/dist/bin.js
+```
+
+**Claude Desktop**: in `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS,
+`%APPDATA%\Claude\claude_desktop_config.json` on Windows. Cursor reads the same shape from
+`~/.cursor/mcp.json`.
+
+```json
+{
+  "mcpServers": {
+    "wasmcheat": {
+      "command": "node",
+      "args": ["/full/path/to/wasm-ce/packages/mcp-server/dist/bin.js"]
+    }
+  }
+}
+```
+
+**Codex**: in `~/.codex/config.toml`.
+
+```toml
+[mcp_servers.wasmcheat]
+command = "node"
+args = ["/full/path/to/wasm-ce/packages/mcp-server/dist/bin.js"]
+```
+
+**Any other MCP client**: a stdio server with the command `node` and that path as its argument.
+
+Restart the client, keep the browser open, and the extension pairs with the server by itself within a
+few seconds: the panel's pill turns **MCP live**. Only one server can hold the connection at a time, so
+do not also run `npm start` while your agent is connected.
+
+## Ask for a change
+
+Open the app or game, let it start, and talk to your agent:
+
+> List my tabs and tell me what the game in front is built with.
+>
+> In this game, give me 5000 coins.
+>
+> Add an aim line to this game, with a small menu to turn it on and off, and keep it.
+
+The server tells every agent the method when it connects, and serves the full guide and its scripts
+through the `wasmcheat_guide` tool, so there is nothing else to set up. The agent works out where the
+app keeps what you asked for, changes it, asks you what the game shows, and keeps the change as a mod.
+Reload the page and the mod comes back on its own.
+
+Two things help it: say the number you see on screen when it asks, since that is how it knows it found
+the right value; and after you reload or update the extension, reload the game's tab too.
+
+Agents that read [Agent Skills](https://agentskills.io) can also load the method as a skill: copy
+[`.agents/skills/mod-any-webapp`](.agents/skills/mod-any-webapp/SKILL.md) into the agent's skills folder
+(for Claude Code, `~/.claude/skills/`). The [agent guide](docs/AGENT_GUIDE.md) and the
+[tool reference](docs/TOOLS.md) have the details.
+
+## Or do it by hand
 
 1. Open the game and let it start.
 2. Open DevTools (<kbd>F12</kbd>, or <kbd>⌥</kbd><kbd>⌘</kbd><kbd>I</kbd> on a Mac) and choose the
@@ -38,728 +115,40 @@ nothing and talks to no server but your own machine: see [PRIVACY.md](PRIVACY.md
    or two addresses are left. The list updates live, and a value that moved is highlighted.
 5. Click an address, type a new value, and press **Write**, or **Freeze** to hold it there.
 
-For something you cannot read as a number, like a health bar, set the value type (bars are usually
-`f32`), leave **Value** empty and press **First Scan**. Every address starts as a candidate; then
-press **Went down**, **Went up** or **Stayed the same** each time the bar moves, or does not. Coins
-in engine-built games are often `i64` or `f64` rather than `i32`.
+For a value you cannot read as a number, like a health bar, leave **Value** empty and narrow with
+**Went up**, **Went down** and **Stayed the same**. The **Script** card under More tools runs JavaScript
+in the game and keeps it as a mod with **Run and keep**. [docs/QUICKSTART.md](docs/QUICKSTART.md) walks
+through it on the bundled demo game (`npm run demo`).
 
-When a page has no WebAssembly the panel says so. If the game was already running before you
-installed WasmCheat, the panel reloads the page once so it can see it.
-
-## Build from source
-
-```bash
-git clone https://github.com/alfman99/wasm-ce.git && cd wasm-ce
-npm install && npm run build
-npm run demo        # serves and opens a small demo game
-```
-
-Load `packages/extension/dist` with **Load unpacked**, open DevTools on the demo tab, and follow
-the steps above. [CONTRIBUTING.md](CONTRIBUTING.md) has the tests and the layout.
-
-## Start here
+## Documentation
 
 | If you want to | Read |
 | --- | --- |
-| change a value in five minutes | [docs/QUICKSTART.md](docs/QUICKSTART.md) |
+| change a value in five minutes, by hand or with an agent | [docs/QUICKSTART.md](docs/QUICKSTART.md) |
+| know how an agent should work with it | [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) |
+| look up a tool, its parameters and examples | [docs/TOOLS.md](docs/TOOLS.md) |
 | learn the panel, card by card | [docs/PANEL.md](docs/PANEL.md) |
-| drive it from an MCP agent | [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) |
+| see how it is built and why | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | know what is proven and what is not | [docs/STATUS.md](docs/STATUS.md) |
-| know why it looks and reads this way | [docs/DESIGN.md](docs/DESIGN.md) |
-
----
-
-## What is in the box
-
-| Package | Role |
-| --- | --- |
-| `packages/protocol` | The single shared contract: message envelopes, address format, value types, error codes, scan/hook/watch shapes. |
-| `packages/page-agent` | Runs in the page's **MAIN world** and in every Web Worker. Patches `WebAssembly.instantiate*` / `new WebAssembly.Instance` to capture instances, then does the real work: memory access, scanning, freezing, watches, hooks, watchpoint instrumentation. |
-| `packages/extension` | MV3 extension. Injects the page agent at `document_start`, relays RPC from the service worker, owns the WebSocket to the MCP server, and ships the DevTools panel and popup. |
-| `packages/mcp-server` | Node 22 stdio MCP server. Exposes the `wasmcheat_*` tools, talks to the extension over a local WebSocket, writes the audit log. |
-| `packages/demo-app` | A tiny C game compiled to a standalone wasm module, plus a hand-written loader. The test target. |
-
----
-
-## Requirements
-
-- Node 22+ (`engines` in `package.json`).
-- Chrome 116+ (MV3 + `chrome.storage.session`).
-- Optional, only to rebuild the demo wasm: an LLVM that knows `wasm32` (Emscripten's bundled
-  clang counts; the build script finds it automatically). Without one, the committed
-  `packages/demo-app/prebuilt/game.wasm` is used.
-
-## Install and build
-
-```bash
-git clone https://github.com/alfman99/wasm-ce.git && cd wasm-ce
-npm install
-npm run build          # protocol, page-agent, extension, mcp-server, demo
-npm run typecheck      # optional, same types the tests use
-```
-
-`npm run build` leaves two things you need:
-
-- `packages/extension/dist/`: the unpacked extension (this directory *is* the extension root).
-- `packages/mcp-server/dist/bin.js`: the MCP server binary.
-
-## Load the extension
-
-1. Open `chrome://extensions`.
-2. Enable **Developer mode**.
-3. **Load unpacked** → select `packages/extension/dist`.
-4. Pin the extension; its popup shows whether the page agent is running and whether the MCP server
-   is connected.
-
-The extension connects to the MCP server on `ws://127.0.0.1:7331/extension` and reconnects with
-backoff if the server is not running yet. The port is baked in at build time, so to use another
-one: `WASMCHEAT_PORT=7400 npm run build` and start the server with the same value.
-
-## The bridge, and why there is no token to paste
-
-The MCP server listens on a local WebSocket and the extension dials it. That socket needs to know
-which extension is real, so it is authenticated with a token the server mints into
-`$WASMCHEAT_HOME/token` on first run.
-
-You never see it. On the first connection the extension asks the server for the token over that same
-socket (pairing) and stores it. From then on the token itself never crosses the socket; each side
-proves it holds it:
-
-1. the server opens with `bridge.challenge` and a random nonce;
-2. the extension answers `bridge.hello` with a nonce of its own and an HMAC-SHA256 of both nonces,
-   keyed with the token. A wrong proof is refused with `1008 bad bridge token`;
-3. the server answers `bridge.welcome` with its own HMAC of the same nonces, under a different label.
-
-What keeps that socket honest:
-
-- The extension runs no request and sends nothing (no page events, no audit lines) until the
-  welcome checks out, and hangs up when it does not. A program that grabs the port while the MCP
-  server is down learns neither the token nor anything about your tabs.
-- Pairing is answered only while no authenticated extension is connected, so a second client cannot
-  ask for the token while the real extension holds the bridge.
-- A connection only replaces the current one after its proof checks out, and each challenge is good
-  for one hello.
-- Until a socket proves the token, everything it sends except `bridge.hello` and `bridge.pair` is
-  dropped: it cannot answer a request, raise an event or write an audit line.
-- An upgrade whose `Origin` is a web page (anything but `chrome-extension://`) is refused, so a site
-  open in the browser cannot dial the port.
-
-Two limits. Pairing is trust on first use: an extension with no token believes whoever answers
-`bridge.pair`, so a program on the port at that moment could hand it a token of its own (pin one with
-`WASMCHEAT_TOKEN` to rule that out). And the handshake authenticates the socket, not each message, so
-it does not stop a relay that sits between the extension and a real server on another port.
-
-One case needs the field anyway, and it is in both the panel and the popup: **pairing is off**, because
-the server was started with `WASMCHEAT_PAIRING=off` or with `WASMCHEAT_TOKEN` set. Then paste
-`cat ~/.wasmcheat/token`. Pinning a token is the way to make the loopback socket useless to anything
-else on the machine.
-
-The panel pill says `MCP live` when the server is connected, `MCP token refused` when the server
-rejected the stored token or the program on the port could not prove it holds it, and `MCP off` when
-no server is running. `MCP off` is neutral: the panel works without the server, and the extension
-checks the port with a silent request before dialing, so a stopped server leaves no errors in the
-extensions page or the console.
-
-## Point an MCP client at it
-
-The server speaks MCP over stdio, so any client works. Claude Desktop style config:
-
-```json
-{
-  "mcpServers": {
-    "wasmcheat": {
-      "command": "node",
-      "args": ["/absolute/path/to/wasm-cheat/packages/mcp-server/dist/bin.js"],
-      "env": { "WASMCHEAT_PORT": "7331" }
-    }
-  }
-}
-```
-
-Or run it by hand while iterating:
-
-```bash
-npm start           # node packages/mcp-server/dist/bin.js, logs to stderr
-```
-
-### Drive it from a shell, without an agent
-
-`scripts/wasmcheat-cli.mjs` is a one-shot MCP client, so you can poke a real site by hand:
-
-```bash
-node scripts/wasmcheat-cli.mjs tabs
-node scripts/wasmcheat-cli.mjs attach 1234567 '{"reason":"manual check","waitSeconds":120}'
-node scripts/wasmcheat-cli.mjs instances 1234567          # shorthand → {"tabId": …}
-node scripts/wasmcheat-cli.mjs scan '{"tabId":1234567,"instanceId":"w1","type":"i32","mode":"exact","value":75}'
-node scripts/wasmcheat-cli.mjs audit 40                   # last 40 audit entries
-```
-
-Every invocation spawns `dist/bin.js` itself, so the extension reconnects to the bridge each
-time; set `WASMCHEAT_WAIT=40` to let it wait longer. Exit code 1 means the tool returned an
-error (the message says which).
-
-For a long session, `node scripts/hunt.mjs serve` keeps one MCP session open and `scripts/wc.mjs`
-calls it in milliseconds. `--code file.js` sends a file as the `code` of `run_script` or `mod`, and
-`--var NAME=JSON` passes it a parameter:
-
-```bash
-node scripts/wc.mjs run_script '{"tabId":1234567}' --code .agents/skills/mod-any-webapp/scripts/probe.js
-node scripts/wc.mjs mod '{"tabId":1234567,"action":"add","name":"aim line"}' --code my-mod.js
-```
-
-How we mod an app end to end, from recon to a kept mod, is the
-[mod-any-webapp](.agents/skills/mod-any-webapp/SKILL.md) skill.
-
-Environment knobs:
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `WASMCHEAT_PORT` | `7331` | WebSocket port the extension dials. Must match the extension build. |
-| `WASMCHEAT_HOST` | `127.0.0.1` | Bind address. Off loopback the server refuses to start unless `WASMCHEAT_PAIRING=off`, because pairing would hand the token to the network. |
-| `WASMCHEAT_HOME` | `~/.wasmcheat` | Where `audit.jsonl` and `token` live. Created `0700`; both files are `0600`. |
-| `WASMCHEAT_TOKEN` | read from `$WASMCHEAT_HOME/token` | Shared secret both ends prove they hold. Minted on first run; set to mode `0600` on every start. Setting it turns pairing off. |
-| `WASMCHEAT_PAIRING` | `on` (`off` when `WASMCHEAT_TOKEN` is set) | `off` refuses pairing, so only a pasted token connects. |
-| `WASMCHEAT_RECONNECT_GRACE_MS` | `8000` | How long a tool call waits for the extension to dial back in (or to finish its hello) before reporting `NO_AGENT`. MV3 suspends the service worker after ~30s idle, so the first call after a pause usually arrives mid-reconnect. |
-| `WASMCHEAT_CLANG` | auto-detected | LLVM used to compile `packages/demo-app/src/game.c`. |
-
----
-
-## Architecture
-
-```
-┌─────────────────────────── Chrome tab (the target) ───────────────────────────┐
-│  page scripts                     MAIN world                                  │
-│  ───────────                      ──────────                                  │
-│  app ↔ WebAssembly.Memory  ←──  page-agent: captured instances,               │
-│                                     scan / read / write / freeze / watch /    │
-│                                     export+import hooks                       │
-│                                        ▲  postMessage (window)                │
-│  isolated world                        │                                      │
-│  relay.js  ────────────────────────────┘  channel handshake, RPC per id       │
-└───────────────────────────────────────┬───────────────────────────────────────┘
-                                        │ chrome.runtime.sendMessage
-┌───────────────────────────────────────▼───────────────────────────────────────┐
-│  extension service worker (sw.js)                                             │
-│  · injects relay + page-agent on demand, one realm per frame and worker       │
-│  · routes page.* RPC to the frame that holds the wasm                        │
-└───────────────────────────────────────┬───────────────────────────────────────┘
-                                        │ ws://127.0.0.1:7331/extension
-┌───────────────────────────────────────▼───────────────────────────────────────┐
-│  mcp-server (Node 22, stdio)                                                  │
-│  · wasmcheat_* tools  · zod validation  · audit.jsonl                         │
-└───────────────────────────────────────┬───────────────────────────────────────┘
-                                        │ MCP (stdio)
-                                    your agent
-```
-
-Why it looks like this:
-
-- **The page agent has to run in the MAIN world.** `WebAssembly.Instance` objects only exist in
-  the realm that created them; an isolated-world script sees nothing. The cost is that page
-  scripts can also see the `postMessage` channel. The first `channelId` handshake of a document
-  wins and results without that id are dropped, which stops cross-talk and blind spoofing, not a
-  page that reads the traffic. The real trust boundary is the extension itself, which lives
-  outside the page.
-- **The agent is injected at `document_start`, before the app instantiates.** There is no API to
-  enumerate pre-existing `WebAssembly.Instance` objects, so capture only works if the patch is in
-  place first. If you attach to an already-loaded page, pass `reload: true` and the tab reloads
-  with the agent already installed (the reload is audited).
-- **The extension dials the server, not the other way round.** Only the extension can reach tab
-  contents, so the MCP server is the listener and the extension is the client. A new
-  connection takes over only after it proves the token; the old socket is then closed and its
-  pending calls fail at once with `NO_AGENT`.
-- **Scanning runs inside the page.** Snapshot passes loop over typed arrays in the page and only
-  addresses plus a small sample travel back over the bridge, so a 16 MB heap scan is not a
-  16 MB JSON round-trip.
-- **Memory reads re-read `memory.buffer` on every call**, because `memory.grow` detaches the old
-  buffer.
-
-### Subframes
-
-Games rarely live in the document you are looking at: a YouTube Playable, an itch.io embed or a
-Unity wrapper runs in a **cross-origin iframe**, where a content script injected into the top
-document cannot see it. Both content scripts are therefore registered with `all_frames: true`,
-each frame's relay announces itself with its `frameId` and URL, and the service worker picks the
-frame that actually captured a wasm instance (probing each one with `page.diagnose` when it has
-to). A pick that held no wasm is only a guess and is asked again every two seconds, because the
-game frame usually instantiates after the page (and the panel) opened. `wasmcheat_list_tabs` shows the frames; `wasmcheat_attach` accepts `frameId` to override the
-choice. A call always goes to exactly one frame (the top frame when none is known yet), never to
-every frame at once.
-
-### Web Workers
-
-Unity, Godot 4 and most itch.io builds instantiate their module **inside a Web Worker**, where the
-page realm's `WebAssembly` hook can never see it. The page agent therefore replaces `Worker` itself
-and boots a second copy of itself inside each worker (prepending `importScripts('<extension>/dist/worker-agent.js')`
-to a small blob wrapper), so worker instances are captured by the same registry, scan store and
-hook store as page instances. `wasmcheat_list_workers` reports them, and their instance ids are
-namespaced by the worker that owns them (`k1-1`).
-
-The wrapper is installed **at `document_start`**, before the page's own scripts, because a worker
-created earlier than the wrapper is invisible forever, and game loaders create their worker in their
-first script, which is exactly the losing side of that race. The agent cannot build an extension
-URL on its own, so the isolated-world relay publishes it on `document.documentElement`
-(`data-wasmcheat-agent`) synchronously, and the wrapper resolves it per construction; if the
-attribute is ever missing the page gets a plain, uninstrumented worker rather than a broken one.
-
-A worker that starts a worker is captured the same way: each worker agent installs that wrapper too,
-so the grandchild's ids chain the names (`k1n1-1` belongs to the worker `k1` started), and a call for
-one is routed down the chain rather than refused. The e2e suite covers a page → worker → worker
-chain in `nested.html`.
-
-### The DevTools panel
-
-Open DevTools → **WasmCheat**. The panel is a second front end on the same dispatcher the WebSocket
-uses (`wasmcheat.panel.call` → `handleBridgeRequest`), so it cannot skip
-the audit log. The service worker answers that message only from the extension's own pages.
-
-It follows the order you work in: the page, the scan, the hits, what you can do to one address, then
-the advanced tooling and the raw console. The header keeps two facts on screen (how many wasm modules
-the page runs, and whether an MCP server is connected), and the `Now` line reads tab → instance →
-address, so a write is never aimed at something you have forgotten about.
-
-- The first screen is the loop (tab, scan, hits, one address). Clicking a hit opens an editor under
-  the list with **Write** and **Freeze**, and the scan card hides the fields the chosen mode does not
-  use. A steps strip marks where you are, and <kbd>Enter</kbd> in a
-  value field runs whichever scan is next.
-- Every tool is a form: freeze, watch, bookmarks, a hex **memory viewer** (16 bytes per row,
-  Earlier/Later, **Follow pointer**, and any address you click jumps the dump to it), and under
-  **More tools** the rest: workers, pointer scan and resolve, speed hack, saved lists, watchpoints,
-  patches, hooks, the live audit view and a raw RPC console.
-- <kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>K</kbd> opens a palette over every card, filtered as you type.
-  `?` opens the built-in help, `T` switches light and dark.
-- Empty lists name the cause and the next action instead of saying "no data", and a refused call shows
-  the error code next to the sentence that fixes it.
-
-![The same panel in dark mode](docs/img/panel-dark.png)
-
-![The help sheet: the loop, the three numbers, the shortcuts, and what a refusal means](docs/img/help.png)
-
-The demo target is a game window rather than a copy of the tool, so the two are never confused:
-
-![Foundry, the demo: score, ore, lives and depth, all integers in linear memory](docs/img/demo.png)
-
-### Three WebAssembly facts that shape the tool
-
-- **Imports are bound at instantiation.** A running instance can never gain a replaced import.
-  Import hooks are therefore queued as rules that our patched `WebAssembly.instantiate` applies
-  to the imports object *before* the engine sees it, and the created hook reports
-  `pending: true` for the live instance. `importPatchability` in `wasmcheat_list_instances` says
-  `next-instantiation` or `none`, never a fake `live`.
-- **An export patch only reaches callers that read the property per call.** Replacing
-  `instance.exports.get_score` works if the app calls `instance.exports.get_score()`. Emscripten's
-  glue caches the function on first call (`_get_score = wasmExports['get_score']`), so patched
-  exports are invisible to it. That is exactly why the demo ships a hand-written loader.
-- **A store reports nothing.** No engine hook exists for "this instruction wrote this byte", so
-  a watchpoint cannot be attached to a compiled module at all. `wasmcheat_find_writes` and
-  `wasmcheat_find_reads` therefore rewrite the binary before it compiles: every store gains a
-  gated call back into the page agent, and every load gains a gated identity call that reports
-  the address it is about to touch. See [Watchpoints](#watchpoints-asking-who-touched-an-address).
-
----
-
-## Nothing to approve, and everything logged
-
-There is no approval prompt. Opening the panel on a tab is the decision: you are looking at that
-page, in DevTools, on purpose. Everything follows from that:
-
-- **The panel drives the tab it lives on.** Opened from DevTools it is the inspected tab; opened
-  as a plain page it takes the tab in front. There is no tab picker, and the toolbar popup is only
-  a status card.
-- **Tools default to the tab in front.** `tabId` is optional on every MCP tool: an agent that does
-  not pass one gets the tab you are looking at, and `wasmcheat_list_tabs` exists only for the rare
-  case of a second tab.
-- **Nothing to attach in the panel, and the MCP attach heals itself.** The panel starts the agent
-  on the tab it is opened on. For an agent, `wasmcheat_attach` injects it if the page has none; if
-  the app started before the agent existed, it reloads the tab once, says so in its note, and keeps
-  going.
-- **The audit log is the record.** Every mutation is reported by the extension from a single
-  funnel (`callTab`), so a human clicking Freeze and an agent calling `wasmcheat_freeze` produce the
-  same line: tab, address, and `before -> after` for writes. Writes, freeze set/clear, watch
-  add/remove, scan begin/narrow/drop, text scan, hook add/enable/remove, patch add/remove/clear,
-  watchpoint arm/stop/clear, pointer scan, bookmark add/remove/clear, speed changes and reloads.
-  Saved scan lists and attach/detach are recorded by the MCP server, because they are not page
-  calls. Reads, `scan_results`, `pointer_resolve`, listing calls and watch polls are not logged:
-  they change nothing and would bury the writes.
-- **Lines land in `$WASMCHEAT_HOME/audit.jsonl`** (append-only, timestamped) and can be read back
-  with `wasmcheat_audit`.
-
-The page agent still runs in the MAIN world, so a hostile page can see its channel. The trust
-boundary is the browser extension itself plus `127.0.0.1`-only bridging, not secrecy from the page.
-
----
-
-## Tool reference
-
-Addresses are `"<instanceId>:<offset>"`, e.g. `w1:0x408` or `w1:1032`. `instanceId` comes from
-`wasmcheat_list_instances`; offsets may be hex or decimal.
-
-| Tool | Purpose |
-| --- | --- |
-| `wasmcheat_list_tabs` | Tabs the extension can see, with agent state. Every other tool defaults to the tab in front. |
-| `wasmcheat_attach` | Start (or heal) the page agent and return the instances. |
-| `wasmcheat_detach` | Forget the tab and drop the agent it injected. |
-| `wasmcheat_list_instances` | Instances, memory sizes, exports, import patchability. |
-| `wasmcheat_scan` | Snapshot filtered memory, or narrow an existing scan. |
-| `wasmcheat_scan_text` | Find a string or byte pattern (ascii / utf8 / hex bytes). |
-| `wasmcheat_scan_results` | Page through hits of a scan. |
-| `wasmcheat_scan_drop` | Free a scan session. |
-| `wasmcheat_saved` | `list` / `save` / `open` / `delete` named scan lists that survive a reload. |
-| `wasmcheat_bookmark` | `list` / `add` / `remove` / `clear` a named address list (label → address), kept per site. |
-| `wasmcheat_list_workers` | Web Workers, including module workers, that own their own wasm. |
-| `wasmcheat_pointer_scan` | Find pointer paths whose last offset lands on an address. |
-| `wasmcheat_pointer_resolve` | Follow a saved path and return the current address. |
-| `wasmcheat_read` | Typed values (optionally an array) or raw bytes as hex. |
-| `wasmcheat_write` | One typed write, returns before → after, audited. |
-| `wasmcheat_freeze` | `set` / `clear` / `list` frozen addresses. |
-| `wasmcheat_watch` | `add` / `remove` / `list` / `poll` change events. |
-| `wasmcheat_hook` | `add` / `list` / `enable` / `remove` export and import hooks. |
-| `wasmcheat_run_script` | Run JavaScript in the game frame and get its value back, for what the game keeps in JavaScript (a PlayCanvas or Unity scene). Audited with its code. |
-| `wasmcheat_mod` | `add` / `list` / `remove` scripts kept for a game: an added one runs now and on every load of that game's frame. |
-| `wasmcheat_find_writes` | Which function writes to an address? Reloads with an instrumented module. |
-| `wasmcheat_find_reads` | Which function reads an address? Same mechanism, load probes instead of store hooks. |
-| `wasmcheat_trace` | `arm` / `status` / `poll` / `clear` / `stop` for a watchpoint (`kind`: `read` or `write`). |
-| `wasmcheat_patch` | `add` / `list` / `remove` / `clear` function-body patches: stub a function with a constant return. |
-| `wasmcheat_speed` | Speed hack: scale the page clock (0–20x, `0` freezes it), or `reset`. |
-| `wasmcheat_diagnose` | Why is the instance list empty? Counts, frames, wasm URLs, one-line hint. |
-| `wasmcheat_audit` | The most recent audit entries. |
-
-### Discovering and attaching
-
-```jsonc
-// wasmcheat_list_tabs
-{}
-// → [{"tabId": 1310636703, "title": "Foundry", "url": "http://127.0.0.1:4173/", "active": true, …}]
-
-// wasmcheat_attach
-{ "tabId": 1310636703, "reason": "find the score and patch get_score", "waitSeconds": 60 }
-// → {"pageAgent": {...}, "instances": [
-//      {"id": "w1", "memory": {"byteLength": 131072, "growable": true},
-//       "exports": [{"name": "tick", "kind": "function", "arity": 1}, …],
-//       "importPatchability": "next-instantiation"}]}
-```
-
-`reload: true` reloads first, for pages that loaded before the extension did.
-
-### Scanning
-
-Start with `exact` (or `changed` for a value you don't know) to take a snapshot; then narrow that
-snapshot with `changed` / `unchanged` / `increased` / `decreased` as the value moves.
-
-```jsonc
-// wasmcheat_scan: first pass
-{ "tabId": 1310636703, "instanceId": "w1", "type": "i32", "mode": "exact", "value": 75 }
-// → {"scanId": "s1", "matchCount": 2, "sample": [...], "memoryByteLength": 131072}
-
-// wasmcheat_scan: narrow, after the app changed the value
-{ "tabId": 1310636703, "instanceId": "w1", "type": "i32", "mode": "changed", "scanId": "s1" }
-// → {"scanId": "s1", "matchCount": 1, …}
-
-// wasmcheat_scan_results
-{ "scanId": "s1", "offset": 0, "limit": 20 }
-// → {"hits": [{"address": "w1:0x408", "value": 100}], "total": 1}
-```
-
-```jsonc
-// wasmcheat_scan: comparison operators and deltas work in any pass
-{ "mode": "less", "value": 100 }              // also: not-equal, greater, less-or-equal,
-                                              // greater-or-equal, between (+ "value2"), increased-by,
-                                              // decreased-by, unchanged
-// wasmcheat_scan_text: strings and byte patterns
-{ "tabId": …, "instanceId": "w1", "text": "combo", "encoding": "ascii", "caseSensitive": false }
-{ "tabId": …, "instanceId": "w1", "text": "deadbeef", "encoding": "bytes" }
-// → {"encoding": "ascii", "matches": 3, "sample": [{"address": "w1:0x210", "preview": "…"}]}
-// wasmcheat_saved: keep a narrowed list across a reload
-{ "tabId": …, "action": "save", "name": "player health", "scanId": "s1" }
-{ "tabId": …, "action": "list" }                       // [{ "name", "matchCount", "mode", "type", "createdAt" }]
-{ "tabId": …, "action": "open", "name": "player health" } // → { "scanId": "s2", "instanceId": "w1", … }
-```
-
-A scan session lives in page memory, so it dies with the page, and a game that reloads, or an agent
-that reloads the tab to install a hook, is the normal case. Naming a list stores the surviving
-addresses (plus the values they held) in the page's own `sessionStorage`: it survives a reload of
-that tab, does not leak into another tab, and the re-opened list narrows exactly like a fresh scan
-(`changed`, `increased`, …). The DevTools panel has the same four actions under **Saved scans**.
-
-Parameters: `type` (i8…f64), `mode`, `value` (and `value2` for `between`), `tolerance` (floats,
-defaults to `max(|value|·1e-6, 1e-6)`), `alignment` (defaults to the type width; `1` catches
-unaligned data), `from` / `to` (byte bounds of the scan; omit for the whole memory), `maxResults`
-(default 250 000, sets `truncated`), and `scanId` to narrow. The page-layer call spells the bounds
-`range: {start, end}`: that is what the panel sends; the MCP tool takes `from` / `to` and builds it.
-
-### Reading, writing, freezing, watching
-
-```jsonc
-{ "tabId": …, "address": "w1:0x408", "type": "i32" }              // wasmcheat_read → values: [100]
-{ "tabId": …, "address": "w1:0x408", "length": 16 }               // → hex: "64000000…"
-{ "tabId": …, "address": "w1:0x408", "type": "i32", "value": 999999 }  // wasmcheat_write → before/after
-
-{ "tabId": …, "action": "set", "address": "w1:0x400", "type": "i32", "value": 999 }  // wasmcheat_freeze
-{ "tabId": …, "action": "clear", "freezeId": "f1" }
-{ "tabId": …, "action": "list" }
-
-{ "tabId": …, "action": "add", "address": "w1:0x408", "type": "i32" }  // wasmcheat_watch
-{ "tabId": …, "action": "poll", "limit": 50 }   // → [{"address": "w1:0x408", "before": 100, "after": 4242, …}]
-```
-
-Freezes re-write the value every 16 ms, so the app cannot win. Watches sample every 50 ms and
-buffer up to 200 events per watch; `poll` drains them (MCP is request/response: there is no
-server push, so the agent polls).
-
-### Hooking exports and imports
-
-The body is compiled as `function(args, ctx)`: `args` is the argument array, `ctx.call(nextArgs?)`
-runs the original, and the return value replaces the result (return nothing to pass it through).
-
-```jsonc
-// Double every score read, live, no reload.
-{ "tabId": …, "action": "add", "instanceId": "w1", "target": "export", "name": "get_score",
-  "body": "return ctx.call(args) + 1000000;", "note": "demo: show a live export patch" }
-
-// Rewrite arguments on the way in.
-{ "tabId": …, "action": "add", "instanceId": "w1", "target": "export", "name": "take_damage",
-  "body": "ctx.call([0]);" }
-
-// Imports apply at the next instantiation (WebAssembly binds them then).
-{ "tabId": …, "action": "add", "instanceId": "w1", "target": "import", "name": "env.log",
-  "body": "console.log('mined', args[0]); return ctx.call(args);" }
-
-{ "tabId": …, "action": "enable", "hookId": "h1", "enabled": false }
-{ "tabId": …, "action": "remove", "hookId": "h1" }
-```
-
-Hooks are recorded per instance and can be stacked; disabling or removing one restores the app's
-original behaviour immediately. If the page's CSP forbids eval, `add` returns `HOOK_EVAL_BLOCKED`;
-pass a declarative `fallback` instead (`{"mode": "replace-return", "value": 42}`,
-`{"mode": "offset-result", "value": 1000}`, or `{"mode": "passthrough"}`).
-
----
-
-## Watchpoints: asking "who touched this address?"
-
-`wasmcheat_find_writes` and `wasmcheat_find_reads` are Cheat Engine's breakpoints, translated to
-wasm:
-
-```jsonc
-{ "tabId": …, "address": "w1:0x408", "type": "i32" }
-// find_writes → {"installed": true,
-//   "hits": [{"kind": "write", "funcIndex": 3, "funcName": "mine", "previous": 75, "value": 100, …}],
-//   "functions": [{"name": "mine", "funcIndex": 3, "hits": 12}]}
-
-{ "tabId": …, "address": "w1:0x408", "type": "i32" }   // wasmcheat_find_reads
-// → {"hits": [{"kind": "read", "funcName": "get_score", "value": 25, …}],
-//    "functions": [{"name": "get_score", "hits": 331}, {"name": "tick", "hits": 4}]}
-```
-
-Reads answer a different question than writes: the writer tells you where a value comes from, the
-reader tells you what the value is *used for*. For a health bar, the reader is the code that
-decides the player dies.
-
-How it works, because the constraint is the interesting part:
-
-1. WebAssembly gives the host no notification when a `store` executes, and a compiled module
-   cannot be modified. So the watchpoint has to be in the binary *before* the engine sees it.
-2. The tool arms the watchpoint, then reloads the tab itself, because an arm only counts before the module is
-   instantiated. Your module is rewritten as it streams past one
-   mutable `i32` global, one import (`__wasmcheat.on_store` or `on_read`), one export
-   (`__wc_arm`), and then:
-   - **writes**: after every store instruction, `global.get flags; if (flags) { on_store(funcIndex) }`.
-     A store leaves the stack empty, so appending is always safe.
-   - **reads**: before every load, `call probe`, where the probe is `(i32) -> (i32)`:
-     `global.get flags; if (flags) { on_read(addr + offset, funcIndex) }; addr`. The address is
-     already on the stack, the probe hands it back unchanged, and no stack analysis is needed at
-     all. One probe is generated per (function, memory offset) pair; the offset has to be baked
-     in because compilers address globals as `i32.const 0; i32.load offset=1032`.
-3. `funcIndex` is a constant per call site, which is the attribution: it names the function that
-   performed the access. The page agent diffs the watched address on every callback and records
-   the hit with the value before and after.
-4. `wasmcheat_trace {action: "stop"}` removes the rewriting for the next reload, and nothing
-   stays behind in the page.
-
-Honest limits:
-
-- The watchpoint needs a reload; a module that is already compiled can never be instrumented.
-  When you arm a live page, the status says so instead of pretending.
-- The gated check costs one global read and a branch per store, and one call per load, even when
-  disarmed; while armed every access is a call into the page agent, which is slower than running
-  free. Only the watchpoint you asked for is instrumented: `find_reads` leaves stores untouched
-  and vice versa. That is the same trade Cheat Engine makes with a hardware breakpoint.
-- `memory.copy` / `memory.fill` are reported as writes only: they take a length on top of the
-  stack, so a `(i32) -> (i32)` probe would see the length instead of an address.
-- Atomic (thread) loads and SIMD are rejected by the rewriter rather than silently missed; a page
-  that uses them reports the rewrite as unsupported instead of returning an empty hit list.
-- Functions the module does not export appear as `wasm-function[12]`. That is all the identity
-  the engine has; the index still lets you map it to a disassembly.
-- Modules using SIMD (`0xFD`) or atomics (`0xFE`) are rejected with `UNSUPPORTED` rather than
-  rewritten half-way. Everything Emscripten, Unity and clang emit today (element segments,
-  start functions, indirect calls) is handled.
-
-## Patching a function body
-
-Hooks can only reach the surface a module exposes: imports and exports. Everything a module keeps to
-itself (the damage routine, a cooldown, a check) has no seam to wrap, so the only way to switch it
-off is to change the code. `wasmcheat_patch` does exactly that, in the same rewrite pass the
-watchpoints use:
-
-```jsonc
-{ "tabId": …, "action": "add", "target": "take_damage", "mode": "stub", "value": 0 }
-// → {"patch": {"id": "p1", "target": "take_damage", "mode": "stub", "value": 0,
-//              "applied": true, "funcIndex": 5, "applications": 1}, …}
-```
-
-- `mode: "stub"` replaces the body with `const value` (default 0) of the function's result type, so
-  `take_damage` still returns, and no longer does anything. Every caller is affected, because the
-  stub is the function.
-- `mode: "empty"` is for void functions: the body becomes a bare `return`.
-- `target` is an export name, or `wasm-function[N]` for a function the module does not export;
-  `wasmcheat_list_instances` shows both spellings next to each function it reports.
-- The stub lives in the binary, so it also reaches callers that cached an export reference, which is
-  the one thing a JS hook can never do.
-- Patches persist across reloads (`sessionStorage`, per origin, exactly like arming a watchpoint) and
-  stay until `remove` / `clear`, which reload the tab so the original body comes back. The extension
-  keeps a copy per tab too, so a sandboxed game frame with no `sessionStorage` (every YouTube
-  Playable) gets its patches back after the reload.
-- `applied` is false until a module has been instantiated with the patch: a compiled module can never
-  be edited. The tool waits for the instantiation the reload triggers, so `applied: true` means the
-  code you are talking to is the code you patched.
-
-The rewriter refuses to guess: SIMD, atomic, and multi-value result functions are reported as
-unsupported instead of being stubbed into a module that no longer validates.
-
-## Demo walkthrough
-
-The demo is a small C clicker (`packages/demo-app/src/game.c`) whose state lives in linear memory:
-lives at `0x400`, level at `0x404`, score at `0x408`, ore at `0x40C`.
-
-```bash
-npm run build
-npm run serve -w @wasmcheat/demo-app     # http://127.0.0.1:4173/
-```
-
-Open it, load the extension, start the MCP server, then an agent session looks like this:
-
-```
-agent: wasmcheat_list_tabs {}
-       → one tab, "Foundry", active: true
-agent: wasmcheat_attach {}
-       → instances: [w1, 131072 bytes]   (no tabId: the tab in front is the demo)
-agent: wasmcheat_scan { "tabId": …, "instanceId": "w1", "type": "i32", "mode": "exact", "value": 75 }
-       → scanId s1, 2 matches
-       (press Mine a few times in the page between passes)
-agent: wasmcheat_scan { "tabId": …, "instanceId": "w1", "type": "i32", "mode": "changed", "scanId": "s1" }
-       → 1 match
-agent: wasmcheat_scan_results { "scanId": "s1" }
-       → {"hits": [{"address": "w1:0x408", "value": 100}]}
-agent: wasmcheat_write { "tabId": …, "address": "w1:0x408", "type": "i32", "value": 999999 }
-       → the score in the page changes, no reload
-agent: wasmcheat_freeze { "tabId": …, "action": "set", "address": "w1:0x400", "type": "i32", "value": 999 }
-       → Hazard no longer takes lives
-agent: wasmcheat_hook { "tabId": …, "action": "add", "instanceId": "w1", "target": "export",
-                        "name": "get_score", "body": "return ctx.call(args) + 1000000;" }
-       → every painted score jumps by a million
-agent: wasmcheat_audit { "limit": 20 }
-       → the attach, the write, the freeze and the hook, with addresses and values
-```
-
-`window.__foundry` exposes `pause()`, `resume()` and `snapshot()` so a scan can target a value
-that is not moving. The automated test does exactly that.
-
----
-
-## Tests
-
-```bash
-npm test           # build → vitest (159 unit) → playwright (26 end-to-end)
-npm run test:unit  # page agent: memory, registry, scanner, hooks, trace, rewriter (no browser)
-npm run test:e2e   # real Chromium, real extension, real MCP stdio client
-```
-
-The end-to-end suite (`tests/e2e/demo.spec.ts`) launches Chromium with the unpacked extension,
-serves the demo, connects a real MCP client to `dist/bin.js`, and then, in order:
-
-1. lists the tab, and proves a tool with no `tabId` answers for the tab in front;
-2. attaches without any prompt and exposes the instance;
-3. pauses, resets, mines three times, scans for 75, narrows `unchanged` then `changed` to `w1:0x408`;
-4. writes 123456 and asserts the page DOM changes without a reload;
-5. freezes lives at 999 and clicks Hazard;
-6. reads typed values and raw bytes, watches the address, and asserts a `123456 → 4242` event;
-7. adds a `get_score` hook, asserts the painted score grows by 1 000 000, then disables, re-enables
-   and removes it, asserting the original behaviour at each step;
-8. performs every kind of mutation and asserts each lands in the one audit funnel;
-9. arms a write watchpoint, reloads, mines, and asserts `mine` is named as the writer of `0x408`;
-10. arms a read watchpoint and asserts `get_score` is named as the reader;
-11. stubs `get_score` with `wasmcheat_patch`, reloads, asserts the page paints 777 while a
-    neighbouring export still works, then removes the patch;
-12. scans for a pointer chain and resolves it back to the score address;
-13. drives a worker the page creates, and asserts the worker is listed and its death reported;
-14. detaches, then proves the next call re-attaches on its own;
-15. opens the demo inside a genuinely cross-origin iframe and drives it there;
-16. drives the tab from the DevTools panel alone, with no agent and no popup;
-17. saves a scan list, reloads the tab and keeps narrowing the restored list;
-18. attaches to a page whose wasm lives in a Web Worker, writes to the worker's memory, scans and
-    narrows there, and sees the worker's own published state change;
-19. bookmarks the score address, reloads, reads through the remembered address and forgets it;
-20. measures the score clock at 1x and 4x (`wasmcheat_speed`), freezes it at 0 and resets it, and
-    asserts the change reached the audit log;
-21. opens `nested.html`, where a worker starts the game worker, and drives `k1n1-1` through two
-    worker hops: list it, click Mine, write to its memory, watch the page repaint, then scan it;
-22. wipes the stored token and proves the extension pairs with the bridge again on its own, with no
-    paste and no human step.
-
-`tests/e2e/quiet.spec.ts` then runs with no MCP server at all: the panel finds the demo's wasm with
-no Attach step, shows **Nothing to analyze in this tab** on a plain page, switches to the scan cards
-when that page instantiates a module, and the extensions page and every console stay free of errors.
-It also proves the Found list, the editor and bookmarks stay live without a button press, that a
-cross-origin game frame that instantiates late is found without a reload, and that an unknown-value
-scan narrowed with Went up ends on the score.
-
-Costs and gotchas: one browser and one bridge port, so the suite runs with a single worker and
-fails fast if the port is already taken (it picks `7399` by default so it does not collide with a
-server you have running).
-
-## Layout
-
-```
-scripts/demo.mjs                    `npm run demo`: serves and opens the demo, prints what to do next
-scripts/wasmcheat-cli.mjs           drive the tools from a shell, no agent
-scripts/hunt.mjs, scripts/wc.mjs    one long MCP session for the shell, and its client
-.agents/skills/mod-any-webapp/      how to mod any app: workflow, probe and IL2CPP scripts, example mods
-packages/protocol/src/index.ts      shared contract: envelopes, errors, every tool's types
-packages/page-agent/src/            registry (capture), memory, scanner, hooks, trace, workers, runtime
-packages/extension/src/             sw.ts (bridge + injection), relay.ts, popup, panel + panel-help, devtools
-packages/extension/dist/            loadable unpacked extension (built)
-packages/wasm-instrument/src/       wasm rewriter: watchpoint instrumentation, function stubs
-packages/mcp-server/src/            bridge.ts (WebSocket), server.ts (tools), audit.ts, events.ts, bin.ts
-packages/demo-app/src/game.c        the demo target, compiled to prebuilt/game.wasm
-packages/demo-app/framed.html       the demo inside a cross-origin iframe (subframe test)
-packages/demo-app/worker.html       the demo instantiated inside a Web Worker (worker test)
-packages/demo-app/nested.html       the demo inside a worker started by another worker (nested test)
-docs/QUICKSTART.md PANEL.md AGENT_GUIDE.md STATUS.md DESIGN.md, docs/img/*.png
-tests/unit/                         vitest: memory, registry, scanner, hooks, trace, workers, bridge, bookmarks
-tests/e2e/                          playwright: harness.ts, demo.spec.ts, screenshots.spec.ts
-```
-
-## Limitations
-
-- Chrome only (MV3). Firefox/Safari have no equivalent page-agent injection story.
-- No way to enumerate wasm instances created before the agent was injected; use `reload: true`.
-- Import hooks need a (re)instantiation; exports of glue-cached apps (Emscripten default) cannot
-  be patched from JS at all, and the tool says so rather than pretending.
-- The page-agent runs in the MAIN world, so a hostile page can talk to (or lie to) the relay. The
-  extension protects you from a stray tool call; it is not a sandbox for the site you loaded.
-- Strict-CSP pages block hook bodies; declarative fallbacks still work.
-- The speed hack overrides `performance.now`, `Date.now` and `requestAnimationFrame` in the page realm
-  and forwards the scale to every worker realm, so worker games speed up too. A game that derives
-  time from `performance.timeOrigin`, or captured `Date.now` before the agent installed, keeps the
-  real clock.
-- The panel's memory viewer is read-only: it dumps, pans, follows a pointer and jumps to any address
-  you click, but byte edits go through the typed write form (audited, returns `before -> after`).
-- Pages that need cross-origin isolation for `SharedArrayBuffer` threads are not exercised; single
-  realm atomics are probed. `docs/STATUS.md` keeps the current list.
+| know what it stores and sends | [PRIVACY.md](PRIVACY.md) |
+| report a vulnerability | [SECURITY.md](SECURITY.md) |
+| build, test and send a change | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
 ## Policy
 
-WasmCheat is for programs you own or have explicit written permission to inspect and modify:
-your own apps, CTFs and crackmes you are allowed to solve, debugging your own build, teaching.
-Do not use it against other people's software, services, or data. Attaching to a tab is a
-deliberate human decision every time. Keep it that way.
+WasmCheat changes software running in your own browser. Use it on:
+
+- your own apps and builds, and software you have permission to test;
+- single-player games and web apps, for state that lives in your browser: a save, a menu, a feature the
+  build ships switched off;
+- CTFs, crackmes and teaching.
+
+Do not use it to cheat other people: multiplayer games, leaderboards, scores a game reports to a platform,
+or anything another player sees. Do not use it to get around payments, access controls or a CAPTCHA, or
+to reach other people's accounts or data. You are responsible for following the terms of the software
+you change. The server tells every agent the same rules, and the example mods follow them: they change
+single-player state and leave reported scores alone.
+
+## License
+
+[MIT](LICENSE), by the WasmCheat contributors.
