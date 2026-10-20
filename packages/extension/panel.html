@@ -642,8 +642,17 @@
             <h3>Shortcuts</h3>
             <div class="shortcut"><span>Go to a card</span><span><kbd>&#8984;</kbd>/<kbd>Ctrl</kbd> + <kbd>K</kbd></span></div>
             <div class="shortcut"><span>This help</span><span><kbd>?</kbd></span></div>
+            <div class="shortcut"><span>Run the next scan</span><span><kbd>Enter</kbd> in a value field</span></div>
             <div class="shortcut"><span>Light / dark</span><span><kbd>T</kbd></span></div>
             <div class="shortcut"><span>Close a dialog</span><span><kbd>Esc</kbd></span></div>
+
+            <h3>Where the rest is</h3>
+            <p>
+              Every tool the MCP server exposes has a form here. Patches, watchpoints, hooks,
+              pointers, workers, saved scans, the audit log and the raw console sit under
+              <strong>Advanced</strong> at the bottom of the panel, one click away, because the loop
+              above is what ninety percent of a session needs.
+            </p>
 
             <h3>When something is refused</h3>
             <p><code>NEED_APPROVAL</code> means the human has not approved this tab yet. <code>NO_AGENT</code> means the page agent is not running; Detach then Attach, or use Reload &amp; attach. <code>HOOK_EVAL_BLOCKED</code> means the page forbids <code>new Function</code>, so use a declarative fallback instead of a hook body.</p>

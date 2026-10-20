@@ -244,6 +244,18 @@ button.quiet,
   color: var(--ink-2);
 }
 
+.board__tip {
+  margin: 14px 0 0;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.board__tip strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
 .board__foot {
   display: flex;
   justify-content: space-between;

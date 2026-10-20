@@ -16,9 +16,10 @@ and you are looking at the same page you started from.
 | --- | --- |
 | **Target** | The tab the panel is attached to (`tab 1310636703 · Foundry`). `no tab attached` means the panel has not been pointed at anything yet. |
 | **Now** | `Foundry · w1 · 0x408`. Tab, then instance, then the address in the forms. Updates as you click. It answers "what am I about to write to?" |
-| `bridge` pill | The extension's WebSocket to the MCP server: `bridge live · paired`, `bridge offline (retrying)`, `token refused`, `waiting for pairing`. |
-| `approval` pill | `none`, `pending`, `granted`, `revoked` for this tab and site. |
-| `agent` pill | Whether the page agent is answering in this tab. |
+| `bridge` pill | The extension's WebSocket to the MCP server: `bridge live`, `bridge offline (retrying)`, `token refused`, `waiting for pairing`. |
+| `approval` pill | `approved`, or `approval none` / `pending` / `revoked` for this tab and site. |
+| `agent` pill | `agent ready`, or `agent unreachable`. |
+| Steps strip | `1 Pick a tab`, `2 Scan for a value`, `3 Change it`. The current step is outlined, so the strip tells you where you are rather than listing three links. |
 | **Help** / **Theme** | The same help sheet as <kbd>?</kbd>, and a light/dark switch that is remembered. |
 
 The three chips under the header are the workflow: **1 Pick a tab**, **2 Scan for a value**,
@@ -30,6 +31,11 @@ quotes **Diagnose** when the table is empty — so the next step is in front of 
 
 ## Cards
 
+The first screen is the loop: Tabs, Instances, Scan, Text scan, Found, Reads / writes, Freeze,
+Watch, Bookmarks and Memory View. Everything else — Watchpoints, Patches, Hooks, Pointers, Speed
+hack, Workers, Saved scans, Audit and the raw console — is one click away under **Advanced**, which
+is collapsed until you need it.
+
 Every card is a set of forms over one page method; the MCP column names the tool that does the same
 thing, so a human and an agent are never using different mechanisms.
 
@@ -39,7 +45,7 @@ thing, so a human and an agent are never using different mechanisms.
 | **Attach / Reload & attach / Approve / Deny / Detach / Revoke / Trust site** | The approval gate. Attach asks once per tab and site; the same-site reload keeps the grant. **Trust site** stops the prompt for every tab on that origin, and the popup lists what you trusted so you can forget it. | `wasmcheat_attach`, `wasmcheat_detach`, `wasmcheat_approval_status` |
 | **Instances** | Wasm instances in the target: id, exports, memory size, `page` or `worker`, `importPatchability`. | `wasmcheat_list_instances` |
 | **Diagnose** | Why the instance list is empty: `WebAssembly.*` call counts, iframes (cross-origin flagged), canvases, `.wasm` URLs in the HTML, `evalAllowed`. | `wasmcheat_diagnose` |
-| **Scan** | Value, type, mode, the instance, plus a **More options** fold holding the byte range, alignment and result limit (the defaults are right until a scan is too slow or too broad). **First Scan** starts a list; **Next Scan** narrows it, and the filled button is always the next step. | `wasmcheat_scan`, `wasmcheat_scan_results`, `wasmcheat_scan_drop` |
+| **Scan** | Value, type, mode, the instance, plus a **More options** fold holding the byte range, alignment and result limit (the defaults are right until a scan is too slow or too broad). The upper bound appears only for `between`, and the value is labelled optional for the delta modes. **First Scan** starts a list; **Next Scan** narrows it, the filled button is always the next step, and <kbd>Enter</kbd> in a value field runs it. | `wasmcheat_scan`, `wasmcheat_scan_results`, `wasmcheat_scan_drop` |
 | **Text scan** | ASCII, UTF-8 or a hex byte pattern, case-sensitive or not. | `wasmcheat_scan_text` |
 | **Found** | The current candidate list. Click an address to fill every form and jump the viewer. | `wasmcheat_scan_results` |
 | **Reads / writes** | One value, N values, or raw hex bytes; **Write** is audited with old and new value. | `wasmcheat_read`, `wasmcheat_write` |

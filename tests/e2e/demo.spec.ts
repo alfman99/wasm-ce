@@ -746,6 +746,8 @@ test('the DevTools panel drives the tab without an agent', async () => {
 
   const panel = await browser.context.newPage();
   await panel.goto(`chrome-extension://${browser.extensionId}/panel.html`);
+  // The rare tools sit in a collapsed tray, which is the point of it; a human opens it the same way.
+  await panel.locator('#advanced > summary').click();
 
   // The panel finds its target by listing tabs: the inspected tab is a click, not a hidden channel.
   const row = panel.locator(`li.tab[data-tab-id="${tabId}"]`);
