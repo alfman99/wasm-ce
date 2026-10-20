@@ -47,4 +47,16 @@ describe('until and once, what a mod is made of', () => {
     await expect(runScript('throw new Error("not yet")', 'mod-b')).rejects.toThrow('not yet');
     expect((await runScript('"second try"', 'mod-b')).value).toBe('second try');
   });
+
+  it('waits for an async check, and hands a script the game memory through wasm()', async () => {
+    let ready = false;
+    setTimeout(() => (ready = true), 20);
+    await expect(until(async () => ready || null, 1000, 5)).resolves.toBe(true);
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    new Int32Array(memory.buffer)[2] = 41;
+    const wasm = (id = 'latest') => (id === 'latest' ? { id: 'w1', memory, exports: {} } : null);
+    const code = 'const { id, memory } = wasm(); const ints = new Int32Array(memory.buffer); ints[2] += 1; return `${id} ${ints[2]} ${wasm("w9")}`;';
+    expect((await runScript(code, undefined, wasm)).value).toBe('w1 42 null');
+    expect(new Int32Array(memory.buffer)[2]).toBe(42);
+  });
 });

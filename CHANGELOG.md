@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A script or a kept mod gets `wasm()`, the game's wasm instance with its memory and exports, so a mod
+  works in games whose state is only in memory, such as Unity. `until` now also waits for an async
+  check. The agent guide shows how a mod finds a Unity game's saved values by name on every load,
+  where an address would move.
 - A script can be kept for a game: **Run and keep** in the Script card, or `wasmcheat_mod` with
   `add` for an agent, runs it now and again on every load of the game's frame, until it is removed
   from the list under the card. Every script gets `until(check)`, which waits for the engine
