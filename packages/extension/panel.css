@@ -463,6 +463,42 @@ fieldset.group--wide {
   font-weight: 600;
 }
 
+.tray {
+  grid-column: 1 / -1;
+}
+
+/* Open, the tray is a pass-through so its cards take part in the same grid as the rest. */
+.tray[open] {
+  display: contents;
+}
+
+.tray > summary {
+  grid-column: 1 / -1;
+  cursor: pointer;
+  padding: 10px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 12.5px;
+}
+
+.tray > summary:hover {
+  color: var(--ink);
+  border-color: var(--accent);
+}
+
+.tray[open] > summary {
+  border-style: none;
+  background: none;
+  padding: 4px 2px;
+}
+
+/* `hidden` on a flex child still lays out, so make it authoritative. */
+[hidden] {
+  display: none !important;
+}
+
 .advanced {
   margin: 2px 0 6px;
 }
@@ -476,6 +512,23 @@ fieldset.group--wide {
 
 .advanced > summary:hover {
   color: var(--accent);
+}
+
+.steps a.is-current {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.steps a.is-done {
+  color: var(--ink-2);
+}
+
+.field--optional > span::after {
+  content: ' (optional)';
+  color: var(--ink-3);
+  font-weight: 400;
 }
 
 .row {

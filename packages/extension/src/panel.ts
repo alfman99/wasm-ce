@@ -418,7 +418,7 @@ async function refreshStatus(): Promise<void> {
       ? 'Bridge · paired with this machine (nothing to paste; open only to override)'
       : 'Bridge token';
   if (ping.bridgeRejected) setPill('bridge', 'token refused', 'bad');
-  else if (ping.tokenSource === 'paired') setPill('bridge', 'bridge live · paired', 'live');
+  else if (ping.tokenSource === 'paired') setPill('bridge', 'bridge live', 'live');
   else if (!ping.tokenConfigured) setPill('bridge', 'waiting for pairing', 'warn');
   if (ping.pairingHint && !ping.bridgeConnected) setPill('bridge', ping.pairingHint, 'warn');
 
@@ -429,18 +429,21 @@ async function refreshStatus(): Promise<void> {
       targetTabId === undefined ? 'no target tab: pick one below' : `tab ${targetTabId} is gone`;
     setPill('approval', 'approval ?', 'idle');
     setPill('agent', 'agent ?', 'idle');
+    markStep(1);
     return;
   }
+  markStep(activeScanId === undefined ? 2 : 3);
 
   el('target').textContent = `tab ${target.tabId} · ${target.title || '(untitled)'} · ${target.url}`;
   setPill(
     'approval',
-    `approval ${target.approval}`,
+    target.approval === 'granted' ? 'approved' : `approval ${target.approval}`,
     target.approval === 'granted' ? 'live' : target.approval === 'pending' ? 'warn' : 'idle',
   );
 
   if (target.approval !== 'granted') {
     setPill('agent', target.agentAttached ? 'agent injected, not approved' : 'agent not attached', 'idle');
+    markStep(1);
     return;
   }
 
@@ -452,7 +455,7 @@ async function refreshStatus(): Promise<void> {
     });
     setPill(
       'agent',
-      `agent ${info.version} · frame ${info.frameId ?? 0} · eval ${info.evalAllowed ? 'ok' : 'blocked'}`,
+      info.evalAllowed ? 'agent ready' : 'agent ready · scripts blocked',
       info.evalAllowed ? 'live' : 'warn',
     );
   } catch (error) {
@@ -949,10 +952,37 @@ function scanCompareParams(mode: ScanMode): Record<string, unknown> {
   return params;
 }
 
+/** Which of the three steps the human is on, so the strip is a position and not decoration. */
+function markStep(step: 1 | 2 | 3): void {
+  const nav = document.querySelector('nav.steps');
+  if (!nav) return;
+  for (const link of nav.querySelectorAll('a')) {
+    const value = Number((link as HTMLElement).dataset.step);
+    link.classList.toggle('is-current', value === step);
+    link.classList.toggle('is-done', value < step);
+  }
+}
+
 function markScanStep(step: 'first' | 'narrow'): void {
   // Only one filled button at a time, and it is always the next thing to press.
   el('scan-begin').classList.toggle('primary', step === 'first');
   el('scan-narrow').classList.toggle('primary', step === 'narrow');
+}
+
+/**
+ * Hide the fields a mode does not use. A form that always shows every option teaches nothing about
+ * which ones matter, and `between` is the only mode with two values.
+ */
+function syncScanFields(): void {
+  const mode = selectOf('scan-mode').value;
+  const valueField = el<HTMLInputElement>('scan-value').closest('label');
+  const upperField = el<HTMLInputElement>('scan-value2').closest('label');
+  if (upperField) upperField.hidden = mode !== 'between';
+  // A value is optional for the delta modes (it narrows to "changed AND now equals N"); say so
+  // instead of removing the field, because typing a target there is a real technique.
+  const optional = ['changed', 'unchanged', 'increased', 'decreased'].includes(mode);
+  el<HTMLInputElement>('scan-value').placeholder = optional ? 'optional' : 'the value on screen';
+  if (valueField) valueField.classList.toggle('field--optional', optional);
 }
 
 function renderScanSummary(summary: ScanSummary): void {
@@ -1528,6 +1558,16 @@ function wire(): void {
   });
 
   bind('instances-refresh', el('instances-out'), refreshInstances);
+
+  syncScanFields();
+  selectOf('scan-mode').addEventListener('change', syncScanFields);
+  for (const id of ['scan-value', 'scan-value2']) {
+    el<HTMLInputElement>(id).addEventListener('keydown', (event) => {
+      if ((event as KeyboardEvent).key !== 'Enter') return;
+      // Enter in a value field runs whichever scan is the next step, so the mouse stays out of it.
+      el<HTMLButtonElement>(activeScanId === undefined ? 'scan-begin' : 'scan-narrow').click();
+    });
+  }
   bind('diagnose', el('diagnose-out'), diagnose);
 
   bind('mem-read', el('memory-out'), readOne);

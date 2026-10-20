@@ -772,7 +772,7 @@ test('the DevTools panel drives the tab without an agent', async () => {
   await expect(panel.locator('#approval')).toContainText('pending');
   await panel.locator('#approve').click();
   expect(JSON.stringify(await attaching)).toContain('granted');
-  await expect(panel.locator('#approval')).toContainText('granted');
+  await expect(panel.locator('#approval')).toContainText('approved');
 
   // Write then read the score through the raw console; the DOM is the only thing asserted, so the
   // panel has to be showing what linear memory actually holds.
