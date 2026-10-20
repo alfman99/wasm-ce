@@ -1,25 +1,29 @@
 #!/usr/bin/env node
 // Interactive value hunt against a live tab, one MCP call per invocation but a scan session that
-// lives in the page between them. The scan id is remembered in /tmp/wasmcheat-hunt.json because a
-// new process means a new MCP server, while the page keeps its sessions.
+// lives in the page between them. The scan id is remembered in wasmcheat-hunt.json in the OS temp folder
+// because a new process means a new MCP server, while the page keeps its sessions.
 //
-//   node scripts/hunt.mjs find                     # list tabs and wasm instances, remember the newest
+//   node scripts/hunt.mjs serve                    # keep one MCP session open for scripts/wc.mjs
+//   node scripts/hunt.mjs find                     # attach to the tab in front, remember its newest wasm instance
 //   node scripts/hunt.mjs exact 5162681 i32        # first pass
 //   node scripts/hunt.mjs narrow changed           # next passes
 //   node scripts/hunt.mjs narrow exact 5000000
 //   node scripts/hunt.mjs hits [limit]
 //   node scripts/hunt.mjs write w1:0x1f40 999999 i32
 //   node scripts/hunt.mjs read w1:0x1f40 i32
+//   node scripts/hunt.mjs freeze w1:0x1f40 999999
 //
 // TAB and TYPE come from the environment (WASMCHEAT_TAB, WASMCHEAT_TYPE) or the saved state.
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const BIN = fileURLToPath(new URL('../packages/mcp-server/dist/bin.js', import.meta.url));
-const STATE = '/tmp/wasmcheat-hunt.json';
+const STATE = join(tmpdir(), 'wasmcheat-hunt.json');
 
 const load = () => {
   try {
@@ -32,7 +36,7 @@ const save = (state) => writeFileSync(STATE, JSON.stringify(state, null, 2));
 
 const [command, ...rest] = process.argv.slice(2);
 
-const SOCKET = process.env.WASMCHEAT_SOCKET ?? '/tmp/wasmcheat.sock';
+const SOCKET = process.env.WASMCHEAT_SOCKET ?? join(tmpdir(), 'wasmcheat.sock');
 
 async function serve() {
   const net = await import('node:net');
@@ -85,7 +89,7 @@ if (command === 'serve') {
   await serve();
 }
 if (!command) {
-  console.error('usage: hunt.mjs <find|exact|narrow|hits|read|write|freeze|watch> [args]');
+  console.error('usage: hunt.mjs <serve|find|exact|narrow|hits|read|write|freeze> [args]');
   process.exit(2);
 }
 
@@ -102,7 +106,7 @@ await client.connect(transport);
 async function call(tool, args) {
   const start = Date.now();
   let result = await client.callTool({ name: tool, arguments: args }, undefined, {
-    // The SDK client gives up after 60 s by default, while an approval wait can last minutes.
+    // The SDK client gives up after 60 s by default, while a watchpoint or a reload can take longer.
     timeout: Number(process.env.WASMCHEAT_RPC_TIMEOUT ?? 900_000),
   });
   const text = (r) => r.content.find((part) => part.type === 'text')?.text ?? '';
@@ -145,12 +149,12 @@ switch (command) {
   case 'find': {
     const tabs = await call('wasmcheat_list_tabs', {});
     const list = Array.isArray(tabs) ? tabs : (tabs.tabs ?? []);
-    const tab = Number(process.env.WASMCHEAT_TAB ?? list.find((entry) => /playables|game/i.test(entry.url))?.tabId ?? 0);
+    const tab = Number(process.env.WASMCHEAT_TAB ?? list.find((entry) => entry.active)?.tabId ?? 0);
     if (!tab) {
       console.error('no candidate tab; pass WASMCHEAT_TAB=<id>');
       process.exit(1);
     }
-    await call('wasmcheat_attach', { tabId: tab, waitSeconds: Number(process.env.WASMCHEAT_APPROVE_WAIT ?? 90), reason: 'value hunt' });
+    await call('wasmcheat_attach', { tabId: tab });
     const instance = await resolveInstance(tab);
     save({ ...state, tabId: tab, instanceId: instance.id, scanId: undefined });
     console.log(JSON.stringify({ tabId: tab, instanceId: instance.id, memory: instance.memory, exports: instance.exports.length }));

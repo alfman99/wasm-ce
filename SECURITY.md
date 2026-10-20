@@ -7,9 +7,13 @@ Please report security problems privately through
 public issue. Include the browser and version, what you did, and what an attacker gains. You should
 get an answer within a week.
 
+## Supported versions
+
+Only the latest release and `main` get fixes.
+
 ## What is in scope
 
-WasmCheat holds two kinds of power, and both are in scope:
+WasmCheat holds three kinds of power, and all three are in scope:
 
 - **The extension** can read and write the memory of any http or https page it runs in. A bug that
   lets a web page reach the extension's own messaging (`wasmcheat.panel.call`, the tab list, another

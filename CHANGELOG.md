@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- An agent needs nothing but the MCP server to learn the method: the server sends a short version as
+  its instructions on connect, and the new `wasmcheat_guide` tool returns the mod-any-webapp skill,
+  its routes per engine, a probe script for any page, IL2CPP reflection for Unity games, a mod template
+  and two complete example mods.
+- The README is a short path from install to an agent changing a game, with the exact setup for Claude
+  Code, Claude Desktop, Codex and Cursor. The tool reference moved to docs/TOOLS.md, with a new section
+  on scripts and mods, and the design notes to docs/ARCHITECTURE.md.
+- The Policy says what the tool is for: single-player state in your own browser, never other players,
+  payments or other people's data. A code of conduct joins the contributor docs.
+- The shell clients keep their socket and state in the system's temp folder rather than `/tmp`, and
+  `hunt.mjs` defaults to the tab in front.
 - `scripts/wc.mjs` sends a file as a script's code (`--code`) with parameters (`--var NAME=JSON`), and
   `hunt.mjs serve` keeps the spacing inside that code. The `mod-any-webapp` skill holds how we mod an
   app end to end, a probe for any page, IL2CPP reflection from memory for Unity games, and the Bubble

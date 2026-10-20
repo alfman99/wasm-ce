@@ -9,3 +9,9 @@ playwright-report/
 .wasmcheat/
 .pi/
 release/
+coverage/
+.vscode/
+.idea/
+.claude/settings.local.json
+.claude/worktrees/
+anti-slop/

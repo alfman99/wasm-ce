@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { buildStoreModule } from '../helpers/wasm-builder';
 import {
@@ -452,6 +453,23 @@ test('a script runs in the game frame, returns its value and is audited with its
   const scripts = entries.data.filter((entry) => entry.kind === 'script');
   expect(scripts.some((entry) => entry.ok && entry.detail?.code === code), entries.text).toBe(true);
   expect(scripts.some((entry) => !entry.ok && entry.detail?.code === 'missingThing.value'), entries.text).toBe(true);
+});
+
+test('the server teaches an agent the method, and its probe reads the page', async () => {
+  // An agent with nothing but this server must be able to follow the mod-any-webapp skill.
+  expect(mcp.client.getInstructions()).toContain('wasmcheat_guide');
+  const skill = readFileSync(new URL('../../.agents/skills/mod-any-webapp/SKILL.md', import.meta.url), 'utf8');
+  const workflow = await mcp.client.callTool({ name: 'wasmcheat_guide', arguments: {} });
+  const text = (workflow.content as { text: string }[])[0]!.text;
+  expect(text.startsWith('# Mod any web app'), text.slice(0, 80)).toBe(true);
+  expect(skill.endsWith(text)).toBe(true);
+
+  const probe = await mcp.client.callTool({ name: 'wasmcheat_guide', arguments: { topic: 'probe' } });
+  const code = (probe.content as { text: string }[])[0]!.text;
+  const ran = await call<{ value: { title: string; wasm: { id: string; bytes: number } | null; canvases: string[] } }>(mcp, 'wasmcheat_run_script', { tabId, code });
+  expect(ran.isError, ran.text).toBe(false);
+  expect(ran.data.value.title).toBe(await game.title());
+  expect(ran.data.value.wasm?.bytes, ran.text).toBeGreaterThan(0);
 });
 
 test('a write watchpoint names the function that changed the score', async () => {

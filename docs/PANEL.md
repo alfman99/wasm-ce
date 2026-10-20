@@ -1,6 +1,6 @@
 # The DevTools panel
 
-The panel is the same bridge an MCP client talks to, with a human at the keyboard. Every call it
+The panel is the same bridge an MCP client talks to, with you at the keyboard. Every call it
 makes goes through the service worker's `wasmcheat.panel.call` family, which reuses the WebSocket
 dispatcher, so frame routing, worker routing and the audit log behave identically. A panel is a
 front end, not a separate implementation.
@@ -8,7 +8,7 @@ front end, not a separate implementation.
 Open it with DevTools on the target tab → **WasmCheat**. The panel is bound to that tab: there is no
 tab picker, because the tab you are inspecting is the tab you mean.
 
-![The panel: target, workflow strip, scan, found list and the address tools](../docs/img/panel.png)
+![The panel: target, workflow strip, scan, found list and the address tools](img/panel.png)
 
 ## Reading the header
 
@@ -16,7 +16,7 @@ tab picker, because the tab you are inspecting is the tab you mean.
 | --- | --- |
 | **This page** | The title and address of the tab the panel is bound to, with **Reload page** beside it for a game that started before WasmCheat did. `No page to analyze` means DevTools is open on a page WasmCheat cannot run in (`chrome://`, an extension page). |
 | **Now** | `Foundry · w1 · 0x408`. Tab, then instance, then the address in the forms. Updates as you click. It answers "what am I about to write to?" |
-| `agent` pill | What the page runs: `1 wasm module`, `3 wasm modules`, or `no wasm`; ` · scripts blocked` is added when the page's CSP forbids hook bodies (use a declarative fallback). |
+| `agent` pill | What the page runs: `1 wasm module`, `3 wasm modules`, or `no wasm`; ` · scripts blocked` is added when the page's content security policy (CSP) forbids hook bodies (use a declarative fallback). |
 | `bridge` pill | The optional MCP server: `MCP off` (neutral: the panel does not need it), `MCP live`, `MCP needs a token` or `MCP token refused`. The token field appears only for the last two. |
 | Steps strip | `1 Scan for a value`, `2 Narrow it down`, `3 Change it`. The current step is outlined, so the strip tells you where you are rather than listing three links. |
 | **Help** / **Theme** | The same help sheet as <kbd>?</kbd>, and a light/dark switch that is remembered. |
@@ -41,12 +41,12 @@ and coins are in no memory the panel can scan. Only the physics (bodies, forces,
 
 The first screen is the loop: Found and Scan side by side, Text scan, then the things you keep
 (Freeze, Watch, Bookmarks). Everything else (Memory view, Read and write, Instances, Watchpoints,
-Patches, Hooks, Pointers, Speed hack, Workers, Saved scans, Audit and the raw console) is one click
+Patches, Hooks, Script, Pointers, Speed hack, Workers, Saved scans, Audit and the raw console) is one click
 away under **More tools**, which is collapsed until you need it. The palette opens it for you when
 you jump to one of its cards.
 
 Every card is a set of forms over one page method; the MCP column names the tool that does the same
-thing, so a human and an agent are never using different mechanisms.
+thing, so you and an agent are never using different mechanisms.
 
 Nothing on the first screen needs a refresh button. Four times a second the panel reads the Found
 list, the picked address, the freezes, watches and bookmarks, and the memory view while More tools
@@ -76,7 +76,7 @@ saying so, because the scan lived in the page that went away.
 | **Workers** | Wasm inside Web Workers, including a worker started by a worker. | `wasmcheat_list_workers` |
 | **Saved scans** | Candidate lists kept in the page's `sessionStorage`, so a reload does not lose the narrowing. | `wasmcheat_saved` |
 | **Bookmarks** | Labelled addresses kept in `localStorage`, with a type so each row shows its value now. | `wasmcheat_bookmark` |
-| **Audit** | Every change made through the extension, from the panel or from an agent. | `wasmcheat_audit` |
+| **Audit** | Every change made through the extension, from the panel or from an agent, including script runs (with their code) and mods kept or removed. | `wasmcheat_audit` |
 | **Raw console and events** | Any page method with JSON parameters, plus a live log of bridge and page events with **Pause**. | None |
 
 ## Shortcuts
@@ -116,7 +116,7 @@ the forms"; the panel fills it in for you. Inside workers the same shape carries
 | Note: "This page's WebAssembly is … a physics engine" | The game logic is JavaScript. A scan for the score or coins finds nothing; only physics values are in this memory |
 | `NO_AGENT` in an output block | Press **Reload page** |
 | Instances empty | **Why is it empty?** (Diagnose); all-zero call counts mean the module was compiled before the agent, so press **Reload page** |
-| A hook call returns `HOOK_EVAL_BLOCKED` | The page forbids `new Function`; use a declarative fallback |
+| A hook call returns `HOOK_EVAL_BLOCKED` | The page's CSP forbids `new Function`; use a declarative fallback |
 | `freeze` does not stick | The app rewrites the value outside the 16 ms pass, or the address is a copy; try the mirror address a scan also found |
 | Watchpoint status says `installed: false` | The module was already compiled; the panel reloads to arm it, so retry and let the reload finish |
-| Everything works but the audit is short | The log records mutations (writes, freezes, hooks, patches, scans, bookmarks, speed, trace, reloads), not reads |
+| Everything works but the audit is short | The log records changes (writes, freezes, hooks, patches, scans, bookmarks, speed, trace, reloads, script runs, mods added or removed), not reads |

@@ -1,6 +1,6 @@
 name: Idea
 description: Something that would make WasmCheat easier or more useful.
-labels: [idea]
+labels: [enhancement]
 body:
   - type: textarea
     id: goal

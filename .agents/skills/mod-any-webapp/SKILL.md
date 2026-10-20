@@ -1,87 +1,85 @@
 ---
 name: mod-any-webapp
-description: Modify any running web app or browser game through the WasmCheat extension, as an agent over MCP, and keep the change as a mod that survives reloads. Use when the owner asks to mod, cheat, hack, tweak, add a feature or a menu to, or change the behaviour of a page or game open in their browser (YouTube Playables, Unity, PlayCanvas, Godot, Emscripten, three.js, Phaser, React or Vue apps, anything else), or to find where an app keeps a value. Covers recon, choosing a route (JavaScript objects, a save, wasm memory, IL2CPP reflection), prototyping live, writing a mod with a HUD, keeping it per game origin, and turning each workaround into a product fix.
+description: Modify any web app or browser game open in the user's browser through the WasmCheat MCP tools, and keep the change as a mod that comes back on every load. Use when the user asks to mod, cheat, tweak, add a feature or a menu to, or change the behaviour of a page or game in their browser (YouTube Playables, Unity, PlayCanvas, Godot, Emscripten, three.js, Phaser, React or Vue apps, anything else), or to find where an app keeps a value. Covers checking the connection, recon, choosing a route (JavaScript objects, a save, wasm memory, Unity IL2CPP reflection), changing one thing live, writing a mod with an on-screen menu, keeping it, and the rules that keep it safe.
 ---
 
 # Mod any web app
 
-WasmCheat's point: change any app at will, mainly through an agent connected to the extension. The
-agent does the work over MCP; the owner only plays and says what they see. Never leave the owner a
-manual step (a console, a frame picker) that the extension could do: make it a tool instead.
+You change the app; the user plays and tells you what they see. Everything below is a WasmCheat MCP
+tool call (`wasmcheat_*`). Every file this skill cites is also returned by `wasmcheat_guide`, so the
+method works with nothing but the MCP server: `wasmcheat_guide {"topic":"probe"}` gives the probe's
+code to pass to `wasmcheat_run_script`.
 
-## 0. Connect
+## 1. Check the connection
 
-```bash
-npm run build                        # extension, page agent and MCP server
-node scripts/hunt.mjs serve          # keeps one MCP session open (run in the background)
-node scripts/wc.mjs list_tabs        # the owner's tabs; the extension pairs by itself in seconds
-```
+- `wasmcheat_list_tabs`. If it says no extension is connected, the user has to load the extension
+  (see the project's QUICKSTART) and keep the browser open; it pairs with the server by itself.
+- Pass `tabId` on every call: each browser window has a front tab, so "active" is ambiguous.
+- `agentAttached: false` on the tab means the page loaded before the extension: ask the user to
+  reload that tab. They also reload the tab after the extension itself was reloaded or updated.
 
-- The owner loads `packages/extension/dist` unpacked. After a rebuild they reload the extension
-  **and then the tab**: a tab keeps its old page agent until it reloads.
-- Call any tool as `node scripts/wc.mjs <tool> '<json>'`; pass code from a file with `--code file.js`
-  and parameters with `--var NAME=JSON`. Always pass `tabId`: `list_tabs` marks each window's front tab
-  active.
-- Stop the session before `npx playwright test` (it uses ports 7397, 7399 and 7331).
+## 2. Recon
 
-## 1. Recon
+1. `wasmcheat_diagnose {"tabId":T}`: frames, wasm instances, `.wasm` files, a physics-only engine.
+2. `wasmcheat_run_script {"tabId":T,"code":<probe>}` with the code of `scripts/probe.js`: what the page
+   added to `window`, which engine or framework it runs, its wasm, its storage, and whether it is a
+   YouTube Playable. Scripts run in the frame that holds the game, even a cross-origin iframe.
+3. Ask the user for one value they can see (coins, health, a level) and when it changes. Their number
+   is the ground truth: a value that does not match it is the wrong one.
 
-1. `node scripts/wc.mjs diagnose '{"tabId":T}'`: frames, instances, wasm, a physics-only engine.
-2. `node scripts/wc.mjs run_script '{"tabId":T}' --code .agents/skills/mod-any-webapp/scripts/probe.js`:
-   page globals, engine, framework, wasm size, storage, and whether it is a YouTube Playable.
-3. Ask the owner for one value they can see (coins, health) and when it changes. Their numbers are the
-   ground truth; a value that does not match what they see is the wrong one.
+## 3. Pick a route
 
-## 2. Pick a route
-
-Read [references/routes.md](references/routes.md) for the recipe per background. In short:
+[references/routes.md](references/routes.md) has the recipe per background. In short:
 
 | The app is | Its state lives in | Start with |
 | --- | --- | --- |
-| A YouTube Playable (any engine) | its save, then the engine | `await ytgame.game.loadData()` |
+| A YouTube Playable (any engine) | its save, then the engine | `await ytgame.game.loadData()` in `run_script` |
 | PlayCanvas, three.js, Phaser, Pixi, Cocos, Babylon | JavaScript objects | walk the scene in `run_script` |
-| Unity IL2CPP | wasm memory | save names, then `scripts/il2cpp.js` |
-| Emscripten C/C++, Godot, Rust | wasm memory | `scan` and narrow, then `pointer_scan` |
-| React, Vue, plain DOM | JS state, network | framework internals, wrap `fetch` |
+| Unity (IL2CPP) | wasm memory | the save's names, then `scripts/il2cpp.js` for classes and fields |
+| Emscripten C/C++, Godot, Rust | wasm memory | `wasmcheat_scan` and narrow, then `wasmcheat_pointer_scan` |
+| React, Vue, plain DOM | JavaScript state, network | framework internals, wrap `fetch` |
 
-Look for what the developers left in first (debug switches, a god-mode flag, a disabled feature): it is
-the cheapest and the most stable thing to flip.
+Look first for what the developers left in: debug switches, a god-mode flag, a feature the build turns
+off. It is the cheapest change and the one least likely to break.
 
-## 3. Prototype live
+## 4. Change one thing live
 
-- `run_script` runs in the game frame, even a cross-origin iframe. Every script gets
-  `until(check, timeoutMs, everyMs)` and `wasm(id = 'latest')` (`{id, memory, exports}`).
-- Change one thing, then read it back and ask the owner what the game shows. A HUD can lag a value, and
-  a value can be a copy that the game overwrites (the mission coins in Stealth Master).
-- Memory writes: validate the object first (class word, plausible ranges) because stale copies linger.
-- Do not toggle the mod's switches while the owner is playing: you flip each other's clicks. Ask, or
-  read the state instead.
+- `wasmcheat_run_script` runs code in the game frame and returns its value. Every script gets two
+  helpers: `until(check, timeoutMs, everyMs)` waits for something to exist (the check may be async),
+  and `wasm(id = 'latest')` returns the game's wasm instance as `{id, memory, exports}`.
+- Memory tools for values you cannot reach from JavaScript: `wasmcheat_scan` (first pass, then the
+  same `scanId` with the new value), `wasmcheat_write`, `wasmcheat_freeze`, `wasmcheat_pointer_scan`,
+  `wasmcheat_find_writes`, `wasmcheat_patch`, `wasmcheat_hook`, `wasmcheat_speed`. See their
+  descriptions; `wasmcheat_attach` reloads the tab when the agent has to be in place before the game.
+- After each change, read the value back and ask the user what the game shows. A value can be a copy
+  the game overwrites later (a level's coin counter written back at the level's end): find the one
+  that persists.
+- Before a memory write, check the object is still what you think (its class word, plausible values):
+  old copies linger in memory after a level ends.
+- Never toggle a menu's switches yourself while the user is playing: you flip each other's clicks.
+  Read the mod's state instead.
 
-## 4. Make it a mod
+## 5. Make it a mod
 
-1. Start from [references/mod-template.js](references/mod-template.js): a once-guard, `until`, a
-   state + actions object, a HUD that keeps clicks off the game, `window.__wasmcheatMod` for an agent.
-2. Find everything by name on every load (scene names, save keys, IL2CPP classes and fields), never by
-   an address from this session. Examples: [Bubble Tower 3D](references/examples/bubble-tower-3d.js)
-   (PlayCanvas: aim line, swap, colour, fireball, free misses), [Stealth Master](references/examples/stealth-master.js)
-   (Unity IL2CPP: god mode, speed, coin multiplier, coins and tokens).
-3. Keep it: `node scripts/wc.mjs mod '{"tabId":T,"action":"add","name":"…"}' --code mod.js`. Check the
-   reply's origin is the **game frame's** (`*.playables.usercontent.goog`), never the site around it.
-   A mod that throws is not kept.
-4. Ask the owner to reload the game; read `window.__wasmcheatMod` back to confirm it came back alone.
-5. Replace a kept mod by removing the old id (`action: list`, then `remove`) before adding the new one.
+1. Start from [references/mod-template.js](references/mod-template.js): a guard against a second run,
+   `until` for what it waits on, a `state` and `actions` object, an on-screen menu that keeps its clicks
+   off the game, and `window.__wasmcheatMod` so you can read its state later.
+2. Find everything by name on every load (scene names, save keys, class and field names), never by an
+   address seen once: addresses move on reload. A class that only exists in a level is looked for on
+   each tick rather than awaited, so the menu works from the title screen.
+3. Keep it: `wasmcheat_mod {"tabId":T,"action":"add","name":"…","code":<mod>}` runs it now and keeps it
+   only if it works. Check the reply's origin is the game frame's, not the site around it.
+4. Ask the user to reload the game, then read `window.__wasmcheatMod` back: it should be there on its own.
+5. To change a mod: `action: "list"`, `action: "remove"` with its id, then `add` the new version.
 
-## 5. Leave the product better
-
-Each workaround is a missing feature: the `run_script` tool, kept mods, `until` and `wasm()` all came
-from a mod that needed them. Turn it into a fix on a branch with a test that fails first, the docs it
-changes and a CHANGELOG line, then a PR (CI green, squash merge). Save what the game taught to memory.
+Worked examples: [Bubble Tower 3D](references/examples/bubble-tower-3d.js) (PlayCanvas: aim line, swap,
+colour, fireball, free misses) and [Stealth Master](references/examples/stealth-master.js) (Unity
+IL2CPP: the game's own god mode, run speed, a coin multiplier, coins and tokens by save key).
 
 ## Rules
 
-- Change only what the client owns. Never change scores the game reports to a platform, leave cheat
-  flags in saves at 0, and keep a local backup before writing a save that syncs to the cloud.
-- Ask before writing the owner's save or anything that leaves their machine.
-- Never solve a CAPTCHA, get past a bot check or accept a consent banner for the owner.
-- The product guide for agents using WasmCheat is [docs/AGENT_GUIDE.md](../../../docs/AGENT_GUIDE.md);
-  this skill is how we work, that guide is what we ship.
+- Change what the client owns. Never change scores the app reports to a platform or a leaderboard,
+  never touch multiplayer state, and leave anti-cheat flags in a save as they are.
+- Ask before writing a save that syncs to the cloud, and keep a copy of it first.
+- Every change is logged (`wasmcheat_audit`); say what you changed and how to undo it.
+- Never solve a CAPTCHA, get past a bot check, or accept terms or a consent banner for the user.

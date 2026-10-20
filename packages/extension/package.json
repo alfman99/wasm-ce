@@ -2,6 +2,7 @@
   "name": "@wasmcheat/extension",
   "version": "0.1.0",
   "private": true,
+  "description": "The Chromium MV3 extension: service worker, page relay, DevTools panel and popup.",
   "type": "module",
   "scripts": {
     "build": "node build.mjs"
@@ -13,5 +14,10 @@
     "@types/chrome": "^0.0.287",
     "esbuild": "^0.24.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alfman99/wasm-ce.git",
+    "directory": "packages/extension"
+  }
 }

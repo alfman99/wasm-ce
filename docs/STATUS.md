@@ -3,8 +3,8 @@
 Last verified from a clean tree on 2026-10-20 (`rm -rf packages/*/dist`, `npm ci`):
 
 - `npm ci` clean, `npm run build` 0 errors, `npm run typecheck` 0 errors
-- `npx vitest run` **159 passed** (16 files)
-- `npx playwright test` **26 passed, 0 skipped** (~35 s, real Chromium, real extension, no mocks)
+- `npx vitest run` **169 passed**
+- `npx playwright test` **31 passed, 0 skipped** (real Chromium, real extension, no mocks)
 - `npm audit --omit=dev` 0 vulnerabilities. The full audit flags 6 in test tooling only (vitest 2,
   the esbuild inside vite); fixing them needs a vitest major upgrade.
 
@@ -16,7 +16,8 @@ Last verified from a clean tree on 2026-10-20 (`rm -rf packages/*/dist`, `npm ci
   `packages/extension/src/sw.ts`): `page.write`, `page.freeze.set|clear`, `page.watch.add|remove`,
   `page.scan.begin|next|drop|text`, `page.pointer.scan`, `page.hook.add|setEnabled|remove`,
   `page.patch.add|remove|clear`, `page.trace.arm|stop|clear`, `page.bookmark.add|remove|clear`,
-  `page.speed.set`, plus `ext.reload`. Attach, detach and saved scan lists
+  `page.speed.set`, `page.script.run` (a script run or a mod applied, logged with its code),
+  plus `ext.reload` and `ext.mods.remove` (a mod removed). Attach, detach and saved scan lists
   (`wasmcheat_saved` save / open / delete) are recorded by the MCP server, which is the only writer
   for them.
   All of it is visible from MCP (`wasmcheat_audit`), the DevTools panel and
@@ -56,7 +57,7 @@ Last verified from a clean tree on 2026-10-20 (`rm -rf packages/*/dist`, `npm ci
 - Nested workers: a worker started from inside a worker is captured too (id `k1n1`), its wasm is
   listed, written and scanned through the chain, proven by `nested.html` in the e2e suite.
 - Speed hack (`wasmcheat_speed`): scales `performance.now` / `Date.now` / `requestAnimationFrame` in
-  the page realm and in every worker realm (0–20x, and 0 freezes the clock); e2e measures score
+  the page realm and in every worker realm (0 to 20x, and 0 freezes the clock); e2e measures score
   growth at 4x against 1x, at 0, and after reset; a unit test proves the scale reaches workers.
 - Memory viewer in the DevTools panel: 16 bytes per row, pan earlier/later, ASCII gutter, **Follow
   pointer** (reads a u32 and jumps), and clicking any address (a scan hit, a bookmark, a watch
@@ -65,9 +66,12 @@ Last verified from a clean tree on 2026-10-20 (`rm -rf packages/*/dist`, `npm ci
   against `framed.html` (a genuinely cross-origin `localhost` vs `127.0.0.1` embed).
 - DevTools panel (`packages/extension/dist` → DevTools → WasmCheat): every tool as a form, a raw
   RPC console, a live event log and a live audit view, sharing one dispatcher with the WebSocket.
-- Live Playables game ("My Mini Mart", cross-origin iframe): found the coin counter as **i64**, froze
-  two mirrored copies at 99,999,999 and the game showed it. See "Three WebAssembly facts" in the
-  README for why i32 scans missed it.
+- Live Playables game ("My Mini Mart", a single-player test in a cross-origin iframe): found the
+  coin counter as **i64**, froze two mirrored copies at 99,999,999 and the game showed it. An `i32`
+  scan missed it; the operating notes below say why that happens.
+- Scripts and mods: `wasmcheat_run_script` runs in the game frame, returns its value and is audited
+  with its code; a mod kept with `wasmcheat_mod` runs again on every load of the game until it is
+  removed (both e2e).
 - Bridge authentication, mutual: token minted into `$WASMCHEAT_HOME/token` (or `WASMCHEAT_TOKEN`) and
   never sent after pairing. The server opens with `bridge.challenge` (a nonce), the extension proves
   the token in `bridge.hello` (its nonce plus an HMAC-SHA256 of both), a bad proof is closed with
@@ -87,7 +91,7 @@ Last verified from a clean tree on 2026-10-20 (`rm -rf packages/*/dist`, `npm ci
   (`WASMCHEAT_RECONNECT_GRACE_MS`, default 8000), and `page.hello` retries when a document is being
   replaced by a reload.
 
-## Implemented, with honest limits
+## Implemented, with limits
 
 - **Worker instances (`k1-…`) have no storage.** A worker realm has no `sessionStorage` or
   `localStorage`, so saving or opening a saved scan, adding a bookmark, and `find_writes` /
@@ -102,10 +106,10 @@ Last verified from a clean tree on 2026-10-20 (`rm -rf packages/*/dist`, `npm ci
 - **Shared memories are refused by the rewriter**, so watchpoints and patches do not reach an
   Emscripten `-pthread` build. Typed function references (`ref null $t` locals, GC types) are refused
   with `UNSUPPORTED` rather than rewritten.
-
-- **Atomics / SIMD probing**: `0xFE` loads/stores and `0xFD` v128 memory ops are probed; v128 lane
-  loads are reported through `unprobed[]` instead of probed. Read-modify-write atomics throw
-  `UNSUPPORTED`.
+- **Atomics and SIMD in watchpoints**: on an unshared memory, `0xFE` atomic loads and stores and
+  `0xFD` vector memory accesses are probed like any load or store. The four `v128.load*_lane` forms
+  are walked but not probed, and reported in `unprobed[]`. Any other atomic (read-modify-write,
+  wait, notify) makes the rewriter refuse the module with `UNSUPPORTED`.
 - **Watchpoints watch every instrumented instance**: each instantiation made while armed gets its
   own callback closure, so a helper module instantiated after the game reports into its own memory
   and function names. Hits carry their instance in `address` and `functions[].instanceId`;
@@ -118,10 +122,10 @@ Last verified from a clean tree on 2026-10-20 (`rm -rf packages/*/dist`, `npm ci
   imported functions at instantiation). `importPatchability` says so instead of pretending.
 - **Export hooks / patches** only reach callers that read `instance.exports.x` per call. Emscripten
   glue caches exports in a local (`_get_score = wasmExports['get_score']`), which is why the demo
-  ships a hand-written loader; the README documents this.
-- **`evalAllowed: false`** (strict CSP, e.g. YouTube): free-form hook bodies are refused with
+  ships a hand-written loader; [docs/ARCHITECTURE.md](ARCHITECTURE.md) explains it.
+- **`evalAllowed: false`** (a strict content security policy, e.g. YouTube): free-form hook bodies are refused with
   `HOOK_EVAL_BLOCKED`; declarative fallbacks (`replace-return`, `offset-result`) still work. The
-  check runs on the first hook with a body, not at start-up, because on a Trusted Types page the
+  check runs on the first hook with a body, not at start-up, because on a Trusted Types page (one that refuses strings turned into code) the
   check is itself a reported violation; until then `evalAllowed` is absent.
 - **Frame pick is a heuristic**: the service worker probes frames with `page.diagnose` and takes the
   one holding the most instances. `wasmcheat_attach {frameId}` overrides it.
@@ -143,8 +147,11 @@ Last verified from a clean tree on 2026-10-20 (`rm -rf packages/*/dist`, `npm ci
 
 - Verify a write with a read, not with the screen: games repaint their HUD when *they* change a value,
   so a frozen value can be correct in memory while the display lags.
-- Coins, currencies and scores in engine-built games are usually `i64` or `f64`, and often mirrored in
-  two places. Scan, narrow to the candidates, freeze them all, then confirm by read.
+- A scan type is a guess at how the game stores the number. Coins, currencies and scores in
+  engine-built games are usually 8 bytes wide, as an integer (`i64`) or a float (`f64`), and a float
+  keeps the same number as entirely different bytes, so an `i32` scan for it finds nothing. They are
+  often mirrored in two places too. Scan, narrow to the candidates, freeze them all, then confirm by
+  read.
 - Keep the popup or the DevTools panel open during a long session; either one pins the service worker.
   Without them, a 30-second alarm wakes the worker and redials the bridge.
 - Never arm a watchpoint and reload by hand: `wasmcheat_find_writes` reloads for you, and the arm

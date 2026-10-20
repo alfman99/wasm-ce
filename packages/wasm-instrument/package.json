@@ -18,5 +18,10 @@
       "default": "./dist/index.js"
     }
   },
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alfman99/wasm-ce.git",
+    "directory": "packages/wasm-instrument"
+  }
 }

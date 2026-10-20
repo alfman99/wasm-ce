@@ -1,6 +1,5 @@
-// First look at any page, run in the game frame:
-//   node scripts/wc.mjs run_script '{"tabId":TAB}' --code .agents/skills/mod-any-webapp/scripts/probe.js
-// Returns what the page added to `window` (a clean iframe is the baseline), which engines and
+// First look at any page: pass this file as the `code` of wasmcheat_run_script (wasmcheat_guide
+// returns it as the "probe" topic). It runs in the game frame and returns what the page added to `window` (a clean iframe is the baseline), which engines and
 // frameworks it carries, its scripts, canvases and wasm, and whether it is a YouTube Playable.
 const frame = document.createElement('iframe');
 frame.style.display = 'none';

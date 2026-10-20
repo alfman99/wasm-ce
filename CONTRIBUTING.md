@@ -44,11 +44,32 @@ the real extension, so a change to the panel, the service worker or the page age
 | --- | --- |
 | `packages/page-agent` | Runs inside the page and its workers: captures wasm instances, scans, writes, hooks. |
 | `packages/extension` | The MV3 extension: service worker, relay, DevTools panel, popup. |
-| `packages/mcp-server` | The optional MCP server that lets an AI agent drive the extension. |
+| `packages/mcp-server` | The MCP server that lets an AI agent drive the extension, and serves the mod-any-webapp skill. |
 | `packages/protocol` | Types and error codes shared by all of the above. |
 | `packages/wasm-instrument` | The wasm rewriter behind watchpoints and patches. |
 | `packages/demo-app` | The demo game and its test pages. |
 | `tests/unit`, `tests/e2e` | Vitest unit tests and Playwright end-to-end tests. |
+| `.agents/skills/` | Agent Skills: `mod-any-webapp` (the method, shipped to users) and `test-on-real-apps` (for contributors). |
+| `scripts/` | The demo server, packaging, and shell clients for the MCP tools ([docs/TOOLS.md](docs/TOOLS.md#drive-it-from-a-shell)). |
+| `docs/` | User docs, the [architecture](docs/ARCHITECTURE.md), and the design rules ([docs/DESIGN.md](docs/DESIGN.md)). |
+
+## Tests
+
+```bash
+npm test           # build, then the unit tests, then the end-to-end tests
+npm run test:unit  # page agent, rewriter, bridge and server logic, no browser
+npm run test:e2e   # a real Chromium with the real extension and a real MCP client
+```
+
+The end-to-end suite serves the demo game, loads `packages/extension/dist`, connects an MCP client to
+`packages/mcp-server/dist/bin.js` and drives every tool against it: scans, writes, freezes, hooks,
+watchpoints, patches, pointers, workers, cross-origin frames, scripts, kept mods, the panel on its own,
+and pairing. `tests/e2e/quiet.spec.ts` runs with no MCP server and checks that the panel works alone and
+that no console shows an error. The suite uses ports 7331, 7397 and 7399 and one browser, so it runs on
+a single worker and stops at once if a port is taken: stop any running WasmCheat server first.
+
+To prove a change on a real app as well, follow the
+[test-on-real-apps](.agents/skills/test-on-real-apps/SKILL.md) skill.
 
 `docs/STATUS.md` lists what is proven and what is a known limit; it is the best place to find
 something worth working on.
@@ -69,6 +90,8 @@ the screenshots and the permission justifications.
 
 ## Ground rules
 
-Be kind and assume good faith. WasmCheat is for software you own or may test (see the Policy section
-of the README); pull requests that target a specific third-party service or add evasion of
-anti-cheat or DRM will be closed.
+Follow the [code of conduct](CODE_OF_CONDUCT.md). WasmCheat is for the uses in the README's
+[Policy](README.md#policy): pull requests that help cheat other players (multiplayer, leaderboards,
+reported scores), get around payments or access controls, or evade anti-cheat or DRM will be closed.
+Example mods that change single-player state in the user's own browser are welcome in the
+mod-any-webapp skill's `references/examples/`.

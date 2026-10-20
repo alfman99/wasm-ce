@@ -1,77 +1,85 @@
-# Agent guide: hacking a wasm game over MCP
+# Agent guide: changing any app over MCP
 
-This is the playbook for an AI agent (or a human driving one) that wants to find and change a value in a
-WebAssembly game running in the user's browser. Read `README.md` for architecture and the full tool
-reference; this file is the order of operations, the decision table, and the traps.
+This is the playbook for an AI agent (or a person driving one) that changes a web app or browser game
+running in the user's browser: a value in memory, a switch in the page's JavaScript, or a feature
+added on top, kept as a mod that comes back on every load. [docs/TOOLS.md](TOOLS.md) is the full
+tool reference and [docs/ARCHITECTURE.md](ARCHITECTURE.md) how it works; this file is the order of
+operations, the decision table and the traps.
 
-## 1. One-time setup
+## 1. Setup
 
-```bash
-npm install && npm run build      # builds protocol, wasm-instrument, page agent, extension, MCP server
-```
+Build from source and load the extension as in [docs/QUICKSTART.md](QUICKSTART.md), then register
+the MCP server with your client: the line for each one is in the README under
+[Connect your agent](../README.md#connect-your-agent).
 
-1. `chrome://extensions` → Developer mode → **Load unpacked** → `packages/extension/dist`.
-2. Point your MCP client at the server (stdio, no arguments needed):
+The server tells the agent how to work as soon as it connects: it sends this loop as its MCP
+instructions, and `wasmcheat_guide({topic})` returns the
+[mod-any-webapp skill](../.agents/skills/mod-any-webapp/SKILL.md) piece by piece. Topics: `workflow`
+(start here), `routes`, `probe`, `il2cpp`, `mod-template`, `example-playcanvas`, `example-unity`.
+`probe` and `il2cpp` return scripts to pass to `wasmcheat_run_script` as they are.
 
-```json
-{
-  "mcpServers": {
-    "wasmcheat": { "command": "node", "args": ["/absolute/path/to/wasm-ce/packages/mcp-server/dist/bin.js"] }
-  }
-}
-```
+The extension dials the server on `ws://127.0.0.1:7331/extension` and reconnects on its own, so the
+order you start them in does not matter. It pairs with the server on first connect and keeps the
+token, so there is nothing to paste unless pairing is off (`WASMCHEAT_PAIRING=off`, or a server
+started with `WASMCHEAT_TOKEN`).
 
-The extension dials the server on `ws://127.0.0.1:7331/extension`, so start the MCP client *after* the
-extension is loaded (or wait a second: it reconnects on its own).
-
-The bridge is authenticated, and the token stays out of your way: the extension pairs with the server
-on first connect and stores what it gets. You only touch the field when pairing is off
-(`WASMCHEAT_PAIRING=off`, or a server started with `WASMCHEAT_TOKEN`).
-
-The human also has a front-end: DevTools → **WasmCheat** exposes every tool as a form, plus a raw RPC
-console and a live event and audit log. It talks to the same dispatcher as the agent, so the two never
-drift. It is the fastest way to check what the agent sees.
+The user has the same tools in DevTools → **WasmCheat**: every tool as a form, a raw console and a
+live audit log, over the same dispatcher as the agent. It is the fastest way to check what the agent
+sees.
 
 ## 2. What the agent may and may not do
 
 There is no approval prompt to ask for. `tabId` is optional on every tool: omit it and the extension
-acts on the tab in front, the page the human has open. Ask only when the human names a second tab.
+acts on the tab in front, the page the user has open. Ask only when the user names a second tab.
 
 You still do not guess. `wasmcheat_list_tabs` tells you what is open; `attach` tells you what the
-agent can see. If the human's page is a game, work there; if it is a bank, ask before touching
-anything, and respect a `no` without retrying.
+agent can see. If the page is a game, work there; if it is a bank, ask before touching anything, and
+respect a no without retrying. Change only what the client owns: never a score reported to a
+platform, never multiplayer state, and ask before writing a save that syncs.
 
-Every mutation you make is recorded, whoever made it: a write, a freeze, a watch, a scan begin or
-narrow, a hook, a patch, a watchpoint arm, a pointer scan, a bookmark, a speed change, a reload. Do
-not make changes you would not want to explain in that log.
+Every change you make is recorded, whoever made it: a write, a freeze, a watch, a scan begin or
+narrow, a hook, a patch, a watchpoint arm, a pointer scan, a bookmark, a speed change, a reload, a
+script run (with its code), and a mod added or removed. Do not make changes you would not want to
+explain in that log.
 
 ## 3. The loop
 
 ```mermaid
 flowchart LR
-  attach --> diagnose --> instances --> scan --> narrow --> verify --> act
-  act -->|write or freeze| verify
-  act -->|watchpoint| findCode[find_writes / find_reads]
-  act -->|patch or hook| observe
+  tabs[list_tabs] --> diagnose --> probe[run_script: probe]
+  probe -->|state in JavaScript| js[run_script]
+  probe -->|state in wasm memory| scan --> narrow --> verify
+  js --> verify
+  verify -->|write or freeze| verify
+  verify -->|who writes it?| findCode[find_writes / find_reads]
+  findCode -->|patch or hook| verify
+  verify -->|keep it| mod[mod add]
 ```
+
+Pick the route first. A JavaScript engine (PlayCanvas, three.js, Phaser) or a web app keeps its
+state in JavaScript objects: change them with `wasmcheat_run_script`. A YouTube Playable keeps it
+in its save. A compiled game (Unity, Godot, Emscripten) keeps it in wasm memory: scan for it, or,
+for Unity, read its classes by name (3.9). `wasmcheat_guide({topic: "routes"})` has the table per
+engine.
 
 ### 3.1 Attach
 
 ```json
-{ "reason": "find the coin counter" }
+{ "tabId": 123 }
 ```
 
 No `tabId` means the tab in front. `wasmcheat_list_tabs` returns `tabId`, `title`, `url`, `active`,
-`agentAttached` and `frames`
-(so you can see a game inside an iframe). `attach` returns `pageAgent` info including `evalAllowed`. If
-that is `false` the page's CSP blocks `new Function`, so free-form hook bodies will fail and you must use
-declarative hook fallbacks. It is absent until the first hook with a body: checking earlier is itself a
-violation on a page that enforces Trusted Types.
+`agentAttached` and `frames` (so you can see a game inside an iframe). `attach` returns `pageAgent`
+info including `evalAllowed`. If that is `false`, the page's content security policy (CSP, the
+header that says what code a page may run) blocks `new Function`, so free-form hook bodies and
+scripts fail and you must use declarative hook fallbacks. It is absent until the first hook with a
+body, because on a page that enforces Trusted Types (a CSP mode that rejects strings turned into
+code) checking earlier is itself a reported violation.
 
 ### 3.2 Diagnose an empty instance list
 
 ```json
-{ "tabId": 1310636703 }
+{ "tabId": 123 }
 ```
 
 `wasmcheat_diagnose` is the answer to "why is `list_instances` empty?". It reports what the page agent has
@@ -83,6 +91,9 @@ cross-origin flag, canvases, `.wasm` URLs found in the HTML, and a hint. The thr
 | `calls.* == 0`, no iframes | the extension was not in the page before the game booted | `attach` reloads the tab once on its own; if it still says `no relay`, pass `"reload": true` |
 | cross-origin iframe listed | the game lives in a subframe | the extension already routes into frames; if not, pass `frameId` from `list_tabs` |
 | `instances: 0`, `wasmReferences` has URLs | the game is a worker or WebGL build | check `wasmcheat_list_workers` (nested workers appear as `k1n1`) |
+
+No instances at all and no `.wasm` anywhere means the app is JavaScript: take the `run_script`
+route.
 
 ### 3.3 List instances
 
@@ -97,7 +108,7 @@ bookmark keeps `latest` as typed and resolves it each time you use it.
 First pass, exact value:
 
 ```json
-{ "tabId": 1310636703, "instanceId": "w1", "type": "i32", "mode": "exact", "value": 75 }
+{ "tabId": 123, "instanceId": "w1", "type": "i32", "mode": "exact", "value": 75 }
 ```
 
 Unknown value: omit `value` with `mode` defaulting to `changed`, do something in the game, then narrow.
@@ -105,7 +116,7 @@ A narrowing pass repeats the same tool with the `scanId` the previous pass retur
 `instanceId` and the `type`; the server validates all four):
 
 ```json
-{ "tabId": 1310636703, "instanceId": "w1", "type": "i32", "scanId": "s1", "mode": "changed" }
+{ "tabId": 123, "instanceId": "w1", "type": "i32", "scanId": "s1", "mode": "changed" }
 ```
 
 Optional `from` / `to` limit the byte range, which is how you avoid scanning a multi-megabyte
@@ -147,14 +158,14 @@ a second.
 ```
 
 Freeze is a page-side interval that re-writes the value whenever it drifts. Freeze **all** mirror copies
-you found, not just one.
+you found, not just one. Then ask the user what they see.
 
 ### 3.6 Find the code (watchpoints)
 
 `wasmcheat_find_writes` answers "which function writes this address?":
 
 ```json
-{ "tabId": 1310636703, "address": "w1:0x408", "type": "i64", "timeoutSeconds": 20 }
+{ "tabId": 123, "address": "w1:0x408", "type": "i64", "timeoutSeconds": 20 }
 ```
 
 It arms a watchpoint, reloads the tab (a store cannot be hooked after compilation), re-attaches, and then
@@ -171,30 +182,46 @@ if the function is exported. Unnamed functions are still identifiable by index a
 { "action": "add", "instanceId": "w1", "target": "export", "name": "get_score", "body": "return ctx.call(args) + 1000000;" }
 ```
 
-Script hooks are the reversible option: `disable` and `remove` restore the original behaviour with no
-reload. Import hooks can only apply at the next instantiation. `hook` reports `pending: true` for a live
-instance, and this is a WebAssembly fact, not a limitation of this tool.
+Script hooks are the reversible option, with no reload: `{action: "enable", hookId, enabled: false}`
+switches one off, `enabled: true` back on, and `remove` restores the original behaviour. Import hooks
+can only apply at the next instantiation. `hook` reports `pending: true` for a live instance, and this
+is a WebAssembly fact, not a limitation of this tool.
 
 Function patches (`wasmcheat_patch`) rewrite the body itself (`stub`, `empty`) and take effect when the
 instrumented module is instantiated. They are the only way to change a function that nothing calls through
 an export.
 
-### 3.8 A mod that finds its values by name
+### 3.8 Keep it as a mod
 
-A value found by scanning sits at an address the next load moves. A mod (`wasmcheat_mod`) has to find it
-again by itself, and a name survives reloads where an address does not:
+`wasmcheat_mod {action: "add", name, code}` runs the code now, as `wasmcheat_run_script` does, and
+keeps it only if it works. The extension stores it for the site of the game frame and runs it again on
+every load. `list` shows the kept mods, `remove` stops one from running on the next load.
+
+A mod runs as soon as its frame starts, before the engine exists. Every script gets two helpers:
+
+- `until(check, timeoutMs = 30000, everyMs = 100)` waits until `check()` is truthy (it may be async)
+  and returns its value: `const app = await until(() => window.pc?.app);`.
+- `wasm(id = 'latest')` returns a captured instance as `{id, memory, exports}`.
+
+`wasmcheat_guide({topic: "mod-template"})` is a starting point with an on-screen menu.
+
+### 3.9 A mod that finds its values by name
+
+A value found by scanning sits at an address the next load moves, so a mod has to find it again by
+itself, and a name survives reloads where an address does not:
 
 - **A YouTube Playable saves through `ytgame.game.loadData()`**, whatever the engine. Read it first with
   `wasmcheat_run_script`: the save usually names every value the game keeps (`kCoins`, `kTokens`,
   `G_Current_Level` in Stealth Master), so you know what to look for and its value now.
-- **Unity (IL2CPP) keeps those values in a `Dictionary<string, int>`.** An entry is
-  `{hash, next, key, value}` and the key is a string object `{klass, monitor, length, UTF-16 chars}`.
-  Find the string with `wasmcheat_scan_text` (`bytes`: the length as a little-endian i32, then the
-  UTF-16 text), then the words that hold its address (a `u32` scan for it). The entry is the one whose
-  `next`, the word before, is a small index (−1 when last). Its value is the word after.
-- **A mod gets `wasm()`**, the newest captured instance as `{id, memory, exports}`, beside `until`.
-  It can do the same search on every load: `new Uint32Array(wasm().memory.buffer)`, taken again on every
-  use because the memory grows.
+- **Unity keeps those values in a `Dictionary<string, int>`.** A Unity web build is compiled by
+  IL2CPP, Unity's compiler from C# to C++ (and from there to wasm), so its C# objects sit in wasm
+  memory with a known layout. An entry is `{hash, next, key, value}` and the key is a string object
+  `{klass, monitor, length, UTF-16 chars}`. Find the string with `wasmcheat_scan_text` (`bytes`: the
+  length as a little-endian i32, then the UTF-16 text), then the words that hold its address (a `u32`
+  scan for it). The entry is the one whose `next`, the word before, is a small index (-1 when last).
+  Its value is the word after. `wasmcheat_guide({topic: "il2cpp"})` reads classes and fields by name.
+- **In a mod, do the same search on every load** with `new Uint32Array(wasm().memory.buffer)`, taken
+  again on every use because the memory grows.
 
 A value that only lives while a level runs (a mission's coin counter) is a copy: the real one is
 written back at the end of the level. Write the saved one.
@@ -205,6 +232,7 @@ written back at the end of the level. Write the saved one.
 |---|---|
 | Which tabs can I touch? | `wasmcheat_list_tabs` |
 | Nothing to attach to | `wasmcheat_diagnose` |
+| What is this page built with? | `wasmcheat_run_script` with the `probe` script from `wasmcheat_guide` |
 | Where is the score? | `wasmcheat_scan` (then `scan_results`) |
 | Value is text | `wasmcheat_scan_text` |
 | Who changes this number? | `wasmcheat_find_writes` |
@@ -213,14 +241,13 @@ written back at the end of the level. Write the saved one.
 | I want the game to lie about a value | `wasmcheat_hook` |
 | The function is not exported | `wasmcheat_patch` |
 | It lives in the game's JavaScript, not in wasm (PlayCanvas, three.js, a Unity instance) | `wasmcheat_run_script` |
-| The change should come back after every reload | `wasmcheat_mod` with `add`; start with `await until(() => window.pc?.app)`, or find a memory value by name (3.8) |
+| The change should come back after every reload | `wasmcheat_mod` with `add`; start with `await until(() => window.pc?.app)`, or find a memory value by name (3.9) |
 | The game runs too slowly to line up a scan | `wasmcheat_speed` (`scale: 0` freezes the clock) |
 | What did I just do? | `wasmcheat_audit` |
 
 ## 5. Traps
 
 - **Freeze then test by read.** The HUD may not move even when memory did.
-- **`i32` is a guess.** Try `i64`/`f64` on a miss, and remember the value may be mirrored.
 - **A reload invalidates ids.** Use `instanceId: "latest"`; scan sessions do not survive a reload.
 - **`evalAllowed: false`** means CSP blocks script bodies: use declarative hook fallbacks
   (`replace-return`, `offset-result`), not `new Function` bodies.
@@ -228,7 +255,8 @@ written back at the end of the level. Write the saved one.
   against a second run with a flag on `window`; a script that throws is not kept.
 - **Never arm a watchpoint twice.** Re-arming the same address is idempotent, but switching addresses
   clears hits.
-- **Do not poll.** Attach and watchpoints are event-driven; a poll loop only adds latency and
-  noise to the audit log.
+- **Do not poll for attach or watchpoint hits.** `attach` and `find_writes` / `find_reads` wait on
+  events and return when they arrive; a poll loop around them only adds latency and audit noise. A
+  watch is different: its changes are collected only when you call `wasmcheat_watch` with `poll`.
 - **Popup open, session alive.** The toolbar popup keeps the service worker awake; with it closed, the
   extension reconnects on its alarm and a call in that window returns `NO_AGENT`, which is retryable.
