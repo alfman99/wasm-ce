@@ -257,9 +257,16 @@ export function createServer(bridge: Bridge): McpServer {
         });
         return ok(
           { approval, pageAgent: info, instances },
-          instances.length === 0
-            ? 'Attached, but no WebAssembly instance was captured yet. If the app loaded before the extension, attach with reload=true.'
-            : `Attached. ${instances.length} instance(s) captured.`,
+          [
+            instances.length === 0
+              ? 'Attached, but no WebAssembly instance was captured yet. If the app loaded before the extension, attach with reload=true.'
+              : `Attached. ${instances.length} instance(s) captured.`,
+            // A grant that arrived without a round trip means a trusted site answered instead of the
+            // human. Say so, so the agent does not claim a human approved this particular tab.
+            asked.state === 'granted' ? 'Granted from the trusted-site list, so no prompt was shown.' : undefined,
+          ]
+            .filter(Boolean)
+            .join(' '),
         );
       } catch (error) {
         await record({ kind: 'attach', tabId, ok: false, summary: (error as Error).message });

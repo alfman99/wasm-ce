@@ -32,7 +32,7 @@ thing, so a human and an agent are never using different mechanisms.
 | Card | What it does | MCP tool |
 | --- | --- | --- |
 | **Tabs** | Lists tabs with approval state, frames and whether an agent is attached. Click a row to select it. | `wasmcheat_list_tabs` |
-| **Attach / Reload & attach / Approve / Deny / Detach / Revoke** | The approval gate. Attach asks once per tab and site; the same-site reload keeps the grant. | `wasmcheat_attach`, `wasmcheat_detach`, `wasmcheat_approval_status` |
+| **Attach / Reload & attach / Approve / Deny / Detach / Revoke / Trust site** | The approval gate. Attach asks once per tab and site; the same-site reload keeps the grant. **Trust site** stops the prompt for every tab on that origin, and the popup lists what you trusted so you can forget it. | `wasmcheat_attach`, `wasmcheat_detach`, `wasmcheat_approval_status` |
 | **Instances** | Wasm instances in the target: id, exports, memory size, `page` or `worker`, `importPatchability`. | `wasmcheat_list_instances` |
 | **Diagnose** | Why the instance list is empty: `WebAssembly.*` call counts, iframes (cross-origin flagged), canvases, `.wasm` URLs in the HTML, `evalAllowed`. | `wasmcheat_diagnose` |
 | **Scan** | Type, mode, value, optional second value for `between`, alignment, byte range, max hits. **First Scan** starts a list; **Next Scan** narrows it. | `wasmcheat_scan`, `wasmcheat_scan_results`, `wasmcheat_scan_drop` |
@@ -86,7 +86,7 @@ the forms" — the panel fills it in for you. Inside workers the same shape carr
 | Symptom | What to do |
 | --- | --- |
 | Panel says `no tab attached` | Click the row in **Tabs**; DevTools must be open on the tab you want |
-| `NEED_APPROVAL` in an output block | Press **Approve**, or approve in the popup |
+| `NEED_APPROVAL` in an output block | Press **Approve**, approve in the popup, or put the site on the trusted list |
 | `NO_AGENT` | **Detach**, then **Attach**; if it repeats, **Reload & attach** |
 | Instances empty | **Diagnose**; all-zero call counts mean the module was compiled before the agent — reload and attach |
 | A hook call returns `HOOK_EVAL_BLOCKED` | The page forbids `new Function`; use a declarative fallback |

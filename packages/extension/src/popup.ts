@@ -1,12 +1,27 @@
 import type { ApprovalState, TabInfo } from '@wasmcheat/protocol';
 
+interface TrustedSite {
+  origin: string;
+  at: number;
+  label: string;
+}
+
 interface PopupState {
   approvals: Record<string, { state: ApprovalState; reason: string; at: number }>;
   tabs: TabInfo[];
+  activeTabId: number | null;
+  trusted: TrustedSite[];
   bridgeConnected: boolean;
+  tokenConfigured: boolean;
 }
 
 const tabsList = document.getElementById('tabs') as HTMLUListElement;
+const currentList = document.getElementById('current') as HTMLUListElement;
+const otherList = document.getElementById('others-list') as HTMLUListElement;
+const otherCount = document.getElementById('others-count') as HTMLSpanElement;
+const trustedList = document.getElementById('trusted') as HTMLUListElement;
+const trustedSection = document.getElementById('trusted-section') as HTMLElement;
+const trustedEmpty = document.getElementById('trusted-empty') as HTMLSpanElement;
 const bridgePill = document.getElementById('bridge') as HTMLSpanElement;
 const hint = document.getElementById('hint') as HTMLSpanElement;
 const refresh = document.getElementById('refresh') as HTMLButtonElement;
@@ -28,6 +43,15 @@ function describeState(state: ApprovalState): string {
   }
 }
 
+function originOf(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.origin : '';
+  } catch {
+    return '';
+  }
+}
+
 function button(label: string, className: string, onClick: () => void): HTMLButtonElement {
   const element = document.createElement('button');
   element.type = 'button';
@@ -43,6 +67,28 @@ function button(label: string, className: string, onClick: () => void): HTMLButt
     }
   });
   return element;
+}
+
+/** Buttons a row offers, by state. Trust is the way out of the prompt, so it sits next to Approve. */
+function actionsFor(tab: TabInfo): HTMLButtonElement[] {
+  if (tab.approval === 'pending') {
+    return [
+      button('Approve', 'primary', () => send({ type: 'popup.approve', tabId: tab.tabId })),
+      button('Deny', 'danger', () => send({ type: 'popup.deny', tabId: tab.tabId })),
+      button('Always allow this site', 'ghost', () => send({ type: 'popup.trust', tabId: tab.tabId })),
+    ];
+  }
+  if (tab.approval === 'granted') {
+    return [button('Revoke', 'danger', () => send({ type: 'popup.deny', tabId: tab.tabId }))];
+  }
+  return [
+    button('Approve', 'primary', () => send({ type: 'popup.approve', tabId: tab.tabId })),
+    button('Reload & attach', 'ghost', async () => {
+      await send({ type: 'popup.approve', tabId: tab.tabId });
+      await chrome.tabs.reload(tab.tabId);
+    }),
+    button('Always allow this site', 'ghost', () => send({ type: 'popup.trust', tabId: tab.tabId })),
+  ];
 }
 
 function renderTab(tab: TabInfo): HTMLLIElement {
@@ -67,26 +113,53 @@ function renderTab(tab: TabInfo): HTMLLIElement {
 
   const actions = document.createElement('div');
   actions.className = 'tab__actions';
-
-  if (tab.approval === 'pending') {
-    actions.append(
-      button('Approve', 'primary', () => send({ type: 'popup.approve', tabId: tab.tabId })),
-      button('Deny', 'danger', () => send({ type: 'popup.deny', tabId: tab.tabId })),
-    );
-  } else if (tab.approval === 'granted') {
-    actions.append(button('Revoke', 'danger', () => send({ type: 'popup.deny', tabId: tab.tabId })));
-  } else {
-    actions.append(
-      button('Approve', 'primary', () => send({ type: 'popup.approve', tabId: tab.tabId })),
-      button('Reload & attach', 'ghost', async () => {
-        await send({ type: 'popup.approve', tabId: tab.tabId });
-        await chrome.tabs.reload(tab.tabId);
-      }),
-    );
-  }
+  actions.append(...actionsFor(tab));
 
   item.append(title, state, url, actions);
   return item;
+}
+
+/**
+ * The tab in front of you gets the first row, in the same shape as every other row: one selector
+ * (`li.tab[data-tab-id]`) finds a tab wherever the popup put it, which is what the docs and the
+ * end-to-end suite rely on.
+ */
+function renderCurrent(tab: TabInfo | undefined, trusted: TrustedSite[]): void {
+  currentList.replaceChildren();
+  if (!tab) {
+    const empty = document.createElement('li');
+    empty.className = 'empty';
+    empty.textContent = 'No page in front. Open the game or app you want to inspect, then reload it.';
+    currentList.append(empty);
+    return;
+  }
+  const item = renderTab(tab);
+  item.classList.add('tab--current');
+  const origin = originOf(tab.url);
+  if (trusted.some((site) => site.origin === origin) && tab.approval !== 'granted') {
+    const state = item.querySelector('.tab__state');
+    if (state) state.textContent = 'trusted site';
+  }
+  currentList.append(item);
+}
+
+function renderTrusted(sites: TrustedSite[]): void {
+  trustedSection.hidden = false;
+  trustedList.replaceChildren();
+  trustedEmpty.hidden = sites.length > 0;
+  for (const site of sites) {
+    const row = document.createElement('li');
+    row.className = 'trusted__row';
+    const origin = document.createElement('span');
+    origin.className = 'trusted__origin';
+    origin.textContent = site.origin;
+    origin.title = site.label;
+    row.append(
+      origin,
+      button('Forget', 'ghost', () => send({ type: 'popup.untrust', origin: site.origin })),
+    );
+    trustedList.append(row);
+  }
 }
 
 async function render(): Promise<void> {
@@ -94,15 +167,23 @@ async function render(): Promise<void> {
   bridgePill.textContent = state.bridgeConnected ? 'bridge connected' : 'bridge offline';
   bridgePill.className = `pill ${state.bridgeConnected ? 'pill--live' : 'pill--idle'}`;
 
+  const current = state.tabs.find((tab) => tab.tabId === state.activeTabId);
+  renderCurrent(current, state.trusted);
+
+  // Tabs you already decided about stay visible; the rest of the browser is behind one click,
+  // because it is not your business until you attach to it.
+  const decided = state.tabs.filter((tab) => tab.approval !== 'none' && tab.tabId !== state.activeTabId);
   tabsList.replaceChildren();
-  if (state.tabs.length === 0) {
-    const empty = document.createElement('li');
-    empty.className = 'empty';
-    empty.textContent = 'No http(s) tabs open. Open the page you want to inspect first.';
-    tabsList.append(empty);
-  } else {
-    for (const tab of state.tabs) tabsList.append(renderTab(tab));
-  }
+  // Nothing decided yet is not worth a paragraph: the line under the card already says so.
+  tabsList.hidden = decided.length === 0;
+  for (const tab of decided) tabsList.append(renderTab(tab));
+
+  const others = state.tabs.filter((tab) => tab.approval === 'none' && tab.tabId !== state.activeTabId);
+  otherList.replaceChildren();
+  otherCount.textContent = String(others.length);
+  for (const tab of others) otherList.append(renderTab(tab));
+
+  renderTrusted(state.trusted);
 
   const pending = state.tabs.filter((tab) => tab.approval === 'pending').length;
   const granted = state.tabs.filter((tab) => tab.approval === 'granted').length;

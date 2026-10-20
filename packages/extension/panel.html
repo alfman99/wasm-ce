@@ -41,6 +41,7 @@
           <button id="deny" type="button">Deny</button>
           <button id="detach" type="button">Detach</button>
           <button id="revoke" type="button">Revoke</button>
+          <button id="trust" type="button" title="Skip the approval prompt for every tab on this site">Trust site</button>
           <button id="refresh-status" type="button">Refresh</button>
         </div>
       </div>
@@ -131,7 +132,7 @@
             <div class="row">
               <label class="field">
                 <span>Instance:</span>
-                <input id="scan-instance" type="text" placeholder="w1" spellcheck="false" />
+                <input id="scan-instance" type="text" placeholder="from Instances" spellcheck="false" />
               </label>
               <label class="field">
                 <span>Max results:</span>
@@ -164,7 +165,7 @@
             <div class="row">
               <label class="field">
                 <span>Instance:</span>
-                <input id="text-instance" type="text" placeholder="w1" spellcheck="false" />
+                <input id="text-instance" type="text" placeholder="from Instances" spellcheck="false" />
               </label>
               <label class="field field--check">
                 <input id="text-case" type="checkbox" />
@@ -425,7 +426,7 @@
           <div class="row">
             <label class="field">
               <span>Instance:</span>
-              <input id="hook-instance" type="text" placeholder="w1" spellcheck="false" />
+              <input id="hook-instance" type="text" placeholder="from Instances" spellcheck="false" />
             </label>
             <label class="field">
               <span>Target:</span>

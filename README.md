@@ -261,9 +261,15 @@ The demo target is a game window rather than a copy of the tool, so the two are 
 
 ## The approval and audit model
 
-![The popup: one row per tab, a pending row flagged, Approve and Reload & attach](docs/img/popup.png)
+![The popup: the tab in front first, a pending row flagged, and the trusted sites you can forget](docs/img/popup.png)
 
-- Every tab is denied until you approve it. An agent calls `wasmcheat_attach`, which reports the request
+- Every tab is denied until you approve it, unless the site is on your **trusted list**:
+  *Always allow this site* in the popup (or **Trust site** in the panel) grants the tab and records
+  the origin, so later tabs there attach with no prompt. The list is in the popup with a `Forget`
+  button per site; forgetting also revokes the tabs that were riding on that trust. Trusting is
+  deliberately not reachable over the bridge — an agent that could trust its own targets would be
+  approving itself.
+- Every tab is still denied until you approve it. An agent calls `wasmcheat_attach`, which reports the request
   in the extension popup with the agent's one-line reason and then waits on the **approval event**, not on
   a timer: the call returns the moment you click Approve. The same event-based rule applies to
   `wasmcheat_find_writes` / `wasmcheat_find_reads`, which return on the first write/read event the page
@@ -282,8 +288,9 @@ The demo target is a game window rather than a copy of the tool, so the two are 
   `wasmcheat_freeze` would, with the tab, the address and, for writes, `before -> after`. Two things
   are recorded by the MCP server instead, because they are not page calls: saved scan lists
   (`wasmcheat_saved` save / open / delete, so the name and match count show up) and the
-  attach/detach/approval trail. Reads, `scan_results`, `pointer_resolve`, listing calls and watch
-  polls are not logged: they change nothing and would bury the writes.
+  attach/detach/approval trail, and the trusted-site list. Reads, `scan_results`,
+  `pointer_resolve`, listing calls and watch polls are not logged: they change nothing and would bury
+  the writes.
 - Every write, freeze, hook add/remove, attach/detach and approval goes to
   `$WASMCHEAT_HOME/audit.jsonl` (append-only JSON lines, timestamped, with the tab, the address
   and the before/after value where relevant). Read it back with `wasmcheat_audit`.
@@ -567,7 +574,7 @@ that is not moving — the automated test does exactly that.
 ## Tests
 
 ```bash
-npm test           # build → vitest (123 unit) → playwright (21 end-to-end)
+npm test           # build → vitest (123 unit) → playwright (22 end-to-end)
 npm run test:unit  # page agent: memory, registry, scanner, hooks, trace, rewriter — no browser
 npm run test:e2e   # real Chromium, real extension, real MCP stdio client
 ```
@@ -600,7 +607,9 @@ serves the demo, connects a real MCP client to `dist/bin.js`, and then, in order
 20. measures the score clock at 1x and 4x (`wasmcheat_speed`), freezes it at 0 and resets it, and
     asserts the change reached the audit log;
 21. opens `nested.html`, where a worker starts the game worker, and drives `k1n1-1` through two
-    worker hops: list it, click Mine, write to its memory, watch the page repaint, then scan it.
+    worker hops: list it, click Mine, write to its memory, watch the page repaint, then scan it;
+22. trusts the demo origin from the popup, attaches to a second tab there with no prompt, then
+    forgets the site and proves the prompt comes back.
 
 Costs and gotchas: one browser and one bridge port, so the suite runs with a single worker and
 fails fast if the port is already taken (it picks `7399` by default so it does not collide with a

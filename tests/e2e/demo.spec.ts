@@ -22,6 +22,12 @@ import {
  * export, and everything it did shows up in the audit log.
  */
 
+interface TabRow {
+  tabId: number;
+  url: string;
+  approval: string;
+}
+
 interface InstanceInfo {
   id: string;
   moduleHash: string;
@@ -1159,4 +1165,63 @@ test('wasm instantiated by a worker inside a worker is discovered and driven', a
 
   await call(mcp, 'wasmcheat_detach', { tabId: nestedTabId, reason: 'e2e nested worker done' });
   await nestedPage.close();
+});
+
+test('a trusted site attaches without a second prompt, and forgetting it brings the prompt back', async () => {
+  const first = await browser.context.newPage();
+  await first.goto(DEMO_URL);
+  await expect(first.locator('#status')).toContainText('wasm ready', { timeout: 30_000 });
+
+  const tabs1 = await call<TabRow[]>(mcp, 'wasmcheat_list_tabs', {});
+  expect(tabs1.isError, tabs1.text).toBe(false);
+  const firstTab = tabs1.data.filter((tab) => tab.url === DEMO_URL && tab.tabId !== tabId).at(-1);
+  expect(firstTab, tabs1.text).toBeDefined();
+
+  // Untrusted: the same origin still asks.
+  const asked = await call(mcp, 'wasmcheat_attach', { tabId: firstTab!.tabId, waitSeconds: 0 });
+  expect(asked.isError).toBe(true);
+  expect(asked.text).toContain('NEED_APPROVAL');
+
+  // The human approves this tab and, with the same click, trusts the site.
+  const popup = await browser.context.newPage();
+  await popup.goto(`chrome-extension://${browser.extensionId}/popup.html`);
+  const row = popup.locator(`li.tab[data-tab-id="${firstTab!.tabId}"]`);
+  await row.waitFor({ state: 'visible', timeout: 20_000 });
+  await row.getByRole('button', { name: 'Always allow this site', exact: true }).click();
+  await expect(popup.locator('.trusted__origin')).toContainText('127.0.0.1:4174');
+  await popup.close();
+
+  const attached = await call(mcp, 'wasmcheat_attach', { tabId: firstTab!.tabId, waitSeconds: 0 });
+  expect(attached.isError, attached.text).toBe(false);
+
+  // A second tab on the same origin is granted with no popup at all.
+  const second = await browser.context.newPage();
+  await second.goto(DEMO_URL);
+  await expect(second.locator('#status')).toContainText('wasm ready', { timeout: 30_000 });
+  const tabs2 = await call<TabRow[]>(mcp, 'wasmcheat_list_tabs', {});
+  const secondTab = tabs2.data.filter((tab) => tab.url === DEMO_URL && tab.tabId !== firstTab!.tabId && tab.tabId !== tabId).at(-1);
+  expect(secondTab, tabs2.text).toBeDefined();
+
+  const silent = await call(mcp, 'wasmcheat_attach', { tabId: secondTab!.tabId, waitSeconds: 0 });
+  expect(silent.isError, silent.text).toBe(false);
+  expect(silent.text).toContain('trusted-site');
+
+  // Forgetting the site revokes the tabs that were riding on it and the prompt is back.
+  const forget = await browser.context.newPage();
+  await forget.goto(`chrome-extension://${browser.extensionId}/popup.html`);
+  await forget.locator('.trusted__row').getByRole('button', { name: 'Forget', exact: true }).click();
+  await expect(forget.locator('#trusted-empty')).toBeVisible();
+  await forget.close();
+
+  const third = await browser.context.newPage();
+  await third.goto(DEMO_URL);
+  await expect(third.locator('#status')).toContainText('wasm ready', { timeout: 30_000 });
+  const tabs3 = await call<TabRow[]>(mcp, 'wasmcheat_list_tabs', {});
+  const thirdTab = tabs3.data.filter((tab) => tab.url === DEMO_URL && tab.tabId !== firstTab!.tabId && tab.tabId !== secondTab!.tabId && tab.tabId !== tabId).at(-1);
+  const askedAgain = await call(mcp, 'wasmcheat_attach', { tabId: thirdTab!.tabId, waitSeconds: 0 });
+  expect(askedAgain.text).toContain('NEED_APPROVAL');
+
+  await first.close();
+  await second.close();
+  await third.close();
 });

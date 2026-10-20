@@ -15,11 +15,28 @@
       </header>
 
       <p class="lede">
-        Approve a tab before an agent can read or change its WebAssembly memory. Each write, freeze and
-        hook is recorded in the audit log.
+        A tab needs your approval before an agent can read or write its memory. Trust a site once and
+        its tabs stop asking. Every change is still recorded in the audit log.
       </p>
 
+      <section aria-label="The tab in front">
+        <ul id="current" class="tabs tabs--current"></ul>
+      </section>
+
       <ul id="tabs" class="tabs"></ul>
+
+      <details class="others" id="others">
+        <summary class="micro">Other open tabs (<span id="others-count">0</span>)</summary>
+        <ul id="others-list" class="tabs"></ul>
+      </details>
+
+      <section class="trusted" id="trusted-section">
+        <h2 class="micro">Trusted sites</h2>
+        <ul id="trusted" class="trusted__list"></ul>
+        <span id="trusted-empty" class="micro trusted__empty">
+          Nothing yet. “Always allow this site” on a page you own skips the prompt from then on.
+        </span>
+      </section>
 
       <section class="token">
         <label class="micro" for="bridge-token">Bridge token</label>

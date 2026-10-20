@@ -39,6 +39,10 @@ navigation inside the site, and it is revoked when the tab leaves the site or cl
 around it from the agent side, and the agent should not pretend otherwise: if a call returns
 `NEED_APPROVAL`, ask the human to click **Approve** in the toolbar popup or the DevTools panel.
 
+A site the human put on the trusted list attaches without a prompt. When that happens `attach` says so
+in its note ("Granted from the trusted-site list"), so do not tell the user they approved this tab. A
+trusted site is a decision the human made in the popup; nothing in the tool list can add one.
+
 Approval is **event-based**: `wasmcheat_attach` blocks on a decision event rather than re-reading state on
 a timer, so the moment the human clicks, the call returns. Do not poll `wasmcheat_approval_status` in a
 loop; call `attach` once and let it wait.

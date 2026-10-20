@@ -268,10 +268,28 @@ function selectInstance(id: string): void {
   for (const fieldId of INSTANCE_FIELDS) el<HTMLInputElement>(fieldId).value = id;
 }
 
+let knownInstances: InstanceInfo[] = [];
+
+/**
+ * The instance field is a text box so a power user can type an id, but the normal path is Use on a
+ * row. When it is empty the refusal has to say which of the two problems it is: a page with no wasm
+ * (nothing to pick) or a page with several (nothing picked yet).
+ */
+function instanceFrom(fieldId: string): string {
+  const id = el<HTMLInputElement>(fieldId).value.trim();
+  if (id) return id;
+  if (knownInstances.length === 0) {
+    throw new BridgeError(
+      'BAD_PARAMS',
+      'no WebAssembly instance is loaded in this tab yet, so there is nothing to point at — press Diagnose to see why (the game may start on a click, sit in an iframe, or run in a worker)',
+    );
+  }
+  const ids = knownInstances.map((instance) => instance.id).join(', ');
+  throw new BridgeError('BAD_PARAMS', `pick an instance first: press Use on a row under Instances (${ids})`);
+}
+
 function requireInstance(): string {
-  const id = el<HTMLInputElement>('scan-instance').value.trim();
-  if (!id) throw new BridgeError('BAD_PARAMS', 'instance is empty — click Use on an instance first');
-  return id;
+  return instanceFrom('scan-instance');
 }
 
 function fillSelect(select: HTMLSelectElement, values: readonly string[], selected?: string): void {
@@ -533,6 +551,7 @@ async function instanceList(): Promise<InstanceInfo[]> {
 }
 
 function renderInstances(instances: InstanceInfo[]): void {
+  knownInstances = instances;
   const body = el<HTMLTableSectionElement>('instances-body');
   const rows = instances.map((instance) => {
     const row = document.createElement('tr');
@@ -554,7 +573,9 @@ function renderInstances(instances: InstanceInfo[]): void {
   });
   if (!rows.length) {
     const row = document.createElement('tr');
-    const only = cell('no instance captured yet — arm a watchpoint and reload, or check Diagnose');
+    const only = cell(
+      'No wasm instance here. Press Diagnose: it reports whether this page called instantiate at all, and whether the game is in a frame or a worker.',
+    );
     only.colSpan = 6;
     row.append(only);
     rows.push(row);
@@ -1056,8 +1077,7 @@ function requireSavedName(): string {
 async function scanText(): Promise<string> {
   const text = el<HTMLInputElement>('text-value').value;
   if (!text) throw new BridgeError('BAD_PARAMS', 'text is empty');
-  const instanceId = el<HTMLInputElement>('text-instance').value.trim();
-  if (!instanceId) throw new BridgeError('BAD_PARAMS', 'instance is empty — click Use on an instance first');
+  const instanceId = instanceFrom('text-instance');
   const result = await pageCall<TextScanResult>('page.scan.text', {
     instanceId,
     text,
@@ -1249,8 +1269,7 @@ function renderHooks(entries: HookEntry[]): void {
 }
 
 async function hookAdd(): Promise<string> {
-  const instanceId = el<HTMLInputElement>('hook-instance').value.trim();
-  if (!instanceId) throw new BridgeError('BAD_PARAMS', 'instance is empty — click Use on an instance first');
+  const instanceId = instanceFrom('hook-instance');
   const name = el<HTMLInputElement>('hook-name').value.trim();
   if (!name) throw new BridgeError('BAD_PARAMS', 'hook name is empty');
   const params: Record<string, unknown> = {
@@ -1462,6 +1481,13 @@ function wire(): void {
     await swCall('ext.revoke', { tabId, reason: 'revoked from the DevTools panel' });
     await refreshStatus();
     return `revoked tab ${tabId}`;
+  });
+
+  bind('trust', statusOut, async () => {
+    const tabId = requireTab();
+    const result = await swCall<{ origin: string }>('ext.trust', { tabId });
+    await refreshStatus();
+    return `trusted ${result.origin}: tabs there attach without a prompt (forget it in the popup)`;
   });
 
   bind('token-save', statusOut, async () => {
