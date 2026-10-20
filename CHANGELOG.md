@@ -13,6 +13,8 @@
   patch vanished on that reload without a word.
 - Right after a reload, before the game frame has created its wasm, calls go to the frame with the
   game's canvas rather than to the page around it.
+- After a reload the panel no longer loses a game frame that announced itself before the page around
+  it did, which left it on "Nothing to analyze" for good.
 - The MCP server's start-up line names `packages/extension/dist`, the folder you actually load.
 - When a page's only WebAssembly is a physics engine (Ammo.js, Box2D, Rapier, Havok, Jolt, PhysX),
   the panel, `diagnose` and `attach` say so: the game is JavaScript, so its score and coins are in

@@ -771,8 +771,8 @@ async function resolveFrame(tabId: number): Promise<number> {
   const frames = tabFrames.get(tabId);
   if (!frames || frames.size === 0) return 0;
   if (frames.size === 1) {
+    // Not cached: a game frame that announces a moment later must get a probe, not this answer.
     const [only = 0] = [...frames.keys()];
-    activeFrame.set(tabId, only);
     return only;
   }
 
@@ -1336,10 +1336,13 @@ function onRelayReady(tabId: number, sender: chrome.runtime.MessageSender, annou
   attachedTabs.add(tabId);
   const frameId = sender.frameId ?? 0;
   if (frameId === 0 && sender.documentId && topDocument.get(tabId) !== sender.documentId) {
-    // A new top document (a reload, plain or not): the frames of the old one are gone.
+    // A new top document (a reload, plain or not): the frames of the old one are gone. A frame of
+    // the new document may have announced itself first, though (the order is not guaranteed), and
+    // clearing would forget the game frame for good, so every live frame is asked to say so again.
     if (topDocument.has(tabId)) {
       tabFrames.delete(tabId);
       activeFrame.delete(tabId);
+      void chrome.tabs.sendMessage(tabId, { type: 'wasmcheat.announce' }).catch(() => undefined);
     }
     topDocument.set(tabId, sender.documentId);
     persistSession();

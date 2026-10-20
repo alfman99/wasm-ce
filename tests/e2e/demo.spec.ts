@@ -569,15 +569,22 @@ test('a pointer chain found by scanning is resolved back to the score address', 
   expect(chain, `no chain from w1:0x600: ${scan.text}`).toBeTruthy();
   expect(chain!.offsets).toEqual([0]);
 
-  const resolved = await call<{ final: string; value: number }>(mcp, 'wasmcheat_pointer_resolve', {
-    tabId,
-    base: 'w1:0x600',
-    offsets: [0],
-  });
-  expect(resolved.isError, resolved.text).toBe(false);
-  expect(resolved.data.final).toBe('w1:0x408');
-  const score = await call<{ values: number[] }>(mcp, 'wasmcheat_read', { tabId, address: 'w1:0x408', type: 'i32' });
-  expect(resolved.data.value).toBe(score.data.values[0]);
+  // The score ticks on its own, so it is held still while the chain and a direct read are compared.
+  type Foundry = { __foundry: { pause: () => void; resume: () => void } };
+  await game.evaluate(() => (window as unknown as Foundry).__foundry.pause());
+  try {
+    const resolved = await call<{ final: string; value: number }>(mcp, 'wasmcheat_pointer_resolve', {
+      tabId,
+      base: 'w1:0x600',
+      offsets: [0],
+    });
+    expect(resolved.isError, resolved.text).toBe(false);
+    expect(resolved.data.final).toBe('w1:0x408');
+    const score = await call<{ values: number[] }>(mcp, 'wasmcheat_read', { tabId, address: 'w1:0x408', type: 'i32' });
+    expect(resolved.data.value).toBe(score.data.values[0]);
+  } finally {
+    await game.evaluate(() => (window as unknown as Foundry).__foundry.resume());
+  }
 });
 
 test('a worker the page creates is visible, drivable, and reported when it dies', async () => {
