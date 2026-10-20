@@ -25,7 +25,7 @@ No programming needed. Works in Chrome, Brave, Edge and other Chromium browsers 
    **Developer mode**.
 3. Press **Load unpacked** and pick the unzipped `wasmcheat` folder.
 
-A welcome tab opens with the same three steps. The MCP server below is optional, for letting an AI agent drive it. WasmCheat collects
+That is all: a welcome tab opens and shows where the panel is. The MCP server below is optional, for letting an AI agent drive it. WasmCheat collects
 nothing and talks to no server but your own machine: see [PRIVACY.md](PRIVACY.md).
 
 ## Use it
