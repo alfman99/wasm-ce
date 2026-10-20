@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `scripts/wc.mjs` sends a file as a script's code (`--code`) with parameters (`--var NAME=JSON`), and
+  `hunt.mjs serve` keeps the spacing inside that code. The `mod-any-webapp` skill holds how we mod an
+  app end to end, a probe for any page, IL2CPP reflection from memory for Unity games, and the Bubble
+  Tower 3D and Stealth Master mods as examples.
 - A script or a kept mod gets `wasm()`, the game's wasm instance with its memory and exports, so a mod
   works in games whose state is only in memory, such as Unity. `until` now also waits for an async
   check. The agent guide shows how a mod finds a Unity game's saved values by name on every load,

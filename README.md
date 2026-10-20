@@ -198,6 +198,18 @@ Every invocation spawns `dist/bin.js` itself, so the extension reconnects to the
 time; set `WASMCHEAT_WAIT=40` to let it wait longer. Exit code 1 means the tool returned an
 error (the message says which).
 
+For a long session, `node scripts/hunt.mjs serve` keeps one MCP session open and `scripts/wc.mjs`
+calls it in milliseconds. `--code file.js` sends a file as the `code` of `run_script` or `mod`, and
+`--var NAME=JSON` passes it a parameter:
+
+```bash
+node scripts/wc.mjs run_script '{"tabId":1234567}' --code .agents/skills/mod-any-webapp/scripts/probe.js
+node scripts/wc.mjs mod '{"tabId":1234567,"action":"add","name":"aim line"}' --code my-mod.js
+```
+
+How we mod an app end to end, from recon to a kept mod, is the
+[mod-any-webapp](.agents/skills/mod-any-webapp/SKILL.md) skill.
+
 Environment knobs:
 
 | Variable | Default | Meaning |
@@ -710,6 +722,8 @@ server you have running).
 ```
 scripts/demo.mjs                    `npm run demo`: serves and opens the demo, prints what to do next
 scripts/wasmcheat-cli.mjs           drive the tools from a shell, no agent
+scripts/hunt.mjs, scripts/wc.mjs    one long MCP session for the shell, and its client
+.agents/skills/mod-any-webapp/      how to mod any app: workflow, probe and IL2CPP scripts, example mods
 packages/protocol/src/index.ts      shared contract: envelopes, errors, every tool's types
 packages/page-agent/src/            registry (capture), memory, scanner, hooks, trace, workers, runtime
 packages/extension/src/             sw.ts (bridge + injection), relay.ts, popup, panel + panel-help, devtools
