@@ -25,6 +25,7 @@ import {
   type InstanceInfo,
   type PageAgentInfo,
   type PageDiagnostics,
+  type ScriptResult,
   type PatchEntry,
   type PointerPath,
   type PointerResolution,
@@ -1866,6 +1867,14 @@ function startLive(): void {
  * Small surface for the e2e suite. It calls the same functions the buttons call, so a passing test
  * exercises the real path rather than a test-only shortcut.
  */
+async function runScript(): Promise<string> {
+  const code = el<HTMLTextAreaElement>('script-code').value;
+  if (!code.trim()) throw new BridgeError('BAD_PARAMS', 'type some code to run');
+  const result = await pageCall<ScriptResult>('page.script.run', { code });
+  const shown = typeof result.value === 'string' ? result.value : JSON.stringify(result.value, null, 2);
+  return `${shown}\n(${result.type}, ${result.ms} ms${result.truncated ? ', cut at 64 KB' : ''})`;
+}
+
 interface PanelTestHooks {
   attach(tabId?: number): Promise<unknown>;
   call(method: string, params?: unknown): Promise<unknown>;
@@ -1923,6 +1932,15 @@ function wire(): void {
     });
   }
   bind('diagnose', el('diagnose-out'), diagnose);
+
+  bind('script-run', el('script-out'), runScript);
+  el<HTMLTextAreaElement>('script-code').addEventListener('keydown', (event) => {
+    const key = event as KeyboardEvent;
+    if (key.key === 'Enter' && (key.metaKey || key.ctrlKey)) {
+      key.preventDefault();
+      el<HTMLButtonElement>('script-run').click();
+    }
+  });
 
   bind('mem-read', el('memory-out'), readOne);
   bind('mem-read-n', el('memory-out'), readMany);

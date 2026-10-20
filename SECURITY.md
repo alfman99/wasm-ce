@@ -14,6 +14,9 @@ WasmCheat holds two kinds of power, and both are in scope:
 - **The extension** can read and write the memory of any http or https page it runs in. A bug that
   lets a web page reach the extension's own messaging (`wasmcheat.panel.call`, the tab list, another
   tab's memory) is a vulnerability.
+- **Scripts and hooks** run JavaScript in the page, typed by the person in the panel or sent by
+  their own agent over the bridge, and every run is audited with its code. That is the feature; a
+  way for anything else (a web page, another extension) to make them run code is a vulnerability.
 - **The bridge** between the extension and the optional MCP server is a WebSocket on
   `127.0.0.1:7331`, authenticated with a token both ends prove they hold (see "The bridge" in the
   README). A way for another local program or a web page to issue commands over it, read the token,

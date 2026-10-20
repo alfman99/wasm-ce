@@ -47,6 +47,7 @@ import { TimeMachine } from './speed.js';
 import { deleteSaved, listSaved, loadSaved, saveScan } from './saved-scans.js';
 import { addBookmark, clearBookmarks, listBookmarks, removeBookmark } from './bookmarks.js';
 import { HookStore } from './hooks.js';
+import { runScript } from './script.js';
 import { TraceStore } from './trace.js';
 import { PatchStore } from './patch.js';
 import { pointerResolve, pointerScan } from './pointer.js';
@@ -906,6 +907,8 @@ export class PageRuntime {
         return this.patches.remove((p as { patchId: string }).patchId);
       case 'page.patch.clear':
         return this.patches.clear();
+      case 'page.script.run':
+        return runScript((p as { code?: unknown }).code);
       case 'page.patch.restore':
         return this.patches.adopt((p as { patches?: unknown }).patches);
       default:

@@ -264,6 +264,14 @@ test('a patch survives the reload that installs it in a sandboxed game frame', a
     );
     await page.reload();
     await expect(score()).toHaveText('4242', { timeout: 20_000 });
+
+    // The Script card runs in the game frame, not in the host page around it: it reads the
+    // frame's own DOM, which the host cannot reach across origins.
+    await panel.locator('#advanced > summary').click({ timeout: 20_000 });
+    await panel.fill('#script-code', "document.getElementById('score').textContent");
+    await panel.press('#script-code', 'ControlOrMeta+Enter');
+    await expect(panel.locator('#script-out')).toContainText('4242');
+    await expect(panel.locator('#script-out')).toContainText('string');
   } finally {
     await browser.close();
     host.close();

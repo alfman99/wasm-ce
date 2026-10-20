@@ -188,6 +188,11 @@ if (!(window as unknown as PageAgentGlobal)[RELAY_FLAG]) {
 
   chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse: (value: unknown) => void) => {
     const msg = message as { type?: string; method?: string; params?: unknown } | null;
+    if (msg?.type === 'wasmcheat.announce') {
+      // The service worker lost track of this frame (a new top document cleared it); say so again.
+      announceAttachment(channelId ?? 'relay');
+      return undefined;
+    }
     if (!msg || msg.type !== 'wasmcheat.rpc' || typeof msg.method !== 'string') return undefined;
     call(msg.method, msg.params ?? {})
       .then((result) => sendResponse({ result }))

@@ -20,6 +20,7 @@ import {
   type HookEntry,
   type InstanceInfo,
   type PageDiagnostics,
+  type ScriptResult,
   type PageAgentInfo,
   type ReadResult,
   type ScanHit,
@@ -1166,6 +1167,34 @@ export function createServer(bridge: Bridge): McpServer {
             ? 'Registered, but pending: imports bind at instantiation, so this applies the next time the page instantiates a module importing it.'
             : undefined,
         );
+      } catch (error) {
+        return fail(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'wasmcheat_run_script',
+    {
+      title: 'Run JavaScript in the game frame',
+      description:
+        'Runs code in the frame that holds the wasm (the game frame, even inside a cross-origin iframe), for what lives in ' +
+        "the game's JavaScript rather than in its memory: a PlayCanvas or three.js scene, a Unity instance, a game's own " +
+        'debug switches. `code` is an expression whose value comes back (an IIFE pasted from a console works) or a ' +
+        'function body that `return`s one; both may await. The value is returned JSON-safe and cut at 64 KB. Every run is ' +
+        'audited with its code. A page whose CSP forbids eval answers HOOK_EVAL_BLOCKED. Find what to touch first, ' +
+        'e.g. `Object.keys(window)` or `pc.app.root.children.map((e) => e.name)`.',
+      inputSchema: {
+        tabId: TAB_ID,
+        code: z.string().min(1).describe('An expression, or a function body that returns a value.'),
+        timeoutSeconds: z.number().int().min(1).max(120).optional().describe('How long an awaiting script may take (default 30).'),
+      },
+    },
+    async ({ tabId: askedTab, code, timeoutSeconds }) => {
+      const tabId = await resolveTab(bridge, askedTab);
+      try {
+        const result = await page<ScriptResult>(tabId, 'page.script.run', { code }, (timeoutSeconds ?? 30) * 1000);
+        return ok(result, result.truncated ? 'The value was cut at 64 KB; return a smaller part of it.' : undefined);
       } catch (error) {
         return fail(error);
       }

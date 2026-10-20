@@ -298,7 +298,7 @@
       <!-- Everything else, grouped like the extra windows of a memory scanner. -->
       <div class="tools">
         <details class="tray" id="advanced">
-          <summary>More tools: memory view, read and write, instances, watchpoints, patches, hooks, pointers, speed, workers, saved scans, audit log, raw console</summary>
+          <summary>More tools: memory view, read and write, instances, watchpoints, patches, hooks, scripts, pointers, speed, workers, saved scans, audit log, raw console</summary>
         <fieldset class="group" id="card-viewer">
           <legend>Memory view</legend>
           <p class="hint">Hex dump around an address, sixteen bytes a row. Follow pointer reads a 32-bit pointer and jumps to where it points.</p>
@@ -503,6 +503,19 @@
           </div>
           <ul id="hooks" class="list list--hits"></ul>
           <pre id="hook-out" class="out"></pre>
+        </fieldset>
+
+        <fieldset class="group" id="card-script">
+          <legend>Script</legend>
+          <p class="hint">Run JavaScript in the game's frame, for what the game keeps in JavaScript rather than in memory (a PlayCanvas or Unity scene, a debug switch). An expression returns its value; code pasted from the console works as it is. Every run is logged with its code.</p>
+          <label class="field field--block">
+            <span>Code:</span>
+            <textarea id="script-code" rows="6" spellcheck="false" placeholder="Object.keys(window).filter((name) => /app|game/i.test(name))"></textarea>
+          </label>
+          <div class="row">
+            <button id="script-run" type="button" class="primary" title="Run in the game frame (Ctrl or Cmd + Enter)">Run</button>
+          </div>
+          <pre id="script-out" class="out out--mono"></pre>
         </fieldset>
 
         <fieldset class="group" id="card-pointer">
