@@ -57,7 +57,8 @@ function renderTab(tab: TabInfo): HTMLLIElement {
   title.title = tab.title;
 
   const state = document.createElement('span');
-  state.className = 'tab__state';
+  // The one row that needs a decision is the only thing in the popup allowed to carry colour.
+  state.className = tab.approval === 'pending' ? 'tab__state tab__state--pending' : 'tab__state';
   state.textContent = describeState(tab.approval);
 
   const url = document.createElement('span');

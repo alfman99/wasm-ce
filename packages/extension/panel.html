@@ -7,52 +7,77 @@
   </head>
   <body>
     <div class="app">
-      <!-- Title + process bar: what you are attached to, and the controls to change it. -->
-      <div class="titlebar">
-        <span class="titlebar__name">WasmCheat</span>
-        <span class="titlebar__sub">WebAssembly memory tool</span>
-        <span class="titlebar__space"></span>
-        <span id="versions" class="titlebar__versions"></span>
-      </div>
-
-      <div class="toolbar">
-        <div class="toolbar__process">
-          <span class="label">Process:</span>
-          <p id="target" class="process">no target tab</p>
+      <!-- What you are attached to, what state it is in, and the two things that never scroll away. -->
+      <header class="topbar">
+        <div class="topbar__id">
+          <span class="mark" aria-hidden="true"></span>
+          <div>
+            <h1>WasmCheat</h1>
+            <span class="topbar__sub">WebAssembly memory, live</span>
+          </div>
         </div>
-        <div class="toolbar__buttons">
-          <button id="attach" type="button">Attach</button>
+        <span class="topbar__spacer"></span>
+        <div class="topbar__state">
+          <span id="bridge" class="pill pill--idle">bridge ?</span>
+          <span id="approval" class="pill pill--idle">approval ?</span>
+          <span id="agent" class="pill pill--idle">agent ?</span>
+          <span id="versions" class="versions"></span>
+        </div>
+        <div class="targetbar__actions">
+          <button id="help-open" type="button" class="quiet" title="How the panel works (press ?)">Help</button>
+          <button id="theme-toggle" type="button" class="quiet" title="Light or dark (press T)">Theme</button>
+        </div>
+      </header>
+
+      <div class="targetbar">
+        <div class="targetbar__main">
+          <span class="eyebrow">Target</span>
+          <p id="target" class="process process--empty">no tab attached</p>
+        </div>
+        <div class="targetbar__actions">
+          <button id="attach" type="button" class="primary">Attach</button>
           <button id="attach-reload" type="button">Reload &amp; attach</button>
-          <button id="approve" type="button" class="primary">Approve</button>
+          <button id="approve" type="button">Approve</button>
           <button id="deny" type="button">Deny</button>
           <button id="detach" type="button">Detach</button>
           <button id="revoke" type="button">Revoke</button>
           <button id="refresh-status" type="button">Refresh</button>
         </div>
-        <div class="toolbar__status">
-          <span id="bridge" class="pill pill--idle">bridge ?</span>
-          <span id="approval" class="pill pill--idle">approval ?</span>
-          <span id="agent" class="pill pill--idle">agent ?</span>
+      </div>
+
+      <div class="crumbs">
+        <span class="eyebrow">Now</span>
+        <span id="crumbs" class="crumbs__text">no tab attached</span>
+      </div>
+
+      <nav class="steps" aria-label="The three steps this panel is built around">
+        <a href="#card-tabs" data-step="1">Pick a tab</a>
+        <a href="#card-scan" data-step="2">Scan for a value</a>
+        <a href="#card-found" data-step="3">Change it</a>
+      </nav>
+
+      <details class="tokenbox">
+        <summary>Bridge token</summary>
+        <div class="tokenbox__body">
+          <label class="field">
+            <span>Token from ~/.wasmcheat/token</span>
+            <input id="bridge-token" type="password" placeholder="paste the whole line" autocomplete="off" />
+          </label>
+          <button id="token-save" type="button" class="primary">Save and reconnect</button>
+          <p class="note">The bridge refuses a wrong token. Saving a new one reconnects at once.</p>
         </div>
-      </div>
+      </details>
 
-      <div class="toolbar toolbar--token">
-        <span class="label">Bridge token:</span>
-        <input id="bridge-token" type="password" placeholder="from ~/.wasmcheat/token" autocomplete="off" />
-        <button id="token-save" type="button">Save</button>
-        <span class="note">the bridge refuses a wrong token; the field is a password on purpose</span>
-      </div>
-
-      <pre id="status-out" class="out out--error" hidden></pre>
+      <pre id="status-out" class="out" hidden></pre>
 
       <!-- Top row: the found list on the left, the scan controls on the right, like a memory scanner. -->
       <div class="top">
-        <fieldset class="group group--found">
+        <fieldset class="group group--found" id="card-found">
           <legend>Found</legend>
+          <p class="hint">Every hit from the last scan, narrowing pass or text scan. Click an address to load it into the forms and jump the viewer.</p>
           <div class="row row--tight">
             <button id="scan-results" type="button">Refresh list</button>
             <button id="scan-drop" type="button">Drop scan</button>
-            <span class="note">click an address to load it into every form and the memory viewer</span>
           </div>
           <div class="listhead" aria-hidden="true"><span>Address</span><span>Value</span></div>
           <ul id="scan-hits" class="list list--hits list--found"></ul>
@@ -60,16 +85,17 @@
         </fieldset>
 
         <div class="top__right">
-          <fieldset class="group">
-            <legend>Scan</legend>
+          <fieldset class="group" id="card-scan">
+          <legend>Scan</legend>
+          <p class="hint">First Scan records the whole memory. Next Scan keeps only the addresses that still match, so the list shrinks instead of growing.</p>
             <div class="row">
               <label class="field">
                 <span>Value:</span>
                 <input id="scan-value" type="text" placeholder="75" spellcheck="false" />
               </label>
               <label class="field">
-                <span>and:</span>
-                <input id="scan-value2" type="text" placeholder="upper bound" spellcheck="false" />
+                <span>Upper bound (between):</span>
+                <input id="scan-value2" type="text" placeholder="not used" spellcheck="false" />
               </label>
             </div>
             <div class="row">
@@ -114,12 +140,13 @@
             </div>
             <div class="row row--buttons">
               <button id="scan-begin" type="button" class="primary">First Scan</button>
-              <button id="scan-narrow" type="button" class="primary">Next Scan</button>
+              <button id="scan-narrow" type="button">Next Scan</button>
             </div>
           </fieldset>
 
-          <fieldset class="group">
-            <legend>Text scan</legend>
+          <fieldset class="group" id="card-textscan">
+          <legend>Text scan</legend>
+          <p class="hint">Find a string or a byte pattern. Use it when the page shows a label you can read, not a number you can type.</p>
             <div class="row">
               <label class="field">
                 <span>Text:</span>
@@ -153,8 +180,9 @@
 
       <!-- Cheat table row: the things you keep, with their own controls. -->
       <div class="cheat">
-        <fieldset class="group">
+        <fieldset class="group" id="card-freeze">
           <legend>Freeze</legend>
+          <p class="hint">Hold an address at one value. A page-side timer rewrites it every 16 ms, so the app cannot drift away from it.</p>
           <div class="row">
             <label class="field field--grow">
               <span>Address:</span>
@@ -182,8 +210,9 @@
           <pre id="freeze-out" class="out"></pre>
         </fieldset>
 
-        <fieldset class="group">
+        <fieldset class="group" id="card-watch">
           <legend>Watch</legend>
+          <p class="hint">Record every change to an address while the page runs. Poll drains the buffer into the log below.</p>
           <div class="row">
             <label class="field field--grow">
               <span>Address:</span>
@@ -209,8 +238,9 @@
           <pre id="watch-out" class="out"></pre>
         </fieldset>
 
-        <fieldset class="group">
+        <fieldset class="group" id="card-bookmarks">
           <legend>Bookmarks</legend>
+          <p class="hint">Addresses you want back after a reload, with a label of your own.</p>
           <div class="row">
             <label class="field">
               <span>Label:</span>
@@ -233,8 +263,9 @@
 
       <!-- Everything else, grouped like the extra windows of a memory scanner. -->
       <div class="tools">
-        <fieldset class="group">
+        <fieldset class="group" id="card-viewer">
           <legend>Memory View</legend>
+          <p class="hint">Hex dump around an address, sixteen bytes a row. Follow pointer reads a 32-bit pointer and jumps to where it points.</p>
           <div class="row">
             <label class="field field--grow">
               <span>Address:</span>
@@ -256,8 +287,9 @@
           <pre id="viewer-out" class="out out--mono out--viewer"></pre>
         </fieldset>
 
-        <fieldset class="group">
+        <fieldset class="group" id="card-read">
           <legend>Reads / writes</legend>
+          <p class="hint">One value, N values in a row, or raw bytes. Write is audited with the old value and the new one.</p>
           <div class="row">
             <label class="field field--grow">
               <span>Address:</span>
@@ -291,14 +323,16 @@
           <pre id="memory-out" class="out"></pre>
         </fieldset>
 
-        <fieldset class="group">
+        <fieldset class="group" id="card-tabs">
           <legend>Tabs</legend>
+          <p class="hint">Every tab the extension can see, with its approval state and any frames inside it.</p>
           <p class="note">click a row to make it the target; attaching still needs an approval</p>
           <ul id="tabs" class="list list--tabs"></ul>
         </fieldset>
 
-        <fieldset class="group">
+        <fieldset class="group" id="card-instances">
           <legend>Instances</legend>
+          <p class="hint">Wasm instances in the target, with their memory size, exports and where they live (page or worker).</p>
           <div class="row">
             <button id="instances-refresh" type="button">Refresh</button>
             <button id="diagnose" type="button">Diagnose</button>
@@ -320,8 +354,9 @@
           <pre id="diagnose-out" class="out"></pre>
         </fieldset>
 
-        <fieldset class="group">
+        <fieldset class="group" id="card-trace">
           <legend>Watchpoints</legend>
+          <p class="hint">Ask which function wrote or read an address. This rewrites the module and reloads the tab, because a store cannot be observed after compilation.</p>
           <p class="note">arms before instantiation; the page reloads once so the store callbacks exist</p>
           <div class="row">
             <label class="field field--grow">
@@ -347,8 +382,9 @@
           <ul id="trace-functions" class="list"></ul>
         </fieldset>
 
-        <fieldset class="group">
+        <fieldset class="group" id="card-patch">
           <legend>Patches</legend>
+          <p class="hint">Replace a function body. Stub returns immediately, Empty writes no instructions at all.</p>
           <div class="row">
             <label class="field field--grow">
               <span>Target:</span>
@@ -383,8 +419,9 @@
           <pre id="patch-out" class="out"></pre>
         </fieldset>
 
-        <fieldset class="group">
+        <fieldset class="group" id="card-hook">
           <legend>Hooks</legend>
+          <p class="hint">Wrap a function in JavaScript: read the arguments, change the result, or call the original. Imports apply at the next instantiation.</p>
           <div class="row">
             <label class="field">
               <span>Instance:</span>
@@ -439,8 +476,9 @@
           <pre id="hook-out" class="out"></pre>
         </fieldset>
 
-        <fieldset class="group">
+        <fieldset class="group" id="card-pointer">
           <legend>Pointers</legend>
+          <p class="hint">Find the base pointer plus offsets that lead to an address, so the path survives a reload that moves your target.</p>
           <div class="row">
             <label class="field field--grow">
               <span>Target:</span>
@@ -466,8 +504,9 @@
           <pre id="ptr-out" class="out"></pre>
         </fieldset>
 
-        <fieldset class="group">
+        <fieldset class="group" id="card-speed">
           <legend>Speed hack</legend>
+          <p class="hint">Scale the clock the page reads. 0 stops time, 1 is normal, 20 is twenty times faster.</p>
           <p class="note">scales <code>performance.now</code>, <code>Date.now</code> and frame timestamps; 0 stops the clock</p>
           <div class="row">
             <label class="field">
@@ -480,16 +519,18 @@
           <pre id="speed-out" class="out"></pre>
         </fieldset>
 
-        <fieldset class="group">
+        <fieldset class="group" id="card-workers">
           <legend>Workers</legend>
+          <p class="hint">Wasm running in Web Workers, including a worker started by another worker.</p>
           <div class="row">
             <button id="workers-list" type="button">List workers</button>
           </div>
           <pre id="workers-out" class="out"></pre>
         </fieldset>
 
-        <fieldset class="group">
+        <fieldset class="group" id="card-saved">
           <legend>Saved scans</legend>
+          <p class="hint">Keep a candidate list inside the page, so a reload does not throw away the narrowing you already did.</p>
           <div class="row">
             <label class="field field--grow">
               <span>Name:</span>
@@ -506,8 +547,9 @@
           <ul id="saved-list-out" class="list list--hits"></ul>
         </fieldset>
 
-        <fieldset class="group">
+        <fieldset class="group" id="card-audit">
           <legend>Audit</legend>
+          <p class="hint">Every change made through this extension, whoever made it. Newest last.</p>
           <p class="note">the host file is authoritative; the worker only keeps what it saw while alive</p>
           <div class="row">
             <label class="field">
@@ -520,8 +562,9 @@
           <pre id="audit-out" class="out"></pre>
         </fieldset>
 
-        <fieldset class="group group--wide">
+        <fieldset class="group group--wide" id="card-console">
           <legend>Raw console and events</legend>
+          <p class="hint">Any page method with JSON parameters, through the same approval gate and the same audit log as every other call.</p>
           <div class="row">
             <label class="field field--grow">
               <span>Method:</span>
@@ -549,6 +592,56 @@
         <span id="scan-id" class="statusbar__cell statusbar__cell--scan">no scan</span>
       </div>
     </div>
+
+      <!-- Command palette: every card, reachable from the keyboard. -->
+      <div id="palette" class="palette" hidden>
+        <div class="palette__box" role="dialog" aria-modal="true" aria-label="Go to a card">
+          <input id="palette-input" type="text" placeholder="Go to…" autocomplete="off" spellcheck="false" />
+          <ul id="palette-list" class="palette__list" role="listbox" aria-label="Cards"></ul>
+          <div class="palette__foot">
+            <span><kbd>&#8593;</kbd> <kbd>&#8595;</kbd> move</span>
+            <span><kbd>Enter</kbd> open</span>
+            <span><kbd>Esc</kbd> close</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Help: the loop, the words, the shortcuts, and where the full docs are. -->
+      <div id="help" class="sheet" hidden>
+        <div class="sheet__box" role="dialog" aria-modal="true" aria-labelledby="help-title">
+          <div class="sheet__head">
+            <h2 id="help-title">Find a value, then change it</h2>
+            <button id="help-close" type="button" class="quiet sheet__close">Close</button>
+          </div>
+          <div class="sheet__body">
+            <ol>
+              <li><b>Approve the tab.</b> Attach asks for permission once per tab and site. Nothing runs before you approve, and nothing runs after you revoke.</li>
+              <li><b>Read the instance list.</b> Instances shows what Wasm modules the page loaded. Empty means the page has not started its game yet, or the game lives in a frame or worker; Diagnose in the Instances card says which.</li>
+              <li><b>Scan.</b> Pick a type and a value you can see on screen, then First Scan. Play, watch the number change, type the new value and Next Scan. Repeat until one address is left.</li>
+              <li><b>Change it.</b> Click the address, then Write, Freeze or Watch. Verify by reading the address back, not by trusting the page to redraw.</li>
+            </ol>
+
+            <h3>The three numbers that matter</h3>
+            <div class="sheet__grid">
+              <div class="sheet__cell"><b>Address</b>A place in linear memory, written <code>w1:0x408</code>: instance, then byte offset. <code>k1n1-1:0x408</code> is an instance inside a nested worker.</div>
+              <div class="sheet__cell"><b>Type</b>How many bytes and whether they are signed. A value that will not match is usually the wrong width: try i64 or f64 before deciding the address is wrong.</div>
+              <div class="sheet__cell"><b>Scan id</b>The candidate list being narrowed. <code>s1</code> is the page, <code>k1-s1</code> is worker <code>k1</code>. Clear it and the list is gone.</div>
+            </div>
+
+            <h3>Shortcuts</h3>
+            <div class="shortcut"><span>Go to a card</span><span><kbd>&#8984;</kbd>/<kbd>Ctrl</kbd> + <kbd>K</kbd></span></div>
+            <div class="shortcut"><span>This help</span><span><kbd>?</kbd></span></div>
+            <div class="shortcut"><span>Light / dark</span><span><kbd>T</kbd></span></div>
+            <div class="shortcut"><span>Close a dialog</span><span><kbd>Esc</kbd></span></div>
+
+            <h3>When something is refused</h3>
+            <p><code>NEED_APPROVAL</code> means the human has not approved this tab yet. <code>NO_AGENT</code> means the page agent is not running; Detach then Attach, or use Reload &amp; attach. <code>HOOK_EVAL_BLOCKED</code> means the page forbids <code>new Function</code>, so use a declarative fallback instead of a hook body.</p>
+
+            <h3>Full documentation</h3>
+            <p><a href="https://github.com/alfman99/wasm-ce/blob/main/docs/PANEL.md" target="_blank" rel="noreferrer">Panel tour</a> · <a href="https://github.com/alfman99/wasm-ce/blob/main/docs/QUICKSTART.md" target="_blank" rel="noreferrer">Quick start</a> · <a href="https://github.com/alfman99/wasm-ce/blob/main/docs/AGENT_GUIDE.md" target="_blank" rel="noreferrer">Agent guide</a> · <a href="https://github.com/alfman99/wasm-ce/blob/main/README.md" target="_blank" rel="noreferrer">README</a></p>
+          </div>
+        </div>
+      </div>
 
     <script src="panel.js"></script>
   </body>

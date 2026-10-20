@@ -1,24 +1,28 @@
 # WasmCheat
 
-A Cheat Engine for WebAssembly that runs entirely in the browser. An MCP agent can attach to a
-WebAssembly app in one of your Chrome tabs, scan its linear memory the way Cheat Engine scans a
-process, read/write/freeze/watch addresses, and hot-patch exports and imports — with no native
-code, no debugger flags, and no DevTools protocol. Every action needs your approval per tab and
-lands in an audit log.
+WasmCheat is a memory scanner for WebAssembly that runs in the browser. It attaches to a wasm app
+in a Chrome tab, searches its linear memory, and lets you — or an MCP agent — read, write, freeze and
+watch addresses, then patch a function or wrap it in JavaScript. Nothing native is involved: no
+debugger flags, no DevTools protocol, no separate process holding the page.
 
-It is a research and debugging tool for **programs you own or have explicit permission to
-modify**. See [Policy](#policy) before pointing it at anything.
+A human approves each tab before anything runs, and every mutation lands in an audit log.
 
-**If you are an agent (or driving one) and just want to use it:** read
-[docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) — the order of operations, the symptom-to-tool table and the
-traps. This file is the reference; that file is the playbook. `docs/STATUS.md` records what is proven and
-what is not.
+Point it at programs you own or have written permission to test. See [Policy](#policy).
 
-![The DevTools panel: tabs, scan controls, found list, freeze, watch, bookmarks, memory viewer,
-watchpoints, patches, hooks, pointers, speed hack and the audit view](docs/img/panel.png)
+![The DevTools panel: target and status on top, the found list beside the scan controls, then the
+tools for one address](docs/img/panel.png)
 
-The panel is the human front end, laid out like the memory scanner it is modelled on: attach, scan,
-narrow, then change the value — and the same calls the agent makes.
+The panel is the human front end for the same calls an agent makes: attach, scan, narrow, change.
+
+## Start here
+
+| If you want to | Read |
+| --- | --- |
+| change a value in five minutes | [docs/QUICKSTART.md](docs/QUICKSTART.md) |
+| learn the panel, card by card | [docs/PANEL.md](docs/PANEL.md) |
+| drive it from an MCP agent | [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) |
+| know what is proven and what is not | [docs/STATUS.md](docs/STATUS.md) |
+| know why it looks and reads this way | [docs/DESIGN.md](docs/DESIGN.md) |
 
 ---
 
@@ -209,18 +213,32 @@ chain in `nested.html`.
 
 ### The DevTools panel
 
-![The demo game, a Win32-styled clicker whose state is four integers in linear memory](docs/img/demo.png)
+Open DevTools → **WasmCheat**. The panel is a second front end on the same dispatcher the WebSocket
+uses (`wasmcheat.panel.call` → `handleBridgeRequest`), so it needs the same approval and cannot skip
+the gate.
 
-The panel is styled like a Windows dialog on purpose — dense, monospaced, no chrome you have to
-learn. The demo target beside it is a stand-in for a real game window.
+It follows the order you work in: what you are attached to, the scan, the hits, what you can do to one
+address, then the advanced tooling and the raw console. The header keeps the three facts you need on
+screen — target, approval, agent — and the `Now` line reads tab → instance → address, so a write is
+never aimed at something you have forgotten about.
 
-Open DevTools → **WasmCheat**. Every tool is also a form, so a human can work without an agent: tabs and
-approval, instances and `diagnose`, typed reads/writes, a hex **memory viewer** (16 bytes per row,
-Earlier/Later, **Follow pointer**, and any address you click — a scan hit, a bookmark, a watch event —
-jumps the dump to it), workers, pointer scan/resolve, speed hack, freeze, watch, every scan mode plus
-text scan, saved lists, bookmarks, watchpoints, patches, hooks, the live audit view and a raw RPC
-console. The panel shares one dispatcher with the WebSocket (`wasmcheat.panel.call` →
-`handleBridgeRequest`), so it needs the same approval and cannot skip the gate.
+- Every tool is a form: tabs and approval, instances and `diagnose`, typed reads and writes, a hex
+  **memory viewer** (16 bytes per row, Earlier/Later, **Follow pointer**, and any address you click
+  jumps the dump to it), workers, pointer scan and resolve, speed hack, freeze, watch, all thirteen
+  scan modes plus text scan, saved lists, bookmarks, watchpoints, patches, hooks, the live audit view,
+  and a raw RPC console.
+- <kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>K</kbd> opens a palette over every card, filtered as you type.
+  `?` opens the built-in help, `T` switches light and dark.
+- Empty lists name the cause and the next action instead of saying "no data", and a refused call shows
+  the error code next to the sentence that fixes it.
+
+![The same panel in dark mode](docs/img/panel-dark.png)
+
+![The help sheet: the loop, the three numbers, the shortcuts, and what a refusal means](docs/img/help.png)
+
+The demo target is a game window rather than a copy of the tool, so the two are never confused:
+
+![Foundry, the demo: score, ore, lives and depth, all integers in linear memory](docs/img/demo.png)
 
 ### Two WebAssembly facts that shape the tool
 
@@ -591,18 +609,20 @@ server you have running).
 ## Layout
 
 ```
-packages/protocol/src/index.ts      shared contract
-packages/page-agent/src/            registry (capture), memory, scanner, hooks, trace, runtime
-packages/extension/src/             sw.ts (approval + bridge), relay.ts, popup, panel.ts, devtools.ts, manifest
+packages/protocol/src/index.ts      shared contract: envelopes, errors, every tool's types
+packages/page-agent/src/            registry (capture), memory, scanner, hooks, trace, workers, runtime
+packages/extension/src/             sw.ts (approval + bridge), relay.ts, popup, panel + panel-help, devtools
 packages/extension/dist/            loadable unpacked extension (built)
-packages/wasm-instrument/src/       wasm binary rewriter: watchpoint instrumentation + function stubs
-packages/mcp-server/src/            bridge.ts (WebSocket), server.ts (tools), audit.ts, bin.ts
-packages/demo-app/src/game.c        demo target, compiled to prebuilt/game.wasm
+packages/wasm-instrument/src/       wasm rewriter: watchpoint instrumentation, function stubs
+packages/mcp-server/src/            bridge.ts (WebSocket), server.ts (tools), audit.ts, events.ts, bin.ts
+packages/demo-app/src/game.c        the demo target, compiled to prebuilt/game.wasm
 packages/demo-app/framed.html       the demo inside a cross-origin iframe (subframe test)
 packages/demo-app/worker.html       the demo instantiated inside a Web Worker (worker test)
 packages/demo-app/nested.html       the demo inside a worker started by another worker (nested test)
-tests/unit/                         vitest: memory, registry, scanner, hooks, wasm exports
-tests/e2e/                          playwright: harness.ts + demo.spec.ts
+scripts/wasmcheat-cli.mjs           one command per tool, for a shell without an agent
+docs/QUICKSTART.md PANEL.md AGENT_GUIDE.md STATUS.md DESIGN.md, docs/img/*.png
+tests/unit/                         vitest: memory, registry, scanner, hooks, trace, workers, bridge, bookmarks
+tests/e2e/                          playwright: harness.ts, demo.spec.ts, screenshots.spec.ts
 ```
 
 ## Limitations

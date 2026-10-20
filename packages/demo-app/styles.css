@@ -1,24 +1,27 @@
 /*
- * The demo target is dressed as a small Win32 application, because that is what the tool beside it
- * is impersonating: a game window with a dialog face, sunken readouts, beveled buttons and a status
- * bar. It is a game, so the numbers get the space; everything else stays out of their way.
+ * Foundry, the demo target.
+ *
+ * This page is a game, not a tool, so it is allowed a darker palette and a large number — the score
+ * is the thing an agent comes here to find. It shares nothing with the panel on purpose: a target
+ * that looks like the inspector makes it harder to tell which window you are about to write to.
  */
 
 :root {
-  --face: #f0f0f0;
-  --face-2: #e4e4e4;
-  --white: #ffffff;
-  --edge-light: #ffffff;
-  --edge-mid: #b8b8b8;
-  --edge-dark: #828282;
-  --edge-darker: #5a5a5a;
-  --text: #000000;
-  --muted: #4d4d4d;
-  --select: #0a246a;
-  --green: #00651f;
-  --red: #a30000;
-  --mono: 13px/1.3 Consolas, 'Courier New', 'DejaVu Sans Mono', monospace;
-  --ui: 12px/1.45 Tahoma, 'Segoe UI', Verdana, sans-serif;
+  color-scheme: dark;
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+  --bg: #0e100f;
+  --surface: #171a18;
+  --surface-2: #1f2321;
+  --line: #2a2f2c;
+  --ink: #eef2ec;
+  --ink-2: #a8b1a8;
+  --ink-3: #78827a;
+  --molten: #ff7a2f;
+  --molten-soft: #2a1a11;
+  --ore: #ffcf4d;
+  --danger: #ff6f61;
 }
 
 * {
@@ -27,307 +30,253 @@
 
 html,
 body {
-  height: 100%;
   margin: 0;
+  min-height: 100%;
 }
 
 body {
   display: grid;
   place-items: center;
-  padding: 24px 16px;
-  background: #6a7b8c;
-  background-image:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(0, 0, 0, 0.12)),
-    repeating-linear-gradient(0deg, #6a7b8c 0 3px, #68798a 3px 4px);
-  color: var(--text);
-  font: var(--ui);
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 24px;
+  background:
+    radial-gradient(120% 90% at 50% 0%, #1b1f1c 0%, var(--bg) 60%),
+    var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* ---------------------------------------------------------------- window chrome */
-
-.board {
-  width: min(100%, 460px);
-  background: var(--face);
-  border: 1px solid var(--edge-darker);
-  box-shadow:
-    inset 1px 1px 0 var(--edge-light),
-    inset -1px -1px 0 var(--edge-mid),
-    0 10px 26px rgba(0, 0, 0, 0.35);
+/* The game window. */
+.board,
+body > main {
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 30px 60px -40px rgb(0 0 0 / 90%);
 }
 
 .board__head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 3px 4px 3px 6px;
-  background: linear-gradient(180deg, #0a246a 0%, #3a6ea5 100%);
-  color: #fff;
+  gap: 10px;
 }
 
-.board__head h1 {
+h1 {
   margin: 0;
-  font: 700 12px/1.4 Tahoma, 'Segoe UI', Verdana, sans-serif;
-  letter-spacing: 0;
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
 }
 
-.board__head .tag {
-  padding: 0 4px;
-  background: #d7e3f2;
-  color: #0a246a;
-  font: 700 10px/1.5 var(--mono);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+.tag {
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--molten) 35%, var(--line));
+  border-radius: 999px;
+  background: var(--molten-soft);
+  color: var(--molten);
+  font-family: var(--mono);
+  font-size: 10.5px;
 }
 
-.board__head .spacer {
+.spacer {
   flex: 1;
 }
 
-/* A decorative close box, marked inert: this demo has no window manager behind it. */
-.board__head .close {
-  width: 18px;
-  height: 16px;
-  display: grid;
-  place-items: center;
-  background: var(--face);
-  border: 1px solid;
-  border-color: var(--edge-light) var(--edge-darker) var(--edge-darker) var(--edge-light);
-  color: var(--text);
-  font: 700 11px/1 Tahoma, sans-serif;
+.board__sub,
+.lede {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  max-width: 62ch;
 }
 
 .board__sub {
-  margin: 0;
-  padding: 4px 8px 2px;
-  color: var(--muted);
-  font-size: 11px;
+  margin-top: -8px;
 }
 
-/* ---------------------------------------------------------------- readouts */
+code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 0.92em;
+}
 
+/* The score is the address you are looking for, so it gets the size. */
 .readout {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px 6px;
-  margin: 2px 8px 6px;
-  padding: 6px 8px 8px;
-  border: 1px solid var(--edge-mid);
-  box-shadow: inset 1px 1px 0 var(--edge-light);
-}
-
-.readout::before {
-  content: 'Process memory';
-  grid-column: 1 / -1;
-  margin: -14px 0 0;
-  padding: 0 4px;
-  width: fit-content;
-  background: var(--face);
-  font-weight: 700;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .stat {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 2px 6px;
-  background: var(--white);
-  border: 1px solid;
-  border-color: var(--edge-dark) var(--edge-light) var(--edge-light) var(--edge-dark);
-  box-shadow: inset 1px 1px 0 var(--edge-mid);
-}
-
-.stat__label {
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.stat__value {
-  font: 700 16px/1.25 var(--mono);
-  font-variant-numeric: tabular-nums;
-}
-
-/* ---------------------------------------------------------------- buttons */
-
-.controls {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-  padding: 0 8px 8px;
-}
-
-.controls button {
-  display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 0;
-  padding: 4px 8px 5px;
-  background: var(--face);
-  color: var(--text);
-  border: 1px solid;
-  border-color: var(--edge-light) var(--edge-darker) var(--edge-darker) var(--edge-light);
-  box-shadow: inset 1px 1px 0 #fbfbfb, inset -1px -1px 0 var(--edge-mid);
-  font: var(--ui);
-  text-align: left;
-}
-
-.controls button span {
-  font-weight: 700;
-}
-
-.controls button small {
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.controls button:hover {
-  background: #f6f6f6;
-}
-
-.controls button:active {
-  border-color: var(--edge-darker) var(--edge-light) var(--edge-light) var(--edge-darker);
-  box-shadow: inset 1px 1px 0 var(--edge-mid);
-  padding: 5px 7px 4px 9px;
-}
-
-.controls button:focus-visible {
-  outline: 1px dotted #000;
-  outline-offset: -4px;
-}
-
-.controls .quiet {
-  grid-column: 1 / -1;
-  align-items: center;
-}
-
-/* ---------------------------------------------------------------- status bar */
-
-.board__foot {
-  display: flex;
-  align-items: center;
   gap: 2px;
-  padding: 2px 4px;
-  border-top: 1px solid var(--edge-light);
-  box-shadow: inset 0 1px 0 var(--edge-mid);
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
 }
 
-.board__foot span {
-  padding: 1px 6px;
-  border: 1px solid;
-  border-color: var(--edge-dark) var(--edge-light) var(--edge-light) var(--edge-dark);
-  font: 11px/1.5 var(--mono);
+.stat:first-child {
+  grid-column: 1 / -1;
+  background:
+    radial-gradient(120% 140% at 0% 0%, #2b1b12 0%, var(--surface-2) 65%);
+  border-color: color-mix(in srgb, var(--molten) 28%, var(--line));
 }
 
-.board__foot span:first-child {
-  flex: 1;
-  border: 0;
-  box-shadow: none;
-  font: var(--ui);
-  color: var(--muted);
+.stat__label,
+.label {
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-weight: 550;
+  letter-spacing: 0.02em;
+  text-transform: none;
 }
 
-#status {
-  color: var(--muted);
+.stat__value,
+.hud b {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
-/* ---------------------------------------------------------------- worker + nested pages */
+.stat:first-child .stat__value {
+  font-size: 44px;
+  line-height: 1.05;
+  color: var(--molten);
+}
 
 .hud {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-  margin: 2px 8px 8px;
+  display: flex;
+  gap: 10px;
 }
 
 .hud > div {
+  flex: 1;
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 2px 6px;
-  background: var(--white);
-  border: 1px solid;
-  border-color: var(--edge-dark) var(--edge-light) var(--edge-light) var(--edge-dark);
-  box-shadow: inset 1px 1px 0 var(--edge-mid);
-}
-
-.hud .label {
-  color: var(--muted);
-  font-size: 11px;
+  flex-direction: column;
+  padding: 10px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
 }
 
 .hud b {
-  font: 700 16px/1.25 var(--mono);
-  font-variant-numeric: tabular-nums;
+  font-size: 26px;
+  color: var(--molten);
 }
 
-.lede {
-  margin: 0 8px 8px;
-  color: var(--muted);
-  font-size: 11px;
-  max-width: 60ch;
-}
-
+/* Controls: one obvious action, one that costs you something, one that starts over. */
+.controls,
 .row {
   display: flex;
-  gap: 6px;
-  padding: 0 8px 8px;
   flex-wrap: wrap;
+  gap: 8px;
 }
 
-.row button {
-  padding: 3px 10px;
-  background: var(--face);
-  border: 1px solid;
-  border-color: var(--edge-light) var(--edge-darker) var(--edge-darker) var(--edge-light);
-  box-shadow: inset 1px 1px 0 #fbfbfb, inset -1px -1px 0 var(--edge-mid);
-  font: var(--ui);
+button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 9px 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms ease-out, border-color 120ms ease-out, transform 80ms ease-out;
 }
 
-.row button:active {
-  border-color: var(--edge-darker) var(--edge-light) var(--edge-light) var(--edge-darker);
-  box-shadow: inset 1px 1px 0 var(--edge-mid);
+button small {
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+button:hover {
+  border-color: color-mix(in srgb, var(--molten) 30%, var(--line));
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+button.mine {
+  background: var(--molten);
+  border-color: var(--molten);
+  color: #1c0f06;
+}
+
+button.mine small {
+  color: #5b2f12;
+}
+
+button.mine:hover {
+  background: #ff8b4b;
+}
+
+button.hazard {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--line));
+}
+
+button.quiet,
+#reset {
+  font-weight: 500;
+  color: var(--ink-2);
+}
+
+.board__foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 10.5px;
 }
 
 .status {
-  margin: 0 8px 8px;
-  padding: 2px 6px;
-  background: var(--white);
-  border: 1px solid;
-  border-color: var(--edge-dark) var(--edge-light) var(--edge-light) var(--edge-dark);
-  box-shadow: inset 1px 1px 0 var(--edge-mid);
-  font: 11px/1.6 var(--mono);
-  color: var(--muted);
+  margin: 0;
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 11px;
 }
 
-/* The three demo variants use a bare <main>; give them the same window frame. */
-body > main:not(.board) {
-  width: min(100%, 520px);
-  padding-top: 0;
-  background: var(--face);
-  border: 1px solid var(--edge-darker);
-  box-shadow: inset 1px 1px 0 var(--edge-light), 0 10px 26px rgba(0, 0, 0, 0.35);
-}
-
-body > main:not(.board) > h1 {
-  margin: 0 0 8px;
-  padding: 3px 6px;
-  background: linear-gradient(180deg, #0a246a 0%, #3a6ea5 100%);
-  color: #fff;
-  font: 700 12px/1.4 Tahoma, 'Segoe UI', Verdana, sans-serif;
-}
-
-body > main:not(.board) .lede {
-  margin-top: 0;
-}
-
+/* The embed page: a page about framing, so the frame is the illustration. */
 .frame {
-  display: block;
-  width: calc(100% - 16px);
-  height: 460px;
-  margin: 0 8px 8px;
-  background: #fff;
-  border: 1px solid;
-  border-color: var(--edge-dark) var(--edge-light) var(--edge-light) var(--edge-dark);
-  box-shadow: inset 1px 1px 0 var(--edge-mid);
+  width: 100%;
+  height: 420px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+}
+
+@media (max-width: 520px) {
+  .readout {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .stat:first-child .stat__value {
+    font-size: 36px;
+  }
 }

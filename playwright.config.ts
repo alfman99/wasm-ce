@@ -7,6 +7,8 @@ import { defineConfig } from '@playwright/test';
  */
 export default defineConfig({
   testDir: 'tests/e2e',
+  // The screenshot run writes docs/img/*.png and is only wanted on demand.
+  testIgnore: process.env.WASMCHEAT_SHOTS ? [] : ['**/screenshots.spec.ts'],
   timeout: 180_000,
   expect: { timeout: 20_000 },
   workers: 1,

@@ -46,6 +46,8 @@ import {
   type WriteTraceStatus,
 } from '@wasmcheat/protocol';
 
+import { installPanelHelp } from './panel-help.js';
+
 // ---------------------------------------------------------------- element access
 
 function el<T extends HTMLElement>(id: string): T {
@@ -366,7 +368,7 @@ function renderTabs(tabs: TabInfo[]): void {
     });
     return item;
   });
-  renderList(el('tabs'), items, 'no tabs yet — the extension sees a tab once it finishes loading');
+  renderList(el('tabs'), items, 'No tabs yet. A tab appears here once the extension has run in it: open the page you want, then press Refresh.');
 }
 
 async function refreshStatus(): Promise<void> {
@@ -541,7 +543,7 @@ function renderInstances(instances: InstanceInfo[]): void {
         instance.memory
           ? `${instance.memory.byteLength} B${instance.memory.growable ? ' growable' : ''}`
           : instance.memoryResolved
-            ? 'no memory'
+            ? 'no memory export'
             : 'unresolved',
       ),
       cell(instance.importPatchability),
@@ -575,7 +577,7 @@ async function refreshInstances(): Promise<string> {
   renderInstances(instances);
   return instances.length
     ? `${instances.length} instance(s): ${instances.map((instance) => instance.id).join(', ')}`
-    : 'no instances captured yet';
+    : 'No instances yet. Press Refresh; if it stays empty, press Diagnose to see why.';
 }
 
 async function diagnose(): Promise<string> {
@@ -784,7 +786,7 @@ function renderFreezes(entries: FreezeEntry[]): void {
       }),
     ]),
   );
-  renderList(el('freezes'), items, 'no freezes');
+  renderList(el('freezes'), items, 'Nothing frozen. Click an address in Found, then press Set freeze.');
 }
 
 async function freezeSet(): Promise<string> {
@@ -828,7 +830,7 @@ function renderWatches(entries: WatchEntry[]): void {
       }),
     ]),
   );
-  renderList(el('watches'), items, 'no watches');
+  renderList(el('watches'), items, 'No watches. Enter an address and a type, then press Add watch.');
 }
 
 function renderWatchEvents(events: WatchEvent[]): void {
@@ -841,7 +843,7 @@ function renderWatchEvents(events: WatchEvent[]): void {
       `${event.before} -> ${event.after}`,
     ]),
   );
-  renderList(el('watch-events'), items, 'no watch events');
+  renderList(el('watch-events'), items, 'No changes recorded. Poll again after the page has run for a moment.');
 }
 
 async function watchAdd(): Promise<string> {
@@ -898,13 +900,20 @@ function scanCompareParams(mode: ScanMode): Record<string, unknown> {
   return params;
 }
 
+function markScanStep(step: 'first' | 'narrow'): void {
+  // Only one filled button at a time, and it is always the next thing to press.
+  el('scan-begin').classList.toggle('primary', step === 'first');
+  el('scan-narrow').classList.toggle('primary', step === 'narrow');
+}
+
 function renderScanSummary(summary: ScanSummary): void {
   activeScanId = summary.scanId;
+  markScanStep('narrow');
   el('scan-id').textContent = `scan ${summary.scanId} · ${summary.matchCount} match(es)`;
   const items = [...summary.sample]
     .sort((a, b) => a.address.offset - b.address.offset)
     .map((hit) => listItem([addressLink(formatAddress(hit.address)), String(hit.value)]));
-  renderList(el('scan-hits'), items, 'no sample hits');
+  renderList(el('scan-hits'), items, 'No hits in this answer. Narrow again with Next Scan, or widen the byte range.');
 }
 
 function renderScanHits(hits: ScanHit[], total: number): void {
@@ -967,7 +976,8 @@ async function scanDrop(): Promise<string> {
   const dropped = await pageCall<boolean>('page.scan.drop', { scanId: id });
   activeScanId = undefined;
   el('scan-id').textContent = 'no scan';
-  renderList(el('scan-hits'), [], 'no scan');
+  markScanStep('first');
+  renderList(el('scan-hits'), [], 'No scan yet. Press First Scan with a value you can see on the page; Next Scan then narrows that list.');
   return dropped ? `${id} dropped` : `${id} was already closed`;
 }
 
@@ -993,7 +1003,7 @@ async function bookmarkList(): Promise<string> {
         }),
       ]),
     ),
-    'no bookmarks yet',
+    'No bookmarks. Type an address and a label, then press Add bookmark.',
   );
   return items.length === 0 ? 'nothing bookmarked yet' : `${items.length} bookmark(s)`;
 }
@@ -1009,7 +1019,7 @@ async function savedList(): Promise<string> {
   renderList(
     el('saved-list-out'),
     items.map((item) => listItem([span(`${item.name} · ${item.matchCount} match(es) · ${item.mode} ${item.type}`)])),
-    'no saved scans in this tab',
+    'No saved scans in this page. Save one before anything reloads it.',
   );
   return items.length === 0 ? 'nothing saved yet' : `${items.length} saved scan(s)`;
 }
@@ -1026,7 +1036,7 @@ async function savedOpen(): Promise<string> {
   const opened = await pageCall<{ scanId: string; summary: ScanSummary }>('page.saved.open', { name });
   activeScanId = opened.scanId;
   el('scan-id').textContent = `scan ${opened.scanId} · ${opened.summary.matchCount} match(es) (from "${name}")`;
-  renderList(el('scan-hits'), [], 'no sample hits');
+  renderList(el('scan-hits'), [], 'No hits in this answer. Narrow again with Next Scan, or widen the byte range.');
   return `opened "${name}" as ${opened.scanId} · narrow it with the scan form above`;
 }
 
@@ -1057,7 +1067,7 @@ async function scanText(): Promise<string> {
   const items = result.matches.map((offset) =>
     listItem([addressLink(`${instanceId}:0x${offset.toString(16)}`), `+${offset}`]),
   );
-  renderList(el('text-hits'), items, `no match for "${text}"`);
+  renderList(el('text-hits'), items, `No match for "${text}". Try the case-insensitive box, or another encoding.`);
   return `${result.matches.length} of ${result.total} match(es) · ${result.encoding}${
     result.truncated ? ' · truncated' : ''
   } · memory ${result.memoryByteLength} B`;
@@ -1098,14 +1108,14 @@ function renderTrace(status: WriteTraceStatus): void {
         `${hit.previous} -> ${hit.value}`,
       ]),
     ),
-    'no hits yet',
+    'No hits yet. Pick an address and a mode above, then press Run watchpoint.',
   );
   renderList(
     el('trace-functions'),
     status.functions.map((entry) =>
       listItem([entry.name ?? `wasm-function[${entry.funcIndex}]`, `${entry.hits} hit(s)`]),
     ),
-    'no function touched the address',
+    'No function touched that address yet. Reload the tab with the watchpoint armed, then play.',
   );
 }
 
@@ -1168,7 +1178,7 @@ function renderPatches(entries: PatchEntry[]): void {
       }),
     ]),
   );
-  renderList(el('patches'), items, 'no patches');
+  renderList(el('patches'), items, 'No patches. Choose a target and a mode, then press Add patch.');
 }
 
 async function patchAdd(): Promise<string> {
@@ -1235,7 +1245,7 @@ function renderHooks(entries: HookEntry[]): void {
       }),
     ]),
   );
-  renderList(el('hooks'), items, 'no hooks');
+  renderList(el('hooks'), items, 'No hooks. An export wrapper needs a JS body; an import wrapper applies at the next instantiation.');
 }
 
 async function hookAdd(): Promise<string> {
@@ -1347,7 +1357,7 @@ function renderEventLog(): void {
   const items = eventLog.map((entry) =>
     listItem([clock(entry.at), entry.event, compact(entry.data)]),
   );
-  renderList(el('event-log'), items, 'no events yet');
+  renderList(el('event-log'), items, 'No events yet. Bridge, approval and page events appear here as they happen.');
 }
 
 function logEvent(event: string, data: unknown): void {
@@ -1529,7 +1539,7 @@ function wire(): void {
     renderEventLog();
   });
 
-  renderList(el('event-log'), [], 'no events yet');
+  renderList(el('event-log'), [], 'No events yet. Bridge, approval and page events appear here as they happen.');
   openEvents();
 
   (window as unknown as { __panel: PanelTestHooks }).__panel = {
@@ -1537,6 +1547,8 @@ function wire(): void {
     attach: panelAttach,
     call: (method, params) => dispatch(method, params ?? {}),
   };
+
+  installPanelHelp();
 
   void refreshStatus().catch(reportStatusError);
 }
