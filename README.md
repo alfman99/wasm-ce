@@ -14,6 +14,12 @@ modify**. See [Policy](#policy) before pointing it at anything.
 traps. This file is the reference; that file is the playbook. `docs/STATUS.md` records what is proven and
 what is not.
 
+![The DevTools panel: tabs, scan controls, found list, freeze, watch, bookmarks, memory viewer,
+watchpoints, patches, hooks, pointers, speed hack and the audit view](docs/img/panel.png)
+
+The panel is the human front end, laid out like the memory scanner it is modelled on: attach, scan,
+narrow, then change the value — and the same calls the agent makes.
+
 ---
 
 ## What is in the box
@@ -202,6 +208,11 @@ one is routed down the chain rather than refused. The e2e suite covers a page �
 chain in `nested.html`.
 
 ### The DevTools panel
+
+![The demo game, a Win32-styled clicker whose state is four integers in linear memory](docs/img/demo.png)
+
+The panel is styled like a Windows dialog on purpose — dense, monospaced, no chrome you have to
+learn. The demo target beside it is a stand-in for a real game window.
 
 Open DevTools → **WasmCheat**. Every tool is also a form, so a human can work without an agent: tabs and
 approval, instances and `diagnose`, typed reads/writes, a hex **memory viewer** (16 bytes per row,

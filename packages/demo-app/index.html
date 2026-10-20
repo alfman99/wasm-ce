@@ -10,8 +10,12 @@
     <main class="board">
       <header class="board__head">
         <h1>Foundry</h1>
-        <p class="board__sub">A tiny clicker whose state lives in WebAssembly linear memory.</p>
+        <span class="tag">wasm32</span>
+        <span class="spacer"></span>
+        <span class="close" aria-hidden="true">×</span>
       </header>
+
+      <p class="board__sub">A clicker whose whole state lives in WebAssembly linear memory.</p>
 
       <section class="readout" aria-live="polite">
         <div class="stat">
@@ -35,18 +39,18 @@
       <div class="controls">
         <button id="mine" class="mine" type="button">
           <span>Mine</span>
-          <small>+1 ore · +25 score</small>
+          <small>+1 ore, +25 score</small>
         </button>
         <button id="damage" class="hazard" type="button">
           <span>Hazard</span>
-          <small>−1 life</small>
+          <small>-1 life</small>
         </button>
-        <button id="reset" class="quiet" type="button">Reset</button>
+        <button id="reset" class="quiet" type="button"><span>Reset</span></button>
       </div>
 
       <footer class="board__foot">
+        <span>wasm32 · no glue</span>
         <span id="status">loading wasm…</span>
-        <a href="https://github.com/" rel="noreferrer">wasmcheat demo</a>
       </footer>
     </main>
     <script src="demo.js"></script>
