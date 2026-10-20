@@ -403,6 +403,7 @@ Addresses are `"<instanceId>:<offset>"`, e.g. `w1:0x408` or `w1:1032`. `instance
 | `wasmcheat_watch` | `add` / `remove` / `list` / `poll` change events. |
 | `wasmcheat_hook` | `add` / `list` / `enable` / `remove` export and import hooks. |
 | `wasmcheat_run_script` | Run JavaScript in the game frame and get its value back, for what the game keeps in JavaScript (a PlayCanvas or Unity scene). Audited with its code. |
+| `wasmcheat_mod` | `add` / `list` / `remove` scripts kept for a game: an added one runs now and on every load of that game's frame. |
 | `wasmcheat_find_writes` | Which function writes to an address? Reloads with an instrumented module. |
 | `wasmcheat_find_reads` | Which function reads an address? Same mechanism, load probes instead of store hooks. |
 | `wasmcheat_trace` | `arm` / `status` / `poll` / `clear` / `stop` for a watchpoint (`kind`: `read` or `write`). |

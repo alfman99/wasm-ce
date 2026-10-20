@@ -21,6 +21,7 @@ import {
   type InstanceInfo,
   type PageDiagnostics,
   type ScriptResult,
+  type ModEntry,
   type PageAgentInfo,
   type ReadResult,
   type ScanHit,
@@ -1195,6 +1196,46 @@ export function createServer(bridge: Bridge): McpServer {
       try {
         const result = await page<ScriptResult>(tabId, 'page.script.run', { code }, (timeoutSeconds ?? 30) * 1000);
         return ok(result, result.truncated ? 'The value was cut at 64 KB; return a smaller part of it.' : undefined);
+      } catch (error) {
+        return fail(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'wasmcheat_mod',
+    {
+      title: 'Keep a script for a site (a mod)',
+      description:
+        'A mod is a script the extension keeps for the site of the game frame and runs in every new page of it, so a ' +
+        'change asked for once survives reloads and browser restarts. `add` runs the code now (as wasmcheat_run_script ' +
+        'does) and keeps it only if it works; `list` shows the mods of a tab, or all without tabId; `remove` stops it from ' +
+        'running on the next load (what it already changed stays until then). A mod runs as soon as its frame starts, ' +
+        'before the engine exists, so it should wait with the `until` helper every script gets: ' +
+        '`const app = await until(() => window.pc?.app);`. It runs once per page.',
+      inputSchema: {
+        tabId: TAB_ID,
+        action: z.enum(['add', 'list', 'remove']),
+        name: z.string().max(80).optional().describe('What the mod does, shown in the panel and the audit log.'),
+        code: z.string().min(1).optional().describe('Required for add: an expression or a function body, as in run_script.'),
+        modId: z.string().optional().describe('Required for remove.'),
+      },
+    },
+    async ({ tabId: askedTab, action, name, code, modId }) => {
+      try {
+        if (action === 'list') {
+          const tabId = askedTab === undefined ? undefined : await resolveTab(bridge, askedTab);
+          return ok(await bridge.request<ModEntry[]>('ext.mods.list', tabId === undefined ? {} : { tabId }));
+        }
+        if (action === 'remove') {
+          if (!modId) return fail(new BridgeError('BAD_PARAMS', 'modId is required for remove'));
+          const kept = await bridge.request<ModEntry[]>('ext.mods.remove', { modId });
+          return ok(kept, 'Removed. It no longer runs on the next load; what it changed in the open page stays until then.');
+        }
+        if (!code) return fail(new BridgeError('BAD_PARAMS', 'code is required for add'));
+        const tabId = await resolveTab(bridge, askedTab);
+        const added = await bridge.request<{ mod: ModEntry; result: ScriptResult }>('ext.mods.add', { tabId, name, code }, 70_000);
+        return ok(added, `Kept for ${added.mod.origin}: it runs in every new page of that site.`);
       } catch (error) {
         return fail(error);
       }

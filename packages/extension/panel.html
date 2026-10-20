@@ -514,8 +514,16 @@
           </label>
           <div class="row">
             <button id="script-run" type="button" class="primary" title="Run in the game frame (Ctrl or Cmd + Enter)">Run</button>
+            <label class="field field--grow">
+              <span>Name:</span>
+              <input id="mod-name" type="text" placeholder="aim line" />
+            </label>
+            <button id="mod-add" type="button" title="Run it now, and again every time this game loads">Run and keep</button>
           </div>
           <pre id="script-out" class="out out--mono"></pre>
+          <p class="legend2">Kept for this game</p>
+          <p class="hint">A kept script is a mod: it runs on every load of this game, after reloads and restarts. It starts before the game does, so wait for what it needs with <code>await until(() =&gt; window.pc?.app)</code>.</p>
+          <ul id="mods" class="list list--hits"></ul>
         </fieldset>
 
         <fieldset class="group" id="card-pointer">

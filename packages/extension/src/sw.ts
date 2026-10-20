@@ -14,6 +14,7 @@ import {
   type BridgeErrorShape,
   type PageAgentInfo,
   type PageDiagnostics,
+  type ModEntry,
   type PatchEntry,
   type PatchSpec,
   type TabInfo,
@@ -143,6 +144,82 @@ interface KeptPatches {
 }
 const tabPatches = new Map<number, KeptPatches>();
 const PATCH_MUTATIONS = new Set(['page.patch.add', 'page.patch.remove', 'page.patch.clear']);
+
+/**
+ * Mods: scripts kept per site that run in every new page of it, so a change asked for once (an aim
+ * line, a debug switch) survives reloads and browser restarts. Local storage, not session: a mod is
+ * a choice the person made about that game. Keyed by the origin of the game frame, which is stable
+ * for a game even when the page around it is not (YouTube Playables).
+ */
+const MODS_KEY = 'wasmcheat.mods';
+/** A mod usually waits for the engine with `until`; a slow game may take this long to boot. */
+const MOD_TIMEOUT_MS = 60_000;
+
+async function loadMods(): Promise<ModEntry[]> {
+  const stored = (await chrome.storage.local.get(MODS_KEY))[MODS_KEY] as ModEntry[] | undefined;
+  return Array.isArray(stored) ? stored : [];
+}
+
+async function saveMods(mods: ModEntry[]): Promise<void> {
+  await chrome.storage.local.set({ [MODS_KEY]: mods });
+}
+
+/** Origin of the frame that holds the game in this tab, the one a mod belongs to. */
+async function gameOrigin(tabId: number): Promise<string> {
+  const frameId = await resolveFrame(tabId);
+  const origin = originOf(tabFrames.get(tabId)?.get(frameId) ?? (frameId === 0 ? (await getTab(tabId)).url : undefined));
+  if (!origin) throw new BridgeError('BAD_PARAMS', `tab ${tabId} has no http(s) page to keep a mod for`);
+  return origin;
+}
+
+async function addMod(params: { tabId: number; name?: string; code: string }, origin: CallOrigin): Promise<unknown> {
+  if (typeof params.code !== 'string' || !params.code.trim()) throw new BridgeError('BAD_PARAMS', 'code is required');
+  const site = await gameOrigin(params.tabId);
+  const mod: ModEntry = {
+    id: `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+    name: params.name?.trim() || 'mod',
+    origin: site,
+    code: params.code,
+    createdAt: Date.now(),
+  };
+  // Run first and keep only what works, so a broken mod is fixed now rather than failing on every load.
+  const result = await callTab(
+    { tabId: params.tabId, method: 'page.script.run', params: { code: mod.code, once: mod.id, mod: mod.name }, timeoutMs: MOD_TIMEOUT_MS },
+    origin,
+  );
+  await saveMods([...(await loadMods()), mod]);
+  return { mod, result };
+}
+
+async function listMods(params: { tabId?: number } | undefined): Promise<ModEntry[]> {
+  const mods = await loadMods();
+  if (params?.tabId === undefined) return mods;
+  const origins = new Set([...(tabFrames.get(params.tabId)?.values() ?? [])].map(originOf));
+  return mods.filter((mod) => origins.has(mod.origin));
+}
+
+async function removeMod(params: { modId: string }): Promise<ModEntry[]> {
+  const mods = await loadMods();
+  const kept = mods.filter((mod) => mod.id !== params.modId);
+  if (kept.length === mods.length) throw new BridgeError('BAD_PARAMS', `no mod with id "${params.modId}"`);
+  await saveMods(kept);
+  return kept;
+}
+
+/** Every mod of this frame's site, in the order they were added, each once per page. */
+async function runModsIn(tabId: number, frameId: number, url: string): Promise<void> {
+  const site = originOf(url);
+  if (!site) return;
+  for (const mod of (await loadMods()).filter((entry) => entry.origin === site)) {
+    const params = { code: mod.code, once: mod.id, mod: mod.name };
+    try {
+      const result = await sendToTab<{ skipped?: boolean }>(tabId, 'page.script.run', params, MOD_TIMEOUT_MS, frameId);
+      if (!result?.skipped) await reportAction(tabId, 'page.script.run', params, result, undefined, 'panel');
+    } catch (error) {
+      await reportAction(tabId, 'page.script.run', params, undefined, error, 'panel');
+    }
+  }
+}
 
 /**
  * Everything above is in memory, which an MV3 worker loses whenever Chrome suspends it — and a
@@ -563,6 +640,24 @@ async function handleBridgeRequest(method: string, params: unknown, origin: Call
       return traceArm(params as { tabId: number; address: string; type?: string; maxHits?: number; kind?: string });
     case 'ext.audit':
       return auditTail(params as { limit?: number } | undefined);
+    case 'ext.mods.add':
+      return addMod(params as { tabId: number; name?: string; code: string }, origin);
+    case 'ext.mods.list':
+      return listMods(params as { tabId?: number } | undefined);
+    case 'ext.mods.remove': {
+      const { modId } = params as { modId: string };
+      const removed = (await loadMods()).find((mod) => mod.id === modId);
+      const kept = await removeMod({ modId });
+      if (removed) {
+        send({
+          v: PROTOCOL_VERSION,
+          kind: 'evt',
+          event: Events.actionAudit,
+          data: { kind: 'script', tabId: -1, ok: true, summary: `mod "${removed.name}" removed from ${removed.origin}`, detail: { modId } },
+        });
+      }
+      return kept;
+    }
     default:
       throw new BridgeError('BAD_PARAMS', `unknown extension method "${method}"`);
   }
@@ -1035,8 +1130,14 @@ function describeAction(
         kind: 'script',
         tabId,
         ok,
-        summary: ok ? `ran a script (${String(r?.type)}, ${String(r?.ms)} ms)` : `script failed: ${failure}`,
-        detail: { code: p?.code },
+        summary: p?.mod
+          ? ok
+            ? `mod "${String(p.mod)}" applied (${String(r?.ms)} ms)`
+            : `mod "${String(p.mod)}" failed: ${failure}`
+          : ok
+            ? `ran a script (${String(r?.type)}, ${String(r?.ms)} ms)`
+            : `script failed: ${failure}`,
+        detail: { code: p?.code, ...(p?.mod ? { mod: p.mod, modId: p.once } : {}) },
       };
     case 'page.hook.add':
       return {
@@ -1370,6 +1471,7 @@ function onRelayReady(tabId: number, sender: chrome.runtime.MessageSender, annou
     // and the trace status reports that honestly.
     void sendToTab(tabId, 'page.trace.arm', pending.options, 5_000, frameId).catch(() => undefined);
   }
+  void runModsIn(tabId, frameId, url).catch(() => undefined);
   const kept = tabPatches.get(tabId);
   if (kept && kept.origin !== null && kept.origin === originOf(url)) {
     // Same race as the trace above: the module usually streams in well after the frame announces.

@@ -908,7 +908,7 @@ export class PageRuntime {
       case 'page.patch.clear':
         return this.patches.clear();
       case 'page.script.run':
-        return runScript((p as { code?: unknown }).code);
+        return runScript((p as { code?: unknown }).code, (p as { once?: unknown }).once);
       case 'page.patch.restore':
         return this.patches.adopt((p as { patches?: unknown }).patches);
       default:

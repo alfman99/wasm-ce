@@ -22,7 +22,7 @@ All of it stays in your browser or on your disk:
 
 | What | Where |
 | --- | --- |
-| The MCP pairing token, the bridge port, the panel's light or dark theme | the extension's own storage (`chrome.storage.local`) |
+| The MCP pairing token, the bridge port, the panel's light or dark theme, scripts you keep for a game (their code and the game's origin) | the extension's own storage (`chrome.storage.local`) |
 | Which tabs and frames have the agent, for the current browser session | `chrome.storage.session`, cleared when the browser closes |
 | Bookmarks you add | that site's `localStorage` |
 | Saved scans, armed watchpoints, function patches | that site's `sessionStorage`, gone when the tab closes |
