@@ -167,7 +167,13 @@ async function saveMods(mods: ModEntry[]): Promise<void> {
 /** Origin of the frame that holds the game in this tab, the one a mod belongs to. */
 async function gameOrigin(tabId: number): Promise<string> {
   const frameId = await resolveFrame(tabId);
-  const origin = originOf(tabFrames.get(tabId)?.get(frameId) ?? (frameId === 0 ? (await getTab(tabId)).url : undefined));
+  // Never the tab's own URL as a stand-in: until the game frame announces itself, that is the page
+  // around it (youtube.com for a Playable), and a mod kept for it would run on the whole site.
+  const url = tabFrames.get(tabId)?.get(frameId);
+  if (url === undefined) {
+    throw new BridgeError('NO_AGENT', `the agent is not in tab ${tabId} yet; reload the tab, then add the mod again`);
+  }
+  const origin = originOf(url);
   if (!origin) throw new BridgeError('BAD_PARAMS', `tab ${tabId} has no http(s) page to keep a mod for`);
   return origin;
 }

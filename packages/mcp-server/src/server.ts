@@ -1181,7 +1181,8 @@ export function createServer(bridge: Bridge): McpServer {
       description:
         'Runs code in the frame that holds the wasm (the game frame, even inside a cross-origin iframe), for what lives in ' +
         "the game's JavaScript rather than in its memory: a PlayCanvas or three.js scene, a Unity instance, a game's own " +
-        'debug switches. `code` is an expression whose value comes back (an IIFE pasted from a console works) or a ' +
+        'debug switches, a YouTube Playable\'s save (`await ytgame.game.loadData()`). `wasm()` gives the newest captured ' +
+        'instance as `{id, memory, exports}` for memory-only games. `code` is an expression whose value comes back (an IIFE pasted from a console works) or a ' +
         'function body that `return`s one; both may await. The value is returned JSON-safe and cut at 64 KB. Every run is ' +
         'audited with its code. A page whose CSP forbids eval answers HOOK_EVAL_BLOCKED. Find what to touch first, ' +
         'e.g. `Object.keys(window)` or `pc.app.root.children.map((e) => e.name)`.',
@@ -1212,7 +1213,9 @@ export function createServer(bridge: Bridge): McpServer {
         'does) and keeps it only if it works; `list` shows the mods of a tab, or all without tabId; `remove` stops it from ' +
         'running on the next load (what it already changed stays until then). A mod runs as soon as its frame starts, ' +
         'before the engine exists, so it should wait with the `until` helper every script gets: ' +
-        '`const app = await until(() => window.pc?.app);`. It runs once per page.',
+        '`const app = await until(() => window.pc?.app);` (the check may be async). For a memory-only game (Unity) it ' +
+        "reads `wasm().memory.buffer` and finds its values again by name on every load, since addresses move: see the " +
+        'agent guide. It runs once per page.',
       inputSchema: {
         tabId: TAB_ID,
         action: z.enum(['add', 'list', 'remove']),

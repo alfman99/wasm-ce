@@ -908,7 +908,10 @@ export class PageRuntime {
       case 'page.patch.clear':
         return this.patches.clear();
       case 'page.script.run':
-        return runScript((p as { code?: unknown }).code, (p as { once?: unknown }).once);
+        return runScript((p as { code?: unknown }).code, (p as { once?: unknown }).once, (id = 'latest') => {
+          const tracked = this.registry.get(this.resolveInstanceId(id));
+          return tracked ? { id: tracked.id, memory: tracked.memory, exports: tracked.instance.exports } : null;
+        });
       case 'page.patch.restore':
         return this.patches.adopt((p as { patches?: unknown }).patches);
       default:

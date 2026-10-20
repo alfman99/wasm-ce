@@ -522,7 +522,7 @@
           </div>
           <pre id="script-out" class="out out--mono"></pre>
           <p class="legend2">Kept for this game</p>
-          <p class="hint">A kept script is a mod: it runs on every load of this game, after reloads and restarts. It starts before the game does, so wait for what it needs with <code>await until(() =&gt; window.pc?.app)</code>.</p>
+          <p class="hint">A kept script is a mod: it runs on every load of this game, after reloads and restarts. It starts before the game does, so wait for what it needs with <code>await until(() =&gt; window.pc?.app)</code>. <code>wasm().memory</code> is the game's memory.</p>
           <ul id="mods" class="list list--hits"></ul>
         </fieldset>
 

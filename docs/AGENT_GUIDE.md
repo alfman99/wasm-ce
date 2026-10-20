@@ -179,6 +179,26 @@ Function patches (`wasmcheat_patch`) rewrite the body itself (`stub`, `empty`) a
 instrumented module is instantiated. They are the only way to change a function that nothing calls through
 an export.
 
+### 3.8 A mod that finds its values by name
+
+A value found by scanning sits at an address the next load moves. A mod (`wasmcheat_mod`) has to find it
+again by itself, and a name survives reloads where an address does not:
+
+- **A YouTube Playable saves through `ytgame.game.loadData()`**, whatever the engine. Read it first with
+  `wasmcheat_run_script`: the save usually names every value the game keeps (`kCoins`, `kTokens`,
+  `G_Current_Level` in Stealth Master), so you know what to look for and its value now.
+- **Unity (IL2CPP) keeps those values in a `Dictionary<string, int>`.** An entry is
+  `{hash, next, key, value}` and the key is a string object `{klass, monitor, length, UTF-16 chars}`.
+  Find the string with `wasmcheat_scan_text` (`bytes`: the length as a little-endian i32, then the
+  UTF-16 text), then the words that hold its address (a `u32` scan for it). The entry is the one whose
+  `next`, the word before, is a small index (−1 when last). Its value is the word after.
+- **A mod gets `wasm()`**, the newest captured instance as `{id, memory, exports}`, beside `until`.
+  It can do the same search on every load: `new Uint32Array(wasm().memory.buffer)`, taken again on every
+  use because the memory grows.
+
+A value that only lives while a level runs (a mission's coin counter) is a copy: the real one is
+written back at the end of the level. Write the saved one.
+
 ## 4. Symptom → tool
 
 | Symptom | Tool |
@@ -193,7 +213,7 @@ an export.
 | I want the game to lie about a value | `wasmcheat_hook` |
 | The function is not exported | `wasmcheat_patch` |
 | It lives in the game's JavaScript, not in wasm (PlayCanvas, three.js, a Unity instance) | `wasmcheat_run_script` |
-| The change should come back after every reload | `wasmcheat_mod` with `add`; start with `await until(() => window.pc?.app)` |
+| The change should come back after every reload | `wasmcheat_mod` with `add`; start with `await until(() => window.pc?.app)`, or find a memory value by name (3.8) |
 | The game runs too slowly to line up a scan | `wasmcheat_speed` (`scale: 0` freezes the clock) |
 | What did I just do? | `wasmcheat_audit` |
 

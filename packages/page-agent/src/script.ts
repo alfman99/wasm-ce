@@ -9,15 +9,15 @@ const ranOnce = new Set<string>();
 /**
  * Handed to every script as `until`: waits for `check()` to return something truthy and resolves to
  * it. A mod runs as soon as its frame starts, before the engine exists, so it begins with
- * `const app = await until(() => window.pc?.app)`. A check that throws counts as not yet.
+ * `const app = await until(() => window.pc?.app)`. A check may be async; one that throws counts as not yet.
  */
-export function until<T>(check: () => T, timeoutMs = 30_000, everyMs = 100): Promise<NonNullable<T>> {
+export function until<T>(check: () => T | Promise<T>, timeoutMs = 30_000, everyMs = 100): Promise<NonNullable<T>> {
   const started = Date.now();
   return new Promise((resolve, reject) => {
-    const tick = (): void => {
+    const tick = async (): Promise<void> => {
       let value: T | undefined;
       try {
-        value = check();
+        value = await check();
       } catch {
         value = undefined;
       }
@@ -25,9 +25,23 @@ export function until<T>(check: () => T, timeoutMs = 30_000, everyMs = 100): Pro
       else if (Date.now() - started >= timeoutMs) reject(new Error(`until: nothing after ${timeoutMs} ms`));
       else setTimeout(tick, everyMs);
     };
-    tick();
+    void tick();
   });
 }
+
+/** What `wasm()` hands a script: one captured instance, its memory and its exports. */
+export interface ScriptInstance {
+  id: string;
+  memory: WebAssembly.Memory | null;
+  exports: WebAssembly.Exports;
+}
+
+/**
+ * Handed to every script as `wasm`: `wasm()` is the newest captured instance, `wasm('w1')` one by
+ * id, so a mod for a game whose state is in linear memory (Unity, Godot) can read and write it.
+ * The memory grows, so take `memory.buffer` again on every use rather than keeping a view.
+ */
+export type ScriptWasm = (id?: string) => ScriptInstance | null;
 
 /**
  * Runs code in this frame, the one that holds the game, so a mod that has to reach the engine
@@ -35,7 +49,7 @@ export function until<T>(check: () => T, timeoutMs = 30_000, everyMs = 100): Pro
  * right frame by hand. The code is either an expression (an IIFE, `pc.version`) whose value comes
  * back, or a function body that returns one; either may await.
  */
-export async function runScript(code: unknown, once?: unknown): Promise<ScriptResult> {
+export async function runScript(code: unknown, once?: unknown, wasm: ScriptWasm = () => null): Promise<ScriptResult> {
   if (typeof code !== 'string' || !code.trim()) {
     throw new BridgeError('BAD_PARAMS', 'code must be a non-empty string');
   }
@@ -47,7 +61,7 @@ export async function runScript(code: unknown, once?: unknown): Promise<ScriptRe
   const started = performance.now();
   let value: unknown;
   try {
-    value = await run(until);
+    value = await run(until, wasm);
   } catch (error) {
     if (typeof once === 'string') ranOnce.delete(once);
     throw new BridgeError('BAD_PARAMS', `the script threw: ${describeError(error)}`);
@@ -55,7 +69,7 @@ export async function runScript(code: unknown, once?: unknown): Promise<ScriptRe
   return { ...serialise(value), ms: Math.round(performance.now() - started) };
 }
 
-type Compiled = (helper: typeof until) => Promise<unknown>;
+type Compiled = (helper: typeof until, wasm: ScriptWasm) => Promise<unknown>;
 
 function compile(code: string): Compiled {
   // An expression first, so pasted console code (an IIFE ending in `;`) returns its value; a
@@ -63,13 +77,13 @@ function compile(code: string): Compiled {
   const expression = code.trim().replace(/;+\s*$/, '');
   try {
     // eslint-disable-next-line no-new-func
-    return new Function('until', `return (async () => (\n${expression}\n))();`) as Compiled;
+    return new Function('until', 'wasm', `return (async () => (\n${expression}\n))();`) as Compiled;
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw blocked(error);
   }
   try {
     // eslint-disable-next-line no-new-func
-    return new Function('until', `return (async () => {\n${code}\n})();`) as Compiled;
+    return new Function('until', 'wasm', `return (async () => {\n${code}\n})();`) as Compiled;
   } catch (error) {
     if (error instanceof SyntaxError) throw new BridgeError('BAD_PARAMS', `the script does not parse: ${error.message}`);
     throw blocked(error);
