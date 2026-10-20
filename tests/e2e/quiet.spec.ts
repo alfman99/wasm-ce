@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { expect, test } from '@playwright/test';
 import { DEMO_URL, assertPortFree, launchBrowser, sleep, startDemoServer } from './harness.js';
+import { buildPatchModule } from '../helpers/wasm-builder.js';
 
 // Nothing listens here: the MCP server is optional, and its absence must not show up as errors.
 const DEAD_BRIDGE_PORT = 7397;
@@ -182,6 +183,43 @@ test('a game frame that instantiates late is found without a reload', async () =
     await expect(panel.locator('#agent')).toHaveText('1 wasm module', { timeout: 20_000 });
     await expect(panel.locator('#workbench')).toBeVisible();
     await expect(panel.locator('#scan-instance')).toHaveValue('w1');
+  } finally {
+    await browser.close();
+    host.close();
+  }
+});
+
+// YouTube Playables runs every game in a sandboxed iframe, which has no sessionStorage: the page agent
+// cannot write a patch down, so the extension carries it across the reload that installs it.
+test('a patch survives the reload that installs it in a sandboxed game frame', async () => {
+  await assertPortFree(DEAD_BRIDGE_PORT);
+  const wasm = JSON.stringify(Array.from(buildPatchModule()));
+  const host = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(
+      req.url?.startsWith('/game')
+        ? `<!doctype html><link rel="icon" href="data:," /><canvas></canvas><p id="score"></p><script>setTimeout(() => WebAssembly.instantiate(new Uint8Array(${wasm})).then((r) => { window.keep = r; setInterval(() => { document.getElementById('score').textContent = String(r.instance.exports.score()); }, 50); }), 1500);</script>`
+        : `<!doctype html><title>Playable host</title><link rel="icon" href="data:," /><iframe sandbox="allow-scripts" src="http://localhost:${PLAIN_PORT}/game"></iframe>`,
+    );
+  }).listen(PLAIN_PORT);
+  const browser = await launchBrowser();
+  try {
+    const worker = browser.context.serviceWorkers()[0] ?? (await browser.context.waitForEvent('serviceworker'));
+    await worker.evaluate((port) => chrome.storage.local.set({ wasmcheatPort: port }), DEAD_BRIDGE_PORT);
+    const page = await browser.context.newPage();
+    await page.goto(`http://127.0.0.1:${PLAIN_PORT}/`);
+    const score = () => page.frames().find((frame) => frame.url().includes('/game'))!.locator('#score');
+    await expect(score()).not.toHaveText('');
+    await expect(score()).not.toHaveText('4242');
+    const panel = await browser.context.newPage();
+    await panel.goto(`chrome-extension://${browser.extensionId}/panel.html`);
+    await expect(panel.locator('#scan-instance')).toHaveValue('w1', { timeout: 20_000 });
+    type Hooks = { __panel: { call: (method: string, params?: unknown) => Promise<unknown> } };
+    await panel.evaluate(() =>
+      (window as unknown as Hooks).__panel.call('page.patch.add', { target: 'score', mode: 'stub', value: 4242 }),
+    );
+    await page.reload();
+    await expect(score()).toHaveText('4242', { timeout: 20_000 });
   } finally {
     await browser.close();
     host.close();

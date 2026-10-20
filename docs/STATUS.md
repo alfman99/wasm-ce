@@ -93,6 +93,12 @@ Last verified from a clean tree on 2026-10-20 (`rm -rf packages/*/dist`, `npm ci
   `localStorage`, so saving or opening a saved scan, adding a bookmark, and `find_writes` /
   `find_reads` on a worker instance return `UNSUPPORTED` with a sentence saying why, instead of
   failing silently. Scan, read, write, freeze, watch and the speed hack work in workers.
+- **A sandboxed frame has no `sessionStorage`** (YouTube Playables runs every game in one), so saved
+  scans there return `UNSUPPORTED`. Patches and watchpoints still survive the reload: the extension
+  keeps a copy per tab and hands it back to the new frame.
+- **A freeze loses to a value the app writes every frame.** It rewrites every 16 ms; PlayCanvas, for
+  one, pushes its gravity into Bullet before each physics step, so a frozen gravity is overwritten
+  before it is read. Find the writer with `find_writes` and switch it off with a patch instead.
 - **Shared memories are refused by the rewriter**, so watchpoints and patches do not reach an
   Emscripten `-pthread` build. Typed function references (`ref null $t` locals, GC types) are refused
   with `UNSUPPORTED` rather than rewritten.
