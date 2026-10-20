@@ -71,9 +71,10 @@ Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`
 
 ## Environment limits (not gaps in the tool)
 
-1. **SharedArrayBuffer / `pthread` workers** — reaching a worker realm needs `postMessage`, which a
-   page only gets with cross-origin isolation. Single-realm atomics loads/stores are probed; a page
-   that shares memory between threads is not exercised by the suite.
+1. **SharedArrayBuffer / `pthread` threads** — worker realms themselves are reached with
+   `postMessage`, which every page has. What is untested is a page that shares one memory between
+   threads: `SharedArrayBuffer` requires cross-origin isolation (COOP/COEP) and a pthread build, and
+   neither the demo nor the suite exercises it. Single-realm atomics loads/stores are probed.
 2. **Speed hack scope** — `performance.now`, `Date.now` and `requestAnimationFrame` are wrapped in the
    page realm *and* in every worker realm (the scale is forwarded down the chain), so a worker game
    speeds up too. A game that measures time with `performance.timeOrigin` arithmetic, or with a
