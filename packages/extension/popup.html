@@ -7,13 +7,15 @@
   </head>
   <body>
     <div class="shell">
-      <header>
+      <div class="titlebar">
         <h1>WasmCheat</h1>
+        <span class="spacer"></span>
         <span id="bridge" class="pill pill--idle">bridge offline</span>
-      </header>
+        <span class="close" aria-hidden="true">×</span>
+      </div>
       <p class="lede">
-        Approve a tab before an agent can read or change its WebAssembly memory. Every write and hook script lands in the
-        audit log.
+        Approve a tab before an agent can read or change its WebAssembly memory. Every write and hook
+        script lands in the audit log.
       </p>
       <ul id="tabs" class="tabs"></ul>
       <section class="token">

@@ -48,7 +48,8 @@ body {
   flex-direction: column;
   gap: 4px;
   min-height: 100vh;
-  padding: 3px 4px 0;
+  /* Room for the sticky status bar, so the last group is not hidden underneath it. */
+  padding: 3px 4px 28px;
 }
 
 /* ---------------------------------------------------------------- title + process bar */
