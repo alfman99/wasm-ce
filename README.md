@@ -2,12 +2,15 @@
 
 [![CI](https://github.com/alfman99/wasm-ce/actions/workflows/ci.yml/badge.svg)](https://github.com/alfman99/wasm-ce/actions/workflows/ci.yml)
 
-Change any web app or browser game from your AI agent. WasmCheat is a browser extension and an MCP
-server: your agent looks at what the page is built with, changes it while it runs, and keeps the change
-as a mod that comes back every time the page loads. A DevTools panel does the same by hand.
+**Ask your AI agent to change any web app or browser game, and keep the change as a mod that comes
+back on every load.**
 
-![The WasmCheat panel: the found list with live values beside the scan controls, and an editor open
-on the address that holds the score](docs/img/panel.png)
+![An agent connected to WasmCheat finds the score in the demo game's WebAssembly memory, sets it to
+1000000, keeps that as a mod, and the score is 1000000 again after a reload](docs/img/agent-demo.gif)
+
+WasmCheat is a browser extension and an MCP server. Your agent (Claude Code, Codex, Cursor or any MCP
+client) looks at what the page is built with, changes it while it runs, and keeps the change. The
+recording above is a real session against the bundled demo game. A DevTools panel does the same by hand.
 
 What an agent has done with it, each in one conversation:
 
@@ -21,7 +24,12 @@ What an agent has done with it, each in one conversation:
 It reaches what a page keeps in JavaScript (any engine or framework: PlayCanvas, three.js, Phaser,
 React) and what a compiled game keeps in WebAssembly memory (Unity, Godot, Emscripten, Rust), including
 games inside cross-origin iframes such as YouTube Playables and itch.io embeds. Every change is logged,
-and nothing leaves your machine: see [PRIVACY.md](PRIVACY.md). Read the [Policy](#policy) before you use it.
+and WasmCheat sends nothing off your machine: see [PRIVACY.md](PRIVACY.md). Read the [Policy](#policy)
+before you use it.
+
+![Your AI agent talks MCP over stdio to the WasmCheat server on your machine, the server talks to the
+browser extension over a WebSocket on 127.0.0.1, and the extension reaches the page's JavaScript and
+WebAssembly memory in any frame](docs/img/how-it-works.svg)
 
 ## Install
 
@@ -107,6 +115,9 @@ Agents that read [Agent Skills](https://agentskills.io) can also load the method
 
 ## Or do it by hand
 
+![The WasmCheat panel: the found list with live values beside the scan controls, and an editor open
+on the address that holds the score](docs/img/panel.png)
+
 1. Open the game and let it start.
 2. Open DevTools (<kbd>F12</kbd>, or <kbd>⌥</kbd><kbd>⌘</kbd><kbd>I</kbd> on a Mac) and choose the
    **WasmCheat** tab. If you do not see it, look under <kbd>»</kbd>.
@@ -133,6 +144,7 @@ through it on the bundled demo game (`npm run demo`).
 | know what it stores and sends | [PRIVACY.md](PRIVACY.md) |
 | report a vulnerability | [SECURITY.md](SECURITY.md) |
 | build, test and send a change | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| write about it or announce it | [docs/press](docs/press/README.md) |
 
 ## Policy
 

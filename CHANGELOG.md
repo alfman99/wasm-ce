@@ -1,7 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
+Your AI agent can now change any web app or browser game, not only its WebAssembly memory, and keep
+the change as a mod that comes back on every load. Connect it once (README, "Connect your agent") and
+ask in plain words; the server teaches it the method.
+
+- The README opens with a recording of a real agent session against the demo game and a diagram of
+  what talks to what. `docs/press` has a short description, facts, images and launch drafts, and the
+  test suite rebuilds the recording and the social card (`tests/e2e/promo.spec.ts`).
 - An agent needs nothing but the MCP server to learn the method: the server sends a short version as
   its instructions on connect, and the new `wasmcheat_guide` tool returns the mod-any-webapp skill,
   its routes per engine, a probe script for any page, IL2CPP reflection for Unity games, a mod template

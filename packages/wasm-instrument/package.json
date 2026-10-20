@@ -1,6 +1,6 @@
 {
   "name": "@wasmcheat/wasm-instrument",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Rewrites a WebAssembly module binary so memory writes to a watched address can be reported with the function that made them.",
@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@wasmcheat/protocol": "0.1.0"
+    "@wasmcheat/protocol": "0.2.0"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

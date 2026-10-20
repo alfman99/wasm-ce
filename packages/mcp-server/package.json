@@ -1,6 +1,6 @@
 {
   "name": "@wasmcheat/mcp-server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "The MCP server that lets an AI agent drive the WasmCheat extension over a local WebSocket bridge.",
   "type": "module",
@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.0",
-    "@wasmcheat/protocol": "0.1.0",
+    "@wasmcheat/protocol": "0.2.0",
     "ws": "^8.18.0",
     "zod": "^3.23.8"
   },

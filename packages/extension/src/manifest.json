@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WasmCheat",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Change any web app or browser game from an AI agent or a DevTools panel: run JavaScript, edit WebAssembly memory, keep it as a mod.",
   "minimum_chrome_version": "116",
   "permissions": ["scripting", "tabs", "storage", "alarms"],

@@ -113,7 +113,7 @@ const TAB_ID = z
   .describe('Tab id from wasmcheat_list_tabs. Omit for the tab in front.');
 
 export function createServer(bridge: Bridge): McpServer {
-  const server = new McpServer({ name: 'wasmcheat', version: '0.1.0' }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: 'wasmcheat', version: '0.2.0' }, { instructions: INSTRUCTIONS });
 
   // Mirror every appended audit line to the extension so the DevTools panel can show it: a
   // browser cannot read $WASMCHEAT_HOME/audit.jsonl, and this keeps `record` the one producer.

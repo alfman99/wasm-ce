@@ -33,7 +33,8 @@ the real extension, so a change to the panel, the service worker or the page age
   function every caller goes through, not just the path in the report.
 - **Docs move with the code.** If a label, a pill or a flow changes, update `docs/PANEL.md`,
   `docs/QUICKSTART.md` and the README in the same pull request, and regenerate the screenshots:
-  `WASMCHEAT_SHOTS=1 npx playwright test tests/e2e/screenshots.spec.ts`.
+  `WASMCHEAT_SHOTS=1 npx playwright test tests/e2e/screenshots.spec.ts`. The README's recording and
+  the social card come from `tests/e2e/promo.spec.ts` the same way (it needs `ffmpeg`).
 - **UI and copy follow `docs/DESIGN.md`**: one accent, sentence case, buttons that say what they do,
   error messages that name the fix, and no em dashes.
 - **No new runtime dependencies** without a reason in the pull request. The extension ships none.
