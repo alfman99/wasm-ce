@@ -1,3 +1,4 @@
+import { mkdir } from 'node:fs/promises';
 import { test } from '@playwright/test';
 import {
   BRIDGE_PORT,
@@ -32,6 +33,7 @@ test('screenshots', async () => {
     for (let i = 0; i < 6; i += 1) await page.click('#mine');
     await sleep(400);
     await page.screenshot({ path: 'docs/img/demo.png' });
+    await mkdir('docs/store', { recursive: true });
 
     const tabs = await call<{ tabId: number; url: string }[]>(mcp, 'wasmcheat_list_tabs');
     const tabId = tabs.data.find((tab) => tab.url.startsWith(DEMO_URL))?.tabId;
@@ -67,9 +69,19 @@ test('screenshots', async () => {
       await panel.setViewportSize({ width: 1180, height: 900 });
     }
 
+    // The Chrome Web Store takes 1280x800 screenshots; docs/STORE_LISTING.md names these files.
+    await panel.setViewportSize({ width: 1280, height: 800 });
+    await panel.waitForTimeout(300);
+    await panel.screenshot({ path: 'docs/store/1-change-a-value.png' });
+    await panel.setViewportSize({ width: 1180, height: 900 });
+
     await panel.click('#theme-toggle');
     await panel.waitForTimeout(300);
     await panel.screenshot({ path: 'docs/img/panel-dark.png', fullPage: false });
+    await panel.setViewportSize({ width: 1280, height: 800 });
+    await panel.waitForTimeout(300);
+    await panel.screenshot({ path: 'docs/store/2-dark-theme.png' });
+    await panel.setViewportSize({ width: 1180, height: 900 });
     await panel.click('#help-open');
     await panel.waitForTimeout(300);
     await panel.screenshot({ path: 'docs/img/help.png', fullPage: false });
