@@ -243,6 +243,8 @@ console. The panel shares one dispatcher with the WebSocket (`wasmcheat.panel.ca
 
 ## The approval and audit model
 
+![The popup: one row per tab, a pending row flagged, Approve and Reload & attach](docs/img/popup.png)
+
 - Every tab is denied until you approve it. An agent calls `wasmcheat_attach`, which reports the request
   in the extension popup with the agent's one-line reason and then waits on the **approval event**, not on
   a timer: the call returns the moment you click Approve. The same event-based rule applies to
