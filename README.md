@@ -244,11 +244,13 @@ address, then the advanced tooling and the raw console. The header keeps the thr
 screen — target, approval, agent — and the `Now` line reads tab → instance → address, so a write is
 never aimed at something you have forgotten about.
 
-- Every tool is a form: tabs and approval, instances and `diagnose`, typed reads and writes, a hex
-  **memory viewer** (16 bytes per row, Earlier/Later, **Follow pointer**, and any address you click
-  jumps the dump to it), workers, pointer scan and resolve, speed hack, freeze, watch, all thirteen
-  scan modes plus text scan, saved lists, bookmarks, watchpoints, patches, hooks, the live audit view,
-  and a raw RPC console.
+- The first screen is the loop — tab, instances, scan, hits, one address — and the scan card hides the
+  fields the chosen mode does not use. A steps strip marks where you are, and <kbd>Enter</kbd> in a
+  value field runs whichever scan is next.
+- Every tool is a form: freeze, watch, bookmarks, a hex **memory viewer** (16 bytes per row,
+  Earlier/Later, **Follow pointer**, and any address you click jumps the dump to it), and under
+  **Advanced** the rest — workers, pointer scan and resolve, speed hack, saved lists, watchpoints,
+  patches, hooks, the live audit view and a raw RPC console.
 - <kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>K</kbd> opens a palette over every card, filtered as you type.
   `?` opens the built-in help, `T` switches light and dark.
 - Empty lists name the cause and the next action instead of saying "no data", and a refused call shows
