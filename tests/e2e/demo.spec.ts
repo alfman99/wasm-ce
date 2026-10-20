@@ -434,6 +434,26 @@ test('every mutation is in the audit log, whoever made it', async () => {
   expect(hookLines.some((entry) => entry.summary.includes('enabled'))).toBe(true);
 });
 
+test('a script runs in the game frame, returns its value and is audited with its code', async () => {
+  // What a mod needs and memory tools cannot give: the game's own JavaScript, with no console.
+  const code = "(() => { window.__e2eMod = (window.__e2eMod ?? 0) + 1; return { title: document.title, mods: window.__e2eMod }; })();";
+  const ran = await call<{ value: { title: string; mods: number }; type: string; ms: number }>(mcp, 'wasmcheat_run_script', { tabId, code });
+  expect(ran.isError, ran.text).toBe(false);
+  expect(ran.data.type).toBe('object');
+  expect(ran.data.value.mods).toBe(1);
+  expect(ran.data.value.title).toBe(await game.title());
+  expect(await game.evaluate(() => (window as unknown as { __e2eMod: number }).__e2eMod)).toBe(1);
+
+  const thrown = await call(mcp, 'wasmcheat_run_script', { tabId, code: 'missingThing.value' });
+  expect(thrown.isError).toBe(true);
+  expect(thrown.text).toContain('ReferenceError');
+
+  const entries = await call<{ kind: string; ok: boolean; detail?: { code?: string } }[]>(mcp, 'wasmcheat_audit', { limit: 50 });
+  const scripts = entries.data.filter((entry) => entry.kind === 'script');
+  expect(scripts.some((entry) => entry.ok && entry.detail?.code === code), entries.text).toBe(true);
+  expect(scripts.some((entry) => !entry.ok && entry.detail?.code === 'missingThing.value'), entries.text).toBe(true);
+});
+
 test('a write watchpoint names the function that changed the score', async () => {
   // find_writes arms the watchpoint and reloads, so the module is instrumented as it loads.
   const watching = call<{

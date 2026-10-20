@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A Script card in the panel and a `wasmcheat_run_script` tool run JavaScript in the game's frame
+  and return its value, for what a game keeps in JavaScript rather than in memory, such as a
+  PlayCanvas scene. It finds the frame by itself, even a cross-origin iframe, so code pasted from
+  the DevTools console runs with no context to pick. Every run is logged with its code.
 - A page with several WebAssembly modules (a Godot threaded build, for one) is ready to scan as soon
   as the panel opens: it picks the module with the most memory, so there is no instance to choose.
 - A function patch survives the reload that installs it inside a sandboxed iframe, which is where

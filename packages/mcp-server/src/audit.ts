@@ -23,7 +23,9 @@ export type AuditKind =
   /** A tab reloaded on purpose, so the next instantiation picks up hooks or patches. */
   | 'reload'
   /** Named addresses added, removed or cleared. */
-  | 'bookmark';
+  | 'bookmark'
+  /** Code run in the game frame, from the panel or an agent; the code is in the detail. */
+  | 'script';
 
 /** Every kind once, so a line from the extension can be checked; a missing kind fails to compile. */
 const AUDIT_KINDS: Record<AuditKind, true> = {
@@ -40,6 +42,7 @@ const AUDIT_KINDS: Record<AuditKind, true> = {
   watch: true,
   reload: true,
   bookmark: true,
+  script: true,
 };
 
 export function isAuditKind(value: unknown): value is AuditKind {

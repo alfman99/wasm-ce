@@ -852,6 +852,7 @@ type ActionKind =
   | 'bookmark'
   | 'speed'
   | 'trace'
+  | 'script'
   | 'detach';
 
 interface ActionLine {
@@ -1028,6 +1029,15 @@ function describeAction(
       return { kind: 'trace', tabId, ok, summary: ok ? 'trace stopped' : `trace stop failed: ${failure}` };
     case 'page.trace.clear':
       return { kind: 'trace', tabId, ok, summary: ok ? 'trace hits cleared' : `trace clear failed: ${failure}` };
+    case 'page.script.run':
+      // The code is the record: what ran in the page, whoever sent it.
+      return {
+        kind: 'script',
+        tabId,
+        ok,
+        summary: ok ? `ran a script (${String(r?.type)}, ${String(r?.ms)} ms)` : `script failed: ${failure}`,
+        detail: { code: p?.code },
+      };
     case 'page.hook.add':
       return {
         kind: 'hook',

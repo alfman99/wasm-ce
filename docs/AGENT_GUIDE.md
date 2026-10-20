@@ -192,6 +192,7 @@ an export.
 | This address moves every level | `wasmcheat_pointer_scan` + `wasmcheat_pointer_resolve` |
 | I want the game to lie about a value | `wasmcheat_hook` |
 | The function is not exported | `wasmcheat_patch` |
+| It lives in the game's JavaScript, not in wasm (PlayCanvas, three.js, a Unity instance) | `wasmcheat_run_script` |
 | The game runs too slowly to line up a scan | `wasmcheat_speed` (`scale: 0` freezes the clock) |
 | What did I just do? | `wasmcheat_audit` |
 

@@ -535,6 +535,17 @@ export interface WriteTraceStatus {
  * module never exposes as an import or export (damage, a timer, an anti-cheat check). Callers keep
  * calling it; it just stops doing anything.
  */
+/** What `page.script.run` hands back: the script's value, made JSON-safe. */
+export interface ScriptResult {
+  /** The value, or its string form when it does not survive JSON (a function, a DOM node). */
+  value: unknown;
+  /** `typeof` the value, with `null` and `array` told apart. */
+  type: string;
+  /** Set when the value was cut to keep the reply small. */
+  truncated?: boolean;
+  ms: number;
+}
+
 export interface PatchSpec {
   /** Export name of the function, or `wasm-function[12]` for a function the module does not export. */
   target: string;
@@ -748,6 +759,7 @@ export const Methods = {
   pagePatchRemove: 'page.patch.remove',
   pagePatchClear: 'page.patch.clear',
   pagePatchRestore: 'page.patch.restore',
+  pageScriptRun: 'page.script.run',
 } as const;
 
 /** Events the service worker pushes to the MCP server. */

@@ -66,9 +66,9 @@ store requires.
 | `storage` | Keeps the panel's theme and the pairing token for the optional local MCP server. |
 | `alarms` | Wakes the service worker every 30 seconds to reconnect to the optional local MCP server. |
 
-**Remote code:** No. All JavaScript ships in the package. The Hooks tool lets a user type a function
-body that runs in the page they are inspecting; it is code the user writes, not code fetched from
-anywhere.
+**Remote code:** No. All JavaScript ships in the package. The Hooks and Script tools run code the
+user types in the panel, or that their own local agent sends, in the page they are inspecting; it is
+not fetched from anywhere, and every run is written to the audit log.
 
 **Data usage:** the extension collects none of the listed data types. Certify all three
 disclosures (no sale, no unrelated use, no creditworthiness use).
@@ -83,5 +83,5 @@ repository is public).
   README says too. If it is rejected on this ground, a rename is the usual way through.
 - **Broad host access** triggers an in-depth review and a slower first approval. It cannot be
   narrowed without breaking the main use: games load from any domain.
-- **The Hooks tool** runs user-typed code with `new Function` in the page. Policy forbids remote
+- **The Hooks and Script tools** run user-typed code with `new Function` in the page. Policy forbids remote
   code, not code the user types, but say so in the reviewer notes if asked.
