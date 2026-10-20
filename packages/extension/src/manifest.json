@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Find a number in a WebAssembly game and change it, from a DevTools panel or an MCP agent. Every change is logged.",
   "minimum_chrome_version": "116",
-  "permissions": ["scripting", "tabs", "storage", "activeTab", "alarms"],
+  "permissions": ["scripting", "tabs", "storage", "alarms"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "web_accessible_resources": [
     {

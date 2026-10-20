@@ -1333,7 +1333,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
 });
 
 chrome.runtime.onStartup.addListener(() => connect());
-chrome.runtime.onInstalled.addListener(() => connect());
+chrome.runtime.onInstalled.addListener((details) => {
+  connect();
+  // Someone who just pressed Load unpacked has no idea where the panel is; say it once, in the
+  // background so the tab they were on keeps focus. Updates and reloads stay quiet.
+  if (details.reason === 'install') void chrome.tabs.create({ url: 'welcome.html', active: false });
+});
 
 // Keep trying to reach the local bridge for as long as the worker is alive. The alarm (30s is
 // Chrome's minimum period) wakes a suspended worker and redials, so the bridge comes back on its own.

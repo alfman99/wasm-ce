@@ -63,7 +63,9 @@ git tag v0.2.0 && git push origin v0.2.0
 ```
 
 The release workflow builds, runs the tests, and attaches `wasmcheat-extension-v0.2.0.zip` to a
-GitHub release. `npm run package` builds the same zip locally.
+GitHub release. `npm run package` builds the same zip locally, plus `wasmcheat-store-v0.2.0.zip`
+for the Chrome Web Store; [docs/STORE_LISTING.md](docs/STORE_LISTING.md) has the listing text,
+the screenshots and the permission justifications.
 
 ## Ground rules
 
