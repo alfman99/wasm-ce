@@ -1,5 +1,7 @@
 # WasmCheat
 
+[![CI](https://github.com/alfman99/wasm-ce/actions/workflows/ci.yml/badge.svg)](https://github.com/alfman99/wasm-ce/actions/workflows/ci.yml)
+
 Find a number in a browser game and change it. WasmCheat is a memory scanner for WebAssembly, the
 way Cheat Engine is for desktop games, except it lives in your browser: a DevTools panel, no
 download besides the extension, nothing native, no debugger.
