@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- A page with several WebAssembly modules (a Godot threaded build, for one) is ready to scan as soon
+  as the panel opens: it picks the module with the most memory, so there is no instance to choose.
+
 ## 0.1.0
 
 First public release.
