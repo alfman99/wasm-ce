@@ -52,11 +52,12 @@ what makes it a target rather than a toy. Click **Mine** a few times and leave t
 Open DevTools on the Foundry tab (`⌥⌘I` / `Ctrl+Shift+I`) and choose the **WasmCheat** tab in the
 DevTools toolbar. If the panel is not listed, reload the extension and reopen DevTools.
 
-1. The panel already targets this tab, and every tool defaults to it, so there is nothing to pick.
-2. Click **Attach**. There is no approval step: the panel is bound to the tab you opened it on.
-   Attach fills **Instances** for you; if the list is empty it prints
-   **Diagnose** (frames, `WebAssembly.instantiate` calls seen, whether the page blocks `new Function`)
-   so you do not have to guess which button explains it.
+1. The panel already targets this tab, so there is nothing to pick. If the page agent is there (it
+   is, whenever the extension was loaded before the page), the panel finds the wasm by itself: the
+   **Instance** field in Scan shows `w1` and the steps strip is on **2 Scan for a value**.
+2. If **Attach** is highlighted instead, press it. It starts the agent, reloading the tab once when
+   the page loaded before the extension, and when it still finds no wasm it prints **Diagnose**
+   (frames, `WebAssembly.instantiate` calls seen, whether the page blocks `new Function`).
 3. If the game only starts when you click something, start it and press **Reload & attach**: the page
    agent has to exist before the game instantiates its module.
 
@@ -68,16 +69,17 @@ DevTools toolbar. If the panel is not listed, reload the extension and reopen De
 3. Click **Mine**. Score is now `100`.
 4. Type `100` into Value and press **Next Scan**. The list shrinks to the addresses that held `75`
    and now hold `100`. Press it again with a new value if you want a single hit.
-5. Click the address. Every form now holds `w1:0x408` and the memory viewer is looking at it.
+5. Click the address. An editor opens under the list with the current value in it.
 
 ## 7. Change it
 
-- **Write 123456** in **Reads / writes**. Switch to the game tab: the score reads `123456`, with no
-  reload.
-- **Freeze** the same address at `999`, then click **Hazard**. Lives stay at `999`: a page-side
-  timer rewrites the value every 16 ms.
-- Read the address back (**Read one**) before believing anything. The page may round, reformat or
-  cache what it prints.
+- Type `123456` in **New value** and press **Write** (or Enter). The editor prints `100 -> 123456`.
+  Switch to the game tab: the score reads `123456`, with no reload.
+- To hold a value, find **Lives** the same way, type `999` and press **Freeze**, then click
+  **Hazard**. Lives stay at `999`: the page rewrites the value every 16 ms. The button now says
+  **Unfreeze**.
+- Trust the `before -> after` line over the screen. A game redraws a number when it changes it, so
+  the display can lag behind memory.
 
 ## 8. Next
 
@@ -96,6 +98,6 @@ DevTools toolbar. If the panel is not listed, reload the extension and reopen De
 | `NO_AGENT` | The page agent is not in the page (loaded after it, or the tab was replaced) | **Detach**, then **Attach**; use **Reload & attach** if it still fails |
 | Instances empty, Diagnose says `calls.*` are all `0` | The app instantiated its module before the agent existed | **Reload & attach** |
 | Instances empty, Diagnose lists a cross-origin frame | The game is in an iframe | Attach with the frame the panel reports, or let the extension pick it |
-| Instances empty, Diagnose lists `.wasm` URLs, no frames | The wasm runs in a worker | Check the **Workers** card |
+| Instances empty, Diagnose lists `.wasm` URLs, no frames | The wasm runs in a worker | Open **More tools** and check **Workers** |
 | Scan finds 0 hits | Wrong width or wrong type | Try `i64` and `f64` before deciding the address is wrong |
 | Hook calls fail with `HOOK_EVAL_BLOCKED` | The page's CSP forbids `new Function` | Use the declarative fallback (`passthrough`, `replace-return`, `offset-result`) |

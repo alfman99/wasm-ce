@@ -3,7 +3,7 @@
  * help sheet.
  *
  * None of this talks to the bridge. It only moves focus, remembers a theme choice, and describes
- * state the panel already renders, so it cannot become a way around the approval gate.
+ * state the panel already renders, so it never changes the page.
  */
 
 const THEME_KEY = 'panelTheme';
@@ -38,6 +38,9 @@ function firstControl(id: string): HTMLElement | null {
 function jumpTo(id: string): void {
   const group = document.getElementById(id);
   if (!group) return;
+  // A card inside the closed More tools tray has no box to scroll to until the tray opens.
+  const tray = group.closest('details');
+  if (tray && !tray.open) tray.open = true;
   group.scrollIntoView({ block: 'start', behavior: 'smooth' });
   // :target styles the card while the hash points at it, which is the highlight; no flash class.
   if (id !== '') window.location.hash = `#${id}`;

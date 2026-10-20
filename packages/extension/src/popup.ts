@@ -83,7 +83,7 @@ async function refresh(): Promise<void> {
     ? 'Page agent running. Open DevTools → WasmCheat to scan.'
     : 'Nothing attached yet. Open DevTools → WasmCheat on this tab and press Attach.';
   hint.textContent =
-    'The panel is the whole tool: scan for a value you can see, narrow the list, then write, freeze or patch it. It targets the tab you open it on, so there is nothing to pick.';
+    'Scan for a number you can see, narrow the list, then write or freeze it. The panel works on the tab you open it on.';
   note.textContent = `tab ${tab.tabId}`;
 }
 

@@ -12,8 +12,9 @@ come from. Read this before changing any of the three surfaces.
 | Demo (Foundry) | Be a plausible target: state in linear memory, a number on screen you can watch move. |
 
 The panel is not a dashboard. It has no stat row, no activity feed and no invented numbers. Its
-layout is one readable column in the order you work: what you are attached to → the scan → the hits
-→ what you can do to one address → advanced tooling → the raw escape hatch.
+layout follows the order you work: what you are attached to → the scan beside the hits → an editor
+under the hit you clicked (Write, Freeze) → what you keep (freezes, watches, bookmarks) → More tools →
+the raw escape hatch. The editor is tinted with the accent because it is where the answer is.
 
 ## The three ideas that carry the identity
 

@@ -178,12 +178,6 @@ a {
   gap: 6px;
 }
 
-.versions {
-  color: var(--ink-3);
-  font-family: var(--mono);
-  font-size: 11px;
-}
-
 /* ------------------------------------------------------------------ target */
 
 .targetbar {
@@ -359,6 +353,40 @@ a {
   .top {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* The kept things (freeze, watch, bookmarks) and the tray's cards sit side by side when there is room. */
+.cheat,
+.tools {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+/* The change-it editor: the one place a value is written from in the normal loop, so it carries the
+   card's only primary button once an address is picked. */
+.pick {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: 8px;
+  background: var(--accent-soft);
+}
+
+.pick__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.pick__head code {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .top__right {
@@ -771,7 +799,7 @@ button:disabled {
 }
 
 .list--found {
-  min-height: 150px;
+  min-height: 80px;
   max-height: 340px;
 }
 

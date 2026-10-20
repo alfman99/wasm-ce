@@ -25,16 +25,19 @@ tab picker, because the tab you are inspecting is the tab you mean.
 The three chips under the header are the workflow: **1 Attach to this tab**, **2 Scan for a value**,
 **3 Change it**. Each jumps to the card that does that job.
 
-**Attach** is the whole setup: it installs the page agent (reloading the tab once if the page
-started before the extension), fills the Instances table, and quotes **Diagnose** when the table is
-empty, so the next step is in front of you instead of in a doc. There is nothing to approve.
+On most pages there is nothing to set up: the page agent was injected when the page loaded, so the
+panel lists the wasm on its own, fills the Scan card's Instance field and puts the strip on step 2.
+**Attach** is highlighted only when there is no wasm to scan yet. It installs the page agent
+(reloading the tab once if the page started before the extension) and quotes **Diagnose** when it
+still finds nothing. There is nothing to approve.
 
 ## Cards
 
-The first screen is the loop: Instances, Scan, Text scan, Found, Reads / writes, Freeze,
-Watch, Bookmarks and Memory View. Everything else (Watchpoints, Patches, Hooks, Pointers, Speed
-hack, Workers, Saved scans, Audit and the raw console) is one click away under **Advanced**, which
-is collapsed until you need it.
+The first screen is the loop: Found and Scan side by side, Text scan, then the things you keep
+(Freeze, Watch, Bookmarks). Everything else (Memory view, Read and write, Instances, Watchpoints,
+Patches, Hooks, Pointers, Speed hack, Workers, Saved scans, Audit and the raw console) is one click
+away under **More tools**, which is collapsed until you need it. The palette opens it for you when
+you jump to one of its cards.
 
 Every card is a set of forms over one page method; the MCP column names the tool that does the same
 thing, so a human and an agent are never using different mechanisms.
@@ -46,11 +49,11 @@ thing, so a human and an agent are never using different mechanisms.
 | **Diagnose** | Why the instance list is empty: `WebAssembly.*` call counts, iframes (cross-origin flagged), canvases, `.wasm` URLs in the HTML, `evalAllowed`. | `wasmcheat_diagnose` |
 | **Scan** | Value, type, mode, the instance, plus a **More options** fold holding the byte range, alignment and result limit (the defaults are right until a scan is too slow or too broad). The upper bound appears only for `between`, and the value is labelled optional for the delta modes. **First Scan** starts a list; **Next Scan** narrows it, the filled button is always the next step, and <kbd>Enter</kbd> in a value field runs it. | `wasmcheat_scan`, `wasmcheat_scan_results`, `wasmcheat_scan_drop` |
 | **Text scan** | ASCII, UTF-8 or a hex byte pattern, case-sensitive or not. | `wasmcheat_scan_text` |
-| **Found** | The current candidate list. Click an address to fill every form and jump the viewer. | `wasmcheat_scan_results` |
-| **Reads / writes** | One value, N values, or raw hex bytes; **Write** is audited with old and new value. | `wasmcheat_read`, `wasmcheat_write` |
+| **Found** | The current candidate list. Click an address and an editor opens under it with the current value: **Write** (or <kbd>Enter</kbd>) changes it and prints `before -> after`; **Freeze** holds it at the typed value and turns into **Unfreeze**. The click also fills every other form and jumps the memory view. | `wasmcheat_scan_results`, `wasmcheat_write`, `wasmcheat_freeze` |
+| **Read and write** | One value, N values, or raw hex bytes; **Write** is audited with old and new value. | `wasmcheat_read`, `wasmcheat_write` |
 | **Freeze** | Holds an address at a value with a 16 ms page-side timer. List and clear. | `wasmcheat_freeze` |
 | **Watch** | Records changes to an address; **Poll** drains the buffer (200 events per watch). | `wasmcheat_watch` |
-| **Memory View** | Hex dump, 16 bytes per row. **Follow pointer** reads a u32 at the address and jumps there. | `wasmcheat_read` with `length` |
+| **Memory view** | Hex dump, 16 bytes per row. **Follow pointer** reads a u32 at the address and jumps there. | `wasmcheat_read` with `length` |
 | **Watchpoints** | Which function wrote or read an address. Rewrites the module and reloads the tab, because a store cannot be observed after compilation. | `wasmcheat_find_writes`, `wasmcheat_find_reads`, `wasmcheat_trace` |
 | **Patches** | Replace a function body (`stub` returns immediately, `empty` writes no instructions). | `wasmcheat_patch` |
 | **Hooks** | JavaScript wrapper around an export or import: inspect `args`, rewrite them with `ctx.call`, replace the result. Imports apply at the next instantiation. | `wasmcheat_hook` |

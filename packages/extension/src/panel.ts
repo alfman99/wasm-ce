@@ -368,22 +368,82 @@ function span(text: string, className?: string): HTMLSpanElement {
   return element;
 }
 
-function addressLink(text: string): HTMLButtonElement {
+function addressLink(text: string, value?: string, type?: ValueType): HTMLButtonElement {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'link';
   button.textContent = text;
-  button.title = 'Fill this address into the forms and show it in the memory viewer';
-  button.addEventListener('click', () => {
-    fillAddress(text);
-    // A hit in a scan list is a place to look, not just a value to copy: jumping the viewer here is
-    // what makes a hex dump usable without retyping addresses.
-    void jumpViewer(text).catch((error: unknown) => {
-      const output = document.getElementById('viewer-out');
-      if (output) output.textContent = error instanceof Error ? error.message : String(error);
-    });
-  });
+  button.title = 'Change this address';
+  button.addEventListener('click', () => selectAddress(text, value, type));
   return button;
+}
+
+/**
+ * Clicking an address is "I want to change this one", so the editor opens beside the hits with the
+ * value already in it. The other forms and the memory viewer follow, for whoever goes further.
+ */
+let pickType: ValueType = 'i32';
+
+function selectAddress(text: string, value?: string, type?: ValueType): void {
+  fillAddress(text);
+  // A hit has the type it was scanned as; a freeze or watch row brings its own.
+  pickType = type ?? typeOf('scan-type');
+  el('pick-address').textContent = text;
+  el('pick-type').textContent = pickType;
+  const input = el<HTMLInputElement>('pick-value');
+  input.value = value ?? '';
+  el('pick-out').textContent = '';
+  el('pick').hidden = false;
+  input.focus();
+  input.select();
+  markStep(3);
+  void syncPickFreeze().catch(() => undefined);
+  void jumpViewer(text).catch((error: unknown) => {
+    const output = document.getElementById('viewer-out');
+    if (output) output.textContent = error instanceof Error ? error.message : String(error);
+  });
+}
+
+function pickAddress(): Address {
+  return parseAddressText(el('pick-address').textContent ?? '');
+}
+
+function pickedFreeze(entries: FreezeEntry[]): FreezeEntry | undefined {
+  const text = el('pick-address').textContent ?? '';
+  return entries.find((entry) => formatAddress(entry.address) === text);
+}
+
+/** The Freeze button says what it will do: freeze this address, or let it go. */
+async function syncPickFreeze(entries?: FreezeEntry[]): Promise<void> {
+  const list = entries ?? (await pageCall<FreezeEntry[]>('page.freeze.list'));
+  el('pick-freeze').textContent = pickedFreeze(list) ? 'Unfreeze' : 'Freeze';
+}
+
+async function pickWrite(): Promise<string> {
+  const result = await pageCall<WriteResult>('page.write', {
+    address: pickAddress(),
+    type: pickType,
+    value: fieldNum('pick-value', 'new value'),
+  });
+  return `${formatAddress(result.address)} ${result.type}: ${result.before} -> ${result.after}`;
+}
+
+async function pickFreeze(): Promise<string> {
+  const current = pickedFreeze(await pageCall<FreezeEntry[]>('page.freeze.list'));
+  if (current) {
+    await pageCall<boolean>('page.freeze.clear', { freezeId: current.id });
+  } else {
+    await pageCall<FreezeEntry>('page.freeze.set', {
+      address: pickAddress(),
+      type: pickType,
+      value: fieldNum('pick-value', 'new value'),
+    });
+  }
+  const entries = await pageCall<FreezeEntry[]>('page.freeze.list');
+  renderFreezes(entries);
+  await syncPickFreeze(entries);
+  const text = el('pick-address').textContent ?? '';
+  return current ? `${text} is free again` : `${text} held at ${el<HTMLInputElement>('pick-value').value.trim()}`;
 }
 
 function miniButton(label: string, onClick: () => void): HTMLButtonElement {
@@ -443,6 +503,8 @@ async function refreshStatus(): Promise<void> {
   else if (ping.tokenSource === 'paired') setPill('bridge', 'bridge live', 'live');
   else if (!ping.tokenConfigured) setPill('bridge', 'waiting for pairing', 'warn');
   if (ping.pairingHint && !ping.bridgeConnected) setPill('bridge', ping.pairingHint, 'warn');
+  // Same rule as the popup: the token field is a repair tool, shown only when the bridge needs it.
+  el('token-box').hidden = !(ping.bridgeRejected || (!ping.tokenConfigured && !ping.pairingHint));
 
   if (targetTabId === undefined) {
     const front = await frontTab();
@@ -459,7 +521,6 @@ async function refreshStatus(): Promise<void> {
     markStep(1);
     return;
   }
-  markStep(activeScanId === undefined ? 2 : 3);
   setPill('tab-state', 'this tab', 'live');
   if (frontTabInfo) {
     el('target').textContent = `${frontTabInfo.title || frontTabInfo.url} · ${frontTabInfo.url}`;
@@ -477,10 +538,17 @@ async function refreshStatus(): Promise<void> {
       info.evalAllowed ? 'agent ready' : 'agent ready · scripts blocked',
       info.evalAllowed ? 'live' : 'warn',
     );
+    // The agent is injected at document_start, so on most pages it is already here: list the wasm
+    // now and the human can scan without pressing Attach first.
+    if (knownInstances.length === 0) await refreshInstances().catch(() => undefined);
   } catch {
     setPill('agent', 'not attached yet', 'idle');
     report(statusOut, 'this tab has no page agent yet: press Attach', false);
   }
+  // Attach is the one thing to press until there is wasm to scan; after that it is a retry.
+  const ready = knownInstances.length > 0;
+  el('attach').classList.toggle('primary', !ready);
+  markStep(!ready ? 1 : activeScanId === undefined ? 2 : 3);
 }
 
 /**
@@ -773,7 +841,7 @@ function renderFreezes(entries: FreezeEntry[]): void {
   const items = entries.map((entry) =>
     listItem([
       entry.id,
-      addressLink(formatAddress(entry.address)),
+      addressLink(formatAddress(entry.address), String(entry.value), entry.type),
       `${entry.type}=${entry.value}`,
       miniButton('Clear', () => {
         void run(el('freeze-out'), async () => {
@@ -817,7 +885,7 @@ function renderWatches(entries: WatchEntry[]): void {
   const items = entries.map((entry) =>
     listItem([
       entry.id,
-      addressLink(formatAddress(entry.address)),
+      addressLink(formatAddress(entry.address), String(entry.lastValue), entry.type),
       `${entry.type} last=${entry.lastValue}`,
       miniButton('Remove', () => {
         void run(el('watch-out'), async () => {
@@ -937,14 +1005,14 @@ function renderScanSummary(summary: ScanSummary): void {
   el('scan-id').textContent = `scan ${summary.scanId} · ${count(summary.matchCount, 'match', 'matches')}`;
   const items = [...summary.sample]
     .sort((a, b) => a.address.offset - b.address.offset)
-    .map((hit) => listItem([addressLink(formatAddress(hit.address)), String(hit.value)]));
+    .map((hit) => listItem([addressLink(formatAddress(hit.address), String(hit.value)), String(hit.value)]));
   renderList(el('scan-hits'), items, 'No hits in this answer. Narrow again with Next Scan, or widen the byte range.');
 }
 
 function renderScanHits(hits: ScanHit[], total: number): void {
   const items = [...hits]
     .sort((a, b) => a.address.offset - b.address.offset)
-    .map((hit) => listItem([addressLink(formatAddress(hit.address)), String(hit.value)]));
+    .map((hit) => listItem([addressLink(formatAddress(hit.address), String(hit.value)), String(hit.value)]));
   renderList(el('scan-hits'), items, `no hits in the first ${hits.length} of ${total}`);
 }
 
@@ -1451,7 +1519,7 @@ function wire(): void {
   bind('attach-reload', statusOut, attachAndReport(true));
   bind('token-save', statusOut, async () => {
     const token = el<HTMLInputElement>('bridge-token').value.trim();
-    if (!token) throw new BridgeError('BAD_PARAMS', 'paste the token printed by the MCP server first');
+    if (!token) throw new BridgeError('BAD_PARAMS', 'paste the contents of ~/.wasmcheat/token first');
     // Saving is what fixes a refused bridge: the service worker watches this key and reconnects.
     await chrome.storage.local.set({ bridgeToken: token, bridgeTokenSource: 'pasted' });
     await refreshStatus();
@@ -1459,6 +1527,11 @@ function wire(): void {
   });
 
   bind('instances-refresh', el('instances-out'), refreshInstances);
+  bind('pick-write', el('pick-out'), pickWrite);
+  bind('pick-freeze', el('pick-out'), pickFreeze);
+  el<HTMLInputElement>('pick-value').addEventListener('keydown', (event) => {
+    if ((event as KeyboardEvent).key === 'Enter') el<HTMLButtonElement>('pick-write').click();
+  });
 
   syncScanFields();
   selectOf('scan-mode').addEventListener('change', syncScanFields);

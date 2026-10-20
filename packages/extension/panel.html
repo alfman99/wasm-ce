@@ -21,7 +21,6 @@
           <span id="bridge" class="pill pill--idle">bridge ?</span>
           <span id="tab-state" class="pill pill--idle">no tab</span>
           <span id="agent" class="pill pill--idle">agent ?</span>
-          <span id="versions" class="versions"></span>
         </div>
         <div class="targetbar__actions">
           <button id="refresh-status" type="button" class="quiet" title="Re-read the tab and the bridge">Refresh</button>
@@ -30,7 +29,7 @@
         </div>
       </header>
 
-      <div class="targetbar">
+      <div class="targetbar" id="card-attach">
         <div class="targetbar__main">
           <span class="eyebrow">Target</span>
           <p id="target" class="process process--empty">no tab attached</p>
@@ -48,12 +47,12 @@
       </div>
 
       <nav class="steps" aria-label="The three steps this panel is built around">
-        <a href="#card-instances" data-step="1">Attach to this tab</a>
+        <a href="#card-attach" data-step="1">Attach to this tab</a>
         <a href="#card-scan" data-step="2">Scan for a value</a>
         <a href="#card-found" data-step="3">Change it</a>
       </nav>
 
-      <details class="tokenbox">
+      <details class="tokenbox" id="token-box" hidden>
         <summary id="token-summary">Bridge token</summary>
         <div class="tokenbox__body">
           <label class="field">
@@ -75,20 +74,36 @@
       <div class="top">
         <fieldset class="group group--found" id="card-found">
           <legend>Found</legend>
-          <p class="hint">Every hit from the last scan, narrowing pass or text scan. Click an address to load it into the forms and jump the viewer.</p>
+          <p class="hint">Addresses that hold the value you scanned for. Click one to change it.</p>
           <div class="row row--tight">
             <button id="scan-results" type="button">Refresh list</button>
             <button id="scan-drop" type="button">Drop scan</button>
           </div>
           <div class="listhead" aria-hidden="true"><span>Address</span><span>Value</span></div>
           <ul id="scan-hits" class="list list--hits list--found"></ul>
+          <div class="pick" id="pick" hidden>
+            <p class="pick__head">
+              <span class="eyebrow">Selected</span>
+              <code id="pick-address"></code>
+              <span id="pick-type" class="note"></span>
+            </p>
+            <div class="row">
+              <label class="field field--grow">
+                <span>New value:</span>
+                <input id="pick-value" type="text" spellcheck="false" />
+              </label>
+              <button id="pick-write" type="button" class="primary">Write</button>
+              <button id="pick-freeze" type="button">Freeze</button>
+            </div>
+            <pre id="pick-out" class="out"></pre>
+          </div>
           <pre id="scan-out" class="out"></pre>
         </fieldset>
 
         <div class="top__right">
           <fieldset class="group" id="card-scan">
           <legend>Scan</legend>
-          <p class="hint">First Scan records the whole memory. Next Scan keeps only the addresses that still match, so the list shrinks instead of growing.</p>
+          <p class="hint">Type a number you can see in the game and press First Scan. When it changes in the game, type the new number and press Next Scan. Repeat until one or two addresses are left.</p>
             <div class="row">
               <label class="field">
                 <span>Value:</span>
@@ -150,7 +165,7 @@
 
           <fieldset class="group" id="card-textscan">
           <legend>Text scan</legend>
-          <p class="hint">Find a string or a byte pattern. Use it when the page shows a label you can read, not a number you can type.</p>
+          <p class="hint">For when the game shows words, not a number: find a string or a byte pattern.</p>
             <div class="row">
               <label class="field">
                 <span>Text:</span>
@@ -186,7 +201,7 @@
       <div class="cheat">
         <fieldset class="group" id="card-freeze">
           <legend>Freeze</legend>
-          <p class="hint">Hold an address at one value. A page-side timer rewrites it every 16 ms, so the app cannot drift away from it.</p>
+          <p class="hint">Values held in place. The page rewrites each one every 16 ms, so the game cannot change it.</p>
           <div class="row">
             <label class="field field--grow">
               <span>Address:</span>
@@ -216,7 +231,7 @@
 
         <fieldset class="group" id="card-watch">
           <legend>Watch</legend>
-          <p class="hint">Record every change to an address while the page runs. Poll drains the buffer into the log below.</p>
+          <p class="hint">Record every change to an address while the game runs. Poll shows what changed since the last poll.</p>
           <div class="row">
             <label class="field field--grow">
               <span>Address:</span>
@@ -267,8 +282,10 @@
 
       <!-- Everything else, grouped like the extra windows of a memory scanner. -->
       <div class="tools">
+        <details class="tray" id="advanced">
+          <summary>More tools: memory view, read and write, instances, watchpoints, patches, hooks, pointers, speed, workers, saved scans, audit log, raw console</summary>
         <fieldset class="group" id="card-viewer">
-          <legend>Memory View</legend>
+          <legend>Memory view</legend>
           <p class="hint">Hex dump around an address, sixteen bytes a row. Follow pointer reads a 32-bit pointer and jumps to where it points.</p>
           <div class="row">
             <label class="field field--grow">
@@ -292,8 +309,8 @@
         </fieldset>
 
         <fieldset class="group" id="card-read">
-          <legend>Reads / writes</legend>
-          <p class="hint">One value, N values in a row, or raw bytes. Write is audited with the old value and the new one.</p>
+          <legend>Read and write</legend>
+          <p class="hint">One value, several in a row, or raw bytes. Every write is logged with the old and new value.</p>
           <div class="row">
             <label class="field field--grow">
               <span>Address:</span>
@@ -329,7 +346,7 @@
 
         <fieldset class="group" id="card-instances">
           <legend>Instances</legend>
-          <p class="hint">Wasm instances in the target, with their memory size, exports and where they live (page or worker).</p>
+          <p class="hint">The WebAssembly modules this tab is running, their memory size, and whether they live in the page or a worker. Empty? Press Diagnose.</p>
           <div class="row">
             <button id="instances-refresh" type="button">Refresh</button>
             <button id="diagnose" type="button">Diagnose</button>
@@ -351,8 +368,6 @@
           <pre id="diagnose-out" class="out"></pre>
         </fieldset>
 
-        <details class="tray" id="advanced">
-          <summary>Advanced tools: watchpoints, patches, hooks, pointers, speed, workers, saved scans, audit, console</summary>
         <fieldset class="group" id="card-trace">
           <legend>Watchpoints</legend>
           <p class="hint">Ask which function wrote or read an address. This rewrites the module and reloads the tab, because a store cannot be observed after compilation.</p>
@@ -587,7 +602,7 @@
       </div>
 
       <div class="statusbar">
-        <span class="statusbar__cell">WasmCheat</span>
+        <span id="versions" class="statusbar__cell"></span>
         <span class="statusbar__cell statusbar__cell--grow"></span>
         <span id="scan-id" class="statusbar__cell statusbar__cell--scan">no scan</span>
       </div>
@@ -616,9 +631,9 @@
           <div class="sheet__body">
             <ol>
               <li><b>Attach.</b> The panel works on the tab you opened it on. Attach starts the page agent there; a page that loaded before the agent is reloaded once so its wasm is captured.</li>
-              <li><b>Read the instance list.</b> Instances shows what Wasm modules the page loaded. Empty means the page has not started its game yet, or the game lives in a frame or worker; Diagnose in the Instances card says which.</li>
+              <li><b>No instance?</b> The game may not have started, or it lives in a frame or a worker. Open More tools, then Instances, and press Diagnose: it says which.</li>
               <li><b>Scan.</b> Pick a type and a value you can see on screen, then First Scan. Play, watch the number change, type the new value and Next Scan. Repeat until one address is left.</li>
-              <li><b>Change it.</b> Click the address, then Write, Freeze or Watch. Verify by reading the address back, not by trusting the page to redraw.</li>
+              <li><b>Change it.</b> Click an address in Found, type the new value, and press Write, or Freeze to hold it there. Games redraw a number when they change it, so the screen can lag behind memory.</li>
             </ol>
 
             <h3>Three words to know</h3>
@@ -637,10 +652,10 @@
 
             <h3>Where the rest is</h3>
             <p>
-              Every tool the MCP server exposes has a form here. Patches, watchpoints, hooks,
-              pointers, workers, saved scans, the audit log and the raw console sit under
-              <strong>Advanced</strong> at the bottom of the panel, one click away, because the loop
-              above is what most sessions need.
+              Every tool the MCP server exposes has a form here. The memory view, instances,
+              watchpoints, patches, hooks, pointers, workers, saved scans, the audit log and the raw
+              console sit under <strong>More tools</strong> at the bottom of the panel, one click
+              away, because the loop above is what most sessions need.
             </p>
 
             <h3>When something is refused</h3>

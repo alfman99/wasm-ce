@@ -2,7 +2,7 @@
 
 Last verified on 2026-10-20 (`npm run build`, then the checks below):
 
-- `npm ci` clean, `npm run build` 0 errors, `npm run typecheck` 0 errors
+- `npm run build` 0 errors, `npm run typecheck` 0 errors
 - `npx vitest run` **147 passed** (15 files)
 - `npx playwright test` **22 passed, 0 skipped** (~28 s, real Chromium, real extension, no mocks)
 

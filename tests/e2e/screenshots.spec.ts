@@ -39,6 +39,11 @@ test('screenshots', async () => {
     const panel = await browser.context.newPage();
     await panel.setViewportSize({ width: 1180, height: 900 });
     await panel.goto(`chrome-extension://${browser.extensionId}/panel.html`);
+    const extra = process.env.WASMCHEAT_SHOTS_EXTRA;
+    if (extra) {
+      await panel.waitForTimeout(900);
+      await panel.screenshot({ path: `${extra}/panel-start.png` });
+    }
     await call(mcp, 'wasmcheat_attach', { tabId });
     await panel.click('#refresh-status');
     await panel.waitForTimeout(900);
@@ -48,8 +53,19 @@ test('screenshots', async () => {
     await panel.fill('#scan-value', '5');
     await panel.click('#scan-begin');
     await panel.waitForSelector('#scan-hits button.link', { timeout: 20_000 });
-    await panel.waitForTimeout(500);
+    // Picking a hit opens the editor beside it: that is the moment the panel exists for.
+    await panel.click('#scan-hits button.link');
+    await panel.fill('#pick-value', '99999');
+    await panel.click('#pick-write');
+    await panel.waitForFunction(() => document.querySelector('#pick-out')?.textContent?.includes('->'));
+    await panel.waitForTimeout(300);
     await panel.screenshot({ path: 'docs/img/panel.png', fullPage: false });
+    if (extra) {
+      await panel.screenshot({ path: `${extra}/panel-full.png`, fullPage: true });
+      await panel.setViewportSize({ width: 420, height: 900 });
+      await panel.screenshot({ path: `${extra}/panel-narrow.png`, fullPage: true });
+      await panel.setViewportSize({ width: 1180, height: 900 });
+    }
 
     await panel.click('#theme-toggle');
     await panel.waitForTimeout(300);

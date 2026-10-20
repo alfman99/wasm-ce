@@ -1045,6 +1045,8 @@ test('the speed hack scales the clock a game reads, and stops it at zero', async
   // Scale 0 stops simulated time, which is the "freeze the game but keep scanning" case.
   const stopped = await call<{ scale: number }>(mcp, 'wasmcheat_speed', { tabId, scale: 0 });
   expect(stopped.isError, stopped.text).toBe(false);
+  // A frame already in flight when the scale lands can still finish one tick; measure after it.
+  await new Promise((resolve) => setTimeout(resolve, 100));
   const frozen = await growthOver(600);
   expect(frozen).toBe(0);
 

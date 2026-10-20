@@ -52,7 +52,7 @@ WasmCheat demo is up at ${DEMO_URL}
   1. Load the extension: chrome://extensions → Developer mode on → Load unpacked → 
      ${EXTENSION}
   2. Open DevTools on the demo tab (⌥⌘I) and pick the WasmCheat panel.
-  3. Press Attach, approve the tab, then scan the score you can see on the page.
+  3. Type the score you can see into Scan and press First Scan (press Attach first only if it is highlighted).
 
 For an agent, point the client at:
 
