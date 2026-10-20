@@ -54,10 +54,18 @@ export interface Instrumenter {
   modes: InstrumentModes;
   /** Returns null when this binary cannot be rewritten (the trace then explains why). */
   rewrite(bytes: Uint8Array, modes: InstrumentModes): InstrumentedBinary | null;
-  /** One store ran inside an armed instance. */
-  onStore(funcIndex: number): void;
-  /** One load of `address` ran inside an armed instance. */
-  onRead?(address: number, funcIndex: number): void;
+  /** One store ran inside `instance`, an armed instance. */
+  onStore(funcIndex: number, instance: TrackedInstance): void;
+  /** One load of `address` ran inside `instance`, an armed instance. */
+  onRead?(address: number, funcIndex: number, instance: TrackedInstance): void;
+}
+
+/** A rewrite for one pending instantiation, and the hook that tells its callbacks who they serve. */
+export interface PlannedInstrumentation {
+  plan: InstrumentedBinary;
+  importsAdd: ImportObject;
+  /** Called once the instance exists; until then (the arm export is still off) nothing reports. */
+  bind(instance: TrackedInstance): void;
 }
 
 /** A rule registered before an instance is created; applied as imports flow through. */
@@ -78,6 +86,12 @@ export interface RegistryEvents {
   onInstance?: (instance: TrackedInstance) => void;
   /** Called once an instrumented instance is created and the store checks are on. */
   onInstrumented?: (instance: TrackedInstance) => void;
+  /**
+   * Called when an instance is created while an instrumenter is active but its module bytes were
+   * never seen (a module compiled before the agent installed, or posted in from another realm), so
+   * it runs without watchpoint checks or patches.
+   */
+  onMissedInstrumentation?: (instance: TrackedInstance) => void;
 }
 
 const MEMORY_EXPORT_NAMES = ['memory', '__linear_memory', '__memory', 'mem'];
@@ -151,7 +165,7 @@ export class WasmRegistry {
    * Rewrites the bytes for the pending instantiation, or null when nothing should change.
    * Called from the patched entry points, which own both the source and the imports object.
    */
-  planInstrumentation(bytes: Uint8Array): { plan: InstrumentedBinary; importsAdd: ImportObject } | null {
+  planInstrumentation(bytes: Uint8Array): PlannedInstrumentation | null {
     const instrumenter = this.instrumenter;
     if (!instrumenter) return null;
     let plan: InstrumentedBinary | null = null;
@@ -162,14 +176,21 @@ export class WasmRegistry {
     }
     if (!plan) return null;
     // The rewritten module calls these on every store, and before every load: the only channel
-    // an engine gives us. The field the module does not import is never called.
+    // an engine gives us. The field the module does not import is never called. The callbacks
+    // carry no instance identity, so each instantiation gets its own closure over the instance it
+    // creates: two armed modules on one page then report into their own memory and names.
+    let owner: TrackedInstance | null = null;
     const importsAdd: ImportObject = {
       [plan.importModule]: {
-        [plan.importField]: (funcIndex: number) => instrumenter.onStore(funcIndex),
-        [plan.readField]: (address: number, funcIndex: number) => instrumenter.onRead?.(address, funcIndex),
+        [plan.importField]: (funcIndex: number) => {
+          if (owner) instrumenter.onStore(funcIndex, owner);
+        },
+        [plan.readField]: (address: number, funcIndex: number) => {
+          if (owner) instrumenter.onRead?.(address, funcIndex, owner);
+        },
       },
     };
-    return { plan, importsAdd };
+    return { plan, importsAdd, bind: (instance) => (owner = instance) };
   }
 
   /** Flips the watchpoint checks on inside an instance we just instrumented. */
@@ -280,7 +301,7 @@ export class WasmRegistry {
       module: WebAssembly.Module | null,
       imports: ImportObject | null,
       createdBy: CreatedBy,
-      plans?: Map<WasmRegistry, InstrumentedBinary>,
+      plans?: Map<WasmRegistry, PlannedInstrumentation>,
     ) => {
       for (const registry of registries) registry.register(instance, module, imports, createdBy, plans);
     };
@@ -311,15 +332,15 @@ export class WasmRegistry {
     function instrumentForAll(
       bytes: Uint8Array | null,
       imports: ImportObject | undefined,
-    ): { imports: ImportObject | undefined; plans: Map<WasmRegistry, InstrumentedBinary>; bytes: Uint8Array | null } {
-      const plans = new Map<WasmRegistry, InstrumentedBinary>();
+    ): { imports: ImportObject | undefined; plans: Map<WasmRegistry, PlannedInstrumentation>; bytes: Uint8Array | null } {
+      const plans = new Map<WasmRegistry, PlannedInstrumentation>();
       if (!bytes) return { imports, plans, bytes: null };
       let applied = imports;
       let rewritten: Uint8Array | null = null;
       for (const registry of registries) {
         const planned = registry.planInstrumentation(bytes);
         if (!planned) continue;
-        plans.set(registry, planned.plan);
+        plans.set(registry, planned);
         rewritten = planned.plan.bytes;
         applied = mergeImports(applied, planned.importsAdd);
       }
@@ -354,9 +375,12 @@ export class WasmRegistry {
       }
       const typed = result as WebAssembly.WebAssemblyInstantiatedSource;
       const module = typed.module;
-      if (isBufferSource(source)) rememberModuleBytesSafe(module, toBytes(source));
+      const original = bytesFrom(source);
+      if (original) rememberModuleBytesSafe(module, original);
       registerInAll(typed.instance, module, instrumented.imports ?? null, 'instantiate', instrumented.plans);
-      return typed;
+      // An instrumented `instantiate(module)` compiled our rewritten bytes, which resolves to
+      // `{ module, instance }`; the app asked with a Module and expects the bare Instance back.
+      return source instanceof Real.Module ? typed.instance : typed;
     }
 
     async function patchedInstantiateStreaming(
@@ -416,6 +440,20 @@ export class WasmRegistry {
       return module;
     }
 
+    // `new WebAssembly.Module(bytes)` is the synchronous compile (wasm-bindgen's `initSync`).
+    // Remember its bytes, or the `new Instance` that follows has nothing to hash or instrument.
+    function PatchedModule(this: unknown, source: BufferSource): WebAssembly.Module {
+      if (new.target === undefined) {
+        throw new TypeError("Constructor WebAssembly.Module requires 'new'");
+      }
+      const module = Reflect.construct(Real.Module, [source], Real.Module) as WebAssembly.Module;
+      if (isBufferSource(source)) rememberModuleBytesSafe(module, toBytes(source));
+      return module;
+    }
+    PatchedModule.prototype = Real.Module.prototype;
+    // `WebAssembly.Module.exports/imports/customSections` are statics the glue code calls.
+    Object.setPrototypeOf(PatchedModule, Real.Module);
+
     // `new WebAssembly.Instance(...)` cannot be wrapped by a plain function: the engine
     // requires construction, so keep `new.target` semantics and prototype identity.
     function PatchedInstance(
@@ -428,8 +466,18 @@ export class WasmRegistry {
       }
       installState().calls.newInstance += 1;
       const applied = prepareImportsForAll(imports) ?? undefined;
-      const instance = Reflect.construct(Real.Instance, [module, applied], Real.Instance) as WebAssembly.Instance;
-      registerInAll(instance, module, applied ?? null, 'new Instance');
+      // A watchpoint or patch needs the module rewritten, and this path is synchronous, so the
+      // rewritten bytes compile synchronously too. The app keeps its own Module object; the
+      // instance it gets back comes from the rewritten one.
+      const original = module instanceof Real.Module ? bytesFrom(module) : null;
+      const instrumented = instrumentForAll(original, applied);
+      let compiled = module;
+      if (instrumented.bytes && original) {
+        compiled = Reflect.construct(Real.Module, [instrumented.bytes], Real.Module) as WebAssembly.Module;
+        rememberModuleBytesSafe(compiled, original);
+      }
+      const instance = Reflect.construct(Real.Instance, [compiled, instrumented.imports], Real.Instance) as WebAssembly.Instance;
+      registerInAll(instance, compiled, instrumented.imports ?? null, 'new Instance', instrumented.plans);
       return instance;
     }
     PatchedInstance.prototype = Real.Instance.prototype;
@@ -446,6 +494,7 @@ export class WasmRegistry {
       writable: true,
       configurable: true,
     });
+    Object.defineProperty(WebAssembly, 'Module', { value: PatchedModule, writable: true, configurable: true });
     Object.defineProperty(WebAssembly, 'Instance', {
       value: PatchedInstance,
       writable: true,
@@ -487,7 +536,7 @@ export class WasmRegistry {
     module: WebAssembly.Module | null,
     imports: ImportObject | null,
     createdBy: CreatedBy,
-    plans?: Map<WasmRegistry, InstrumentedBinary>,
+    plans?: Map<WasmRegistry, PlannedInstrumentation>,
   ): TrackedInstance {
     const existing = this.instances.find((entry) => entry.instance === instance);
     if (existing) return existing;
@@ -553,12 +602,15 @@ export class WasmRegistry {
 
     this.events.onInstance?.(tracked);
 
-    const plan = plans?.get(this);
-    if (plan) {
+    const planned = plans?.get(this);
+    if (planned) {
       // Names come from the instrumented module's own export section, so they match the
       // indices the store callbacks report.
-      tracked.functionNames = readFunctionExports(plan.bytes);
-      this.armInstrumented(tracked, plan);
+      tracked.functionNames = readFunctionExports(planned.plan.bytes);
+      planned.bind(tracked);
+      this.armInstrumented(tracked, planned.plan);
+    } else if (this.instrumenter) {
+      this.events.onMissedInstrumentation?.(tracked);
     }
 
     return tracked;

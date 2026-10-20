@@ -3,7 +3,7 @@
 Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`):
 
 - `npm ci` clean, `npm run build` 0 errors, `npm run typecheck` 0 errors
-- `npx vitest run` **123 passed** (13 files)
+- `npx vitest run` **127 passed** (13 files)
 - `npx playwright test` **22 passed, 0 skipped** (~22 s, real Chromium, real extension, no mocks)
 
 ## Proven end to end (real browser, real tab)
@@ -62,6 +62,14 @@ Last verified from a clean tree (`rm -rf node_modules packages/*/dist`, `npm ci`
 - **Atomics / SIMD probing**: `0xFE` loads/stores and `0xFD` v128 memory ops are probed; v128 lane
   loads are reported through `unprobed[]` instead of probed. Read-modify-write atomics throw
   `UNSUPPORTED`.
+- **Watchpoints watch every instrumented instance**: each instantiation made while armed gets its
+  own callback closure, so a helper module instantiated after the game reports into its own memory
+  and function names. Hits carry their instance in `address` and `functions[].instanceId`;
+  `status.instanceId` is the instance the address names, else the first instrumented one.
+- **Synchronous loads** (`new WebAssembly.Module` + `new WebAssembly.Instance`, wasm-bindgen's
+  `initSync`) are hashed, patched and watched: the rewritten bytes compile synchronously and the app
+  keeps its own `Module` object. A module whose bytes the agent never saw (compiled before it
+  installed, or posted in from another realm) runs unpatched, and the trace `note` says so.
 - **Import hooks** apply at the next instantiation, never to a running instance (WebAssembly binds
   imported functions at instantiation). `importPatchability` says so instead of pretending.
 - **Export hooks / patches** only reach callers that read `instance.exports.x` per call. Emscripten
