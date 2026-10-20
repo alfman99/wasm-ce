@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A script can be kept for a game: **Run and keep** in the Script card, or `wasmcheat_mod` with
+  `add` for an agent, runs it now and again on every load of the game's frame, until it is removed
+  from the list under the card. Every script gets `until(check)`, which waits for the engine
+  (`await until(() => window.pc?.app)`), so a kept script can start before the game does.
 - A Script card in the panel and a `wasmcheat_run_script` tool run JavaScript in the game's frame
   and return its value, for what a game keeps in JavaScript rather than in memory, such as a
   PlayCanvas scene. It finds the frame by itself, even a cross-origin iframe, so code pasted from

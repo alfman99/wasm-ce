@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { runScript } from '../../packages/page-agent/src/script';
+import { runScript, until } from '../../packages/page-agent/src/script';
 
 describe('runScript', () => {
   it('returns the value of an expression, of a pasted IIFE and of a body that returns', async () => {
@@ -27,5 +27,24 @@ describe('runScript', () => {
     await expect(runScript('throw new Error("nope")')).rejects.toMatchObject({ code: 'BAD_PARAMS', message: expect.stringContaining('Error: nope') });
     await expect(runScript('missingThing.value')).rejects.toMatchObject({ message: expect.stringContaining('ReferenceError') });
     await expect(runScript('return (')).rejects.toMatchObject({ code: 'BAD_PARAMS', message: expect.stringContaining('does not parse') });
+  });
+});
+
+describe('until and once, what a mod is made of', () => {
+  it('waits for a check to turn truthy, ignores throws on the way, and gives up after the timeout', async () => {
+    const box: { app?: { name: string } } = {};
+    setTimeout(() => (box.app = { name: 'game' }), 30);
+    await expect(until(() => box.app!.name, 1000, 5)).resolves.toBe('game');
+    await expect(until(() => null, 40, 5)).rejects.toThrow('nothing after 40 ms');
+    // Scripts get it as a free name: a mod starts before the engine exists and waits for it.
+    expect((await runScript('const v = await until(() => 7); return v * 2;')).value).toBe(14);
+  });
+
+  it('runs a script with a once key a single time per page, and again if the first run threw', async () => {
+    const first = await runScript('globalThis.__onceCount = (globalThis.__onceCount ?? 0) + 1', 'mod-a');
+    expect(first.value).toBe(1);
+    expect(await runScript('globalThis.__onceCount = (globalThis.__onceCount ?? 0) + 1', 'mod-a')).toMatchObject({ skipped: true });
+    await expect(runScript('throw new Error("not yet")', 'mod-b')).rejects.toThrow('not yet');
+    expect((await runScript('"second try"', 'mod-b')).value).toBe('second try');
   });
 });

@@ -278,6 +278,55 @@ test('a patch survives the reload that installs it in a sandboxed game frame', a
   }
 });
 
+// A mod is asked for once and stays: kept for the game frame's site, it runs on every new page of it
+// with nothing pressed, here in a sandboxed cross-origin frame as on YouTube Playables.
+test('a kept script runs again on every load of the game until it is removed', async () => {
+  await assertPortFree(DEAD_BRIDGE_PORT);
+  const wasm = '[0,97,115,109,1,0,0,0,5,3,1,0,1,7,10,1,6,109,101,109,111,114,121,2,0]';
+  const host = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(
+      req.url?.startsWith('/game')
+        ? `<!doctype html><link rel="icon" href="data:," /><canvas></canvas><script>setTimeout(() => WebAssembly.instantiate(new Uint8Array(${wasm})).then((r) => { window.engine = r; }), 800);</script>`
+        : `<!doctype html><title>Playable host</title><link rel="icon" href="data:," /><iframe sandbox="allow-scripts" src="http://localhost:${PLAIN_PORT}/game"></iframe>`,
+    );
+  }).listen(PLAIN_PORT);
+  const browser = await launchBrowser();
+  try {
+    const worker = browser.context.serviceWorkers()[0] ?? (await browser.context.waitForEvent('serviceworker'));
+    await worker.evaluate((port) => chrome.storage.local.set({ wasmcheatPort: port }), DEAD_BRIDGE_PORT);
+    const page = await browser.context.newPage();
+    await page.goto(`http://127.0.0.1:${PLAIN_PORT}/`);
+    const game = () => page.frames().find((frame) => frame.url().includes('/game'))!;
+    const modded = () => game().evaluate(() => document.body.dataset.mod ?? 'none');
+    const panel = await browser.context.newPage();
+    await panel.goto(`chrome-extension://${browser.extensionId}/panel.html`);
+    await expect(panel.locator('#scan-instance')).toHaveValue('w1', { timeout: 20_000 });
+
+    await panel.locator('#advanced > summary').click({ timeout: 20_000 });
+    await panel.fill('#script-code', "await until(() => window.engine);\ndocument.body.dataset.mod = 'on';\nreturn 'modded';");
+    await panel.fill('#mod-name', 'e2e mod');
+    await panel.click('#mod-add');
+    await expect(panel.locator('#script-out')).toContainText('Kept as "e2e mod"');
+    await expect(panel.locator('#mods')).toContainText('e2e mod');
+    expect(await modded()).toBe('on');
+
+    // Nothing is pressed after the reload: the extension runs the mod as the new game frame starts.
+    await page.reload();
+    await expect.poll(modded, { timeout: 20_000 }).toBe('on');
+
+    await panel.locator('#mods button', { hasText: 'Remove' }).click();
+    await expect(panel.locator('#mods')).toContainText('Nothing kept for this game');
+    await page.reload();
+    await expect.poll(() => game().evaluate(() => Boolean((window as unknown as { engine?: unknown }).engine)), { timeout: 20_000 }).toBe(true);
+    await sleep(500);
+    expect(await modded()).toBe('none');
+  } finally {
+    await browser.close();
+    host.close();
+  }
+});
+
 // A PlayCanvas or three.js game is JavaScript with a physics engine in wasm (Ammo.js here), so its
 // score is in no memory WasmCheat can scan. The panel says so before the human tries. The page also
 // carries a megabyte of inline script with no spaces, as minified games do: reading it for .wasm

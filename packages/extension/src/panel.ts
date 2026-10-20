@@ -26,6 +26,7 @@ import {
   type PageAgentInfo,
   type PageDiagnostics,
   type ScriptResult,
+  type ModEntry,
   type PatchEntry,
   type PointerPath,
   type PointerResolution,
@@ -658,6 +659,7 @@ async function refreshStatus(): Promise<void> {
   }
   showWorkbench();
   markStep(activeScanId === undefined ? 1 : 2);
+  void renderMods().catch(() => undefined);
   // A JavaScript game whose only wasm is its physics engine: say so before the human scans for a
   // score that is not in this memory. Asked after the workbench is up, so it never delays it.
   void pageCall<PageDiagnostics>('page.diagnose')
@@ -1867,12 +1869,47 @@ function startLive(): void {
  * Small surface for the e2e suite. It calls the same functions the buttons call, so a passing test
  * exercises the real path rather than a test-only shortcut.
  */
-async function runScript(): Promise<string> {
+function scriptCode(): string {
   const code = el<HTMLTextAreaElement>('script-code').value;
   if (!code.trim()) throw new BridgeError('BAD_PARAMS', 'type some code to run');
-  const result = await pageCall<ScriptResult>('page.script.run', { code });
+  return code;
+}
+
+function describeScriptResult(result: ScriptResult): string {
   const shown = typeof result.value === 'string' ? result.value : JSON.stringify(result.value, null, 2);
   return `${shown}\n(${result.type}, ${result.ms} ms${result.truncated ? ', cut at 64 KB' : ''})`;
+}
+
+async function runScript(): Promise<string> {
+  return describeScriptResult(await pageCall<ScriptResult>('page.script.run', { code: scriptCode() }));
+}
+
+async function addMod(): Promise<string> {
+  const tabId = targetTabId;
+  if (tabId === undefined) throw new BridgeError('NO_TAB', 'no tab to keep a mod for');
+  const name = el<HTMLInputElement>('mod-name').value.trim() || 'mod';
+  const added = await swCall<{ mod: ModEntry; result: ScriptResult }>('ext.mods.add', { tabId, name, code: scriptCode() });
+  await renderMods();
+  return `${describeScriptResult(added.result)}\nKept as "${added.mod.name}": it runs on every load of ${added.mod.origin}.`;
+}
+
+async function renderMods(): Promise<void> {
+  const tabId = targetTabId;
+  const mods = tabId === undefined ? [] : await swCall<ModEntry[]>('ext.mods.list', { tabId });
+  const items = mods.map((mod) =>
+    listItem([
+      mod.name,
+      new URL(mod.origin).host,
+      miniButton('Remove', () => {
+        void run(el('script-out'), async () => {
+          await swCall<ModEntry[]>('ext.mods.remove', { modId: mod.id });
+          await renderMods();
+          return `"${mod.name}" removed: it no longer runs from the next load on.`;
+        });
+      }),
+    ]),
+  );
+  renderList(el('mods'), items, 'Nothing kept for this game. Write a script above and press Run and keep.');
 }
 
 interface PanelTestHooks {
@@ -1934,6 +1971,7 @@ function wire(): void {
   bind('diagnose', el('diagnose-out'), diagnose);
 
   bind('script-run', el('script-out'), runScript);
+  bind('mod-add', el('script-out'), addMod);
   el<HTMLTextAreaElement>('script-code').addEventListener('keydown', (event) => {
     const key = event as KeyboardEvent;
     if (key.key === 'Enter' && (key.metaKey || key.ctrlKey)) {

@@ -543,7 +543,19 @@ export interface ScriptResult {
   type: string;
   /** Set when the value was cut to keep the reply small. */
   truncated?: boolean;
+  /** Set when a script with this `once` key already ran in this page, so it did not run again. */
+  skipped?: boolean;
   ms: number;
+}
+
+/** A script the extension keeps for a site and runs in every new page of it: a mod. */
+export interface ModEntry {
+  id: string;
+  name: string;
+  /** Origin of the game frame it was added in; it runs in frames of that origin only. */
+  origin: string;
+  code: string;
+  createdAt: number;
 }
 
 export interface PatchSpec {

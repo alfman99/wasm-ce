@@ -193,6 +193,7 @@ an export.
 | I want the game to lie about a value | `wasmcheat_hook` |
 | The function is not exported | `wasmcheat_patch` |
 | It lives in the game's JavaScript, not in wasm (PlayCanvas, three.js, a Unity instance) | `wasmcheat_run_script` |
+| The change should come back after every reload | `wasmcheat_mod` with `add`; start with `await until(() => window.pc?.app)` |
 | The game runs too slowly to line up a scan | `wasmcheat_speed` (`scale: 0` freezes the clock) |
 | What did I just do? | `wasmcheat_audit` |
 
@@ -203,6 +204,8 @@ an export.
 - **A reload invalidates ids.** Use `instanceId: "latest"`; scan sessions do not survive a reload.
 - **`evalAllowed: false`** means CSP blocks script bodies: use declarative hook fallbacks
   (`replace-return`, `offset-result`), not `new Function` bodies.
+- **A kept script runs before the game exists.** Wait for the engine with `until(check)` and guard
+  against a second run with a flag on `window`; a script that throws is not kept.
 - **Never arm a watchpoint twice.** Re-arming the same address is idempotent, but switching addresses
   clears hits.
 - **Do not poll.** Attach and watchpoints are event-driven; a poll loop only adds latency and
