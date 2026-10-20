@@ -41,7 +41,7 @@ the raw escape hatch. The editor is tinted with the accent because it is where t
 | `--ink-3` | `#6b665c` | `#948e83` | Labels, notes, empty states |
 | `--accent` | `#0d7461` | `#38c3a4` | Primary action, live state, links |
 | `--danger` | `#ad382b` | `#ff8578` | Refusals, failed calls |
-| `--warn` | `#7d5200` | `#f0b451` | A refused token, or a page whose CSP blocks hooks |
+| `--warn` | `#7d5200` | `#f0b451` | A refused token, a page whose CSP blocks hooks, or a page whose only wasm is a physics engine (the scan the human is about to run cannot find a score) |
 
 The demo is the exception: it is a game, so it runs a molten palette (`#ff7a2f` on `#0e100f`) and a
 44px score. A target that looks like the inspector makes it harder to tell which window you are about

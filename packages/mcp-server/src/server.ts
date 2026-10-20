@@ -232,6 +232,10 @@ export function createServer(bridge: Bridge): McpServer {
           20_000,
         );
         const instances = await page<InstanceInfo[]>(tabId, 'page.listInstances');
+        const engine =
+          instances.length > 0
+            ? (await page<PageDiagnostics>(tabId, 'page.diagnose').catch(() => undefined))?.physicsEngine
+            : undefined;
         await record({
           kind: 'attach',
           tabId,
@@ -249,6 +253,9 @@ export function createServer(bridge: Bridge): McpServer {
             // the document is new, because every address it had is gone.
             info.autoReloaded
               ? 'The extension reloaded the tab to install the page agent, so any scan or address from before is stale.'
+              : undefined,
+            engine
+              ? `Every module here is ${engine}, a physics engine: scores, coins and game rules live in JavaScript and no scan will find them; only physics (bodies, forces, collisions) is in this memory.`
               : undefined,
           ]
             .filter(Boolean)

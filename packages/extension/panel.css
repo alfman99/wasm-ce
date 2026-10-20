@@ -467,6 +467,18 @@ fieldset.group--wide {
   font-size: 11px;
 }
 
+/* The one note that changes what the human does next: the scan they are about to run cannot work. */
+.note--physics {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line));
+  border-radius: var(--r-ctl);
+  background: var(--warn-soft);
+  color: var(--ink);
+  font-size: 12px;
+  max-width: 78ch;
+}
+
 .legend2 {
   color: var(--ink-3);
   font-size: 11px;
