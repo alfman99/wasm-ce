@@ -73,11 +73,12 @@ export interface LaunchedBrowser {
   close: () => Promise<void>;
 }
 
-export async function launchBrowser(): Promise<LaunchedBrowser> {
+export async function launchBrowser(deviceScaleFactor?: number): Promise<LaunchedBrowser> {
   const userDataDir = mkdtempSync(join(tmpdir(), 'wasmcheat-profile-'));
   const context = await chromium.launchPersistentContext(userDataDir, {
     headless: true,
     channel: 'chromium',
+    deviceScaleFactor,
     args: [
       `--disable-extensions-except=${PATHS.extension}`,
       `--load-extension=${PATHS.extension}`,

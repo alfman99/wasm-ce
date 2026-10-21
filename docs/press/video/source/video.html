@@ -1,0 +1,143 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  :root { --paper:#faf9f7; --surface:#fff; --surface-2:#f4f2ee; --line:#e3ded5; --ink:#1a1917; --ink-2:#5b564d; --ink-3:#6b665c; --accent:#0d7461; --accent-soft:#e7f1ee;
+    --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; --mono: ui-monospace, "SF Mono", Menlo, monospace; }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: var(--w); height: var(--h); overflow: hidden; }
+  body { background: var(--paper); color: var(--ink); font-family: var(--font); position: relative; }
+  .abs { position: absolute; }
+  #hook { inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; }
+  #hook .col { display: flex; flex-direction: column; gap: 20px; max-width: var(--hook-w); }
+  #hook .who { font-size: 26px; font-weight: 600; color: var(--ink-3); padding-left: 6px; }
+  #hook .bubble { background: var(--surface); border: 1px solid var(--line); border-radius: 22px; padding: 34px 46px; font-size: var(--hook-size); line-height: 1.18; font-weight: 600; letter-spacing: -0.015em; max-width: var(--hook-w); min-height: calc(var(--hook-size) * 2.36 + 68px); }
+  #hook .caret { display: inline-block; width: 4px; height: 0.9em; background: var(--accent); vertical-align: -0.08em; margin-left: 4px; }
+  #hook .ghost { visibility: hidden; }
+  .heading { font-size: var(--head-size); line-height: 1.14; font-weight: 650; letter-spacing: -0.02em; }
+  .heading em { font-style: normal; color: var(--accent); }
+  #chat { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; display: flex; flex-direction: column; }
+  #chat .head { height: 66px; flex: none; padding: 0 24px; border-bottom: 1px solid var(--line); display: flex; align-items: center; font-size: 22px; font-weight: 600; }
+  #chat .head small { margin-left: auto; font-size: 17px; font-weight: 500; color: var(--accent); background: var(--accent-soft); padding: 5px 14px; border-radius: 999px; }
+  #view { flex: 1; position: relative; overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 56px); mask-image: linear-gradient(to bottom, transparent 0, #000 56px); }
+  #log { position: absolute; left: 0; right: 0; top: 0; padding: 22px 24px; display: flex; flex-direction: column; gap: 14px; font-size: var(--chat-size); line-height: 1.42; }
+  .you { align-self: flex-end; max-width: 86%; background: var(--surface-2); border-radius: 14px; padding: 12px 18px; }
+  .agent { max-width: 94%; }
+  .tool { font: calc(var(--chat-size) * 0.84)/1.5 var(--mono); border-left: 3px solid var(--accent); padding: 3px 0 3px 14px; color: var(--ink-2); }
+  .tool b { color: var(--accent); font-weight: 600; }
+  .tool span { display: block; color: var(--ink); }
+  #game { border-radius: 18px; overflow: hidden; background: #0e100f; }
+  #game img { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #ring { position: absolute; left: 5.1%; top: 21.9%; width: 89.7%; height: 18.9%; border: 5px solid #38c3a4; border-radius: 16px; }
+  #reload { position: absolute; inset: 0; background: #0e100f; display: flex; align-items: center; justify-content: center; }
+  #reload svg { width: 96px; height: 96px; }
+  #note { font-size: 19px; color: var(--ink-3); }
+  #outro { inset: 0; display: flex; flex-direction: column; justify-content: center; padding: 0 var(--pad); gap: 0; }
+  #outro .brand { display: flex; align-items: center; gap: 20px; font-size: 48px; font-weight: 650; letter-spacing: -0.01em; }
+  #outro .brand img { width: 84px; height: 84px; border-radius: 18px; }
+  #outro h1 { margin-top: 44px; font-size: var(--outro-size); line-height: 1.06; letter-spacing: -0.03em; font-weight: 700; max-width: var(--outro-w); }
+  #outro p { margin-top: 30px; font-size: var(--outro-sub); line-height: 1.4; color: var(--ink-2); max-width: var(--outro-w); }
+  #outro .url { margin-top: 40px; font: 600 var(--outro-url)/1 var(--mono); color: var(--accent); }
+</style>
+<div id="hook" class="abs"><div class="col"><div class="who">You, to your AI agent</div><div class="bubble"><span id="typed"></span><span class="caret" id="caret"></span><span class="ghost" id="ghost"></span></div></div></div>
+<div id="h0" class="abs heading">Your agent finds where the game <em>keeps it</em>.</div>
+<div id="h1" class="abs heading">It <em>changes it</em> while the game runs.</div>
+<div id="h2" class="abs heading">And keeps it: the change <em>comes back on every load</em>.</div>
+<div id="chat" class="abs"><div class="head">Your agent<small>wasmcheat connected</small></div><div id="view"><div id="log"></div></div></div>
+<div id="game" class="abs"><img id="g0" src="../../../../test-results/promo-session/04.png"><img id="g1" src="../../../../test-results/promo-session/07.png"><img id="g2" src="../../../../test-results/promo-session/09.png"><img id="g3" src="../../../../test-results/promo-session/11.png"><div id="ring"></div>
+  <div id="reload"><svg viewBox="0 0 24 24" fill="none" stroke="#ff7a2f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v4.5h-4.5"/></svg></div></div>
+<div id="note" class="abs">Real session: every call and result is what the WasmCheat tools returned.</div>
+<div id="outro" class="abs">
+  <div class="brand" id="o0"><img src="../../../../packages/extension/icons/128.png">WasmCheat</div>
+  <h1 id="o1">Ask your AI agent to change any web game.</h1>
+  <p id="o2">A browser extension and an MCP server for Claude Code, Codex, Cursor and other agents. The change comes back on every load.</p>
+  <div class="url" id="o3">github.com/alfman99/wasm-ce · MIT</div>
+</div>
+<script>
+const FORMAT = new URLSearchParams(location.search).get('format') || 'landscape';
+const L = FORMAT === 'vertical'
+  ? { w: 1080, h: 1920, head: { x: 64, y: 96, w: 952 }, chat: { x: 64, y: 360, w: 952, h: 660 }, game: { x: 64, y: 1050, w: 952 }, note: { x: 64, y: 1866 },
+      vars: { '--hook-size': '66px', '--hook-w': '940px', '--who-align': 'flex-start', '--head-size': '66px', '--chat-size': '25px', '--pad': '72px', '--outro-size': '96px', '--outro-w': '940px', '--outro-sub': '36px', '--outro-url': '30px' } }
+  : { w: 1920, h: 1080, head: { x: 96, y: 66, w: 1728 }, chat: { x: 96, y: 196, w: 772, h: 792 }, game: { x: 916, y: 196, w: 908 }, note: { x: 96, y: 1018 },
+      vars: { '--hook-size': '68px', '--hook-w': '1380px', '--who-align': 'flex-start', '--head-size': '56px', '--chat-size': '23px', '--pad': '160px', '--outro-size': '104px', '--outro-w': '1500px', '--outro-sub': '36px', '--outro-url': '32px' } };
+const root = document.documentElement.style;
+root.setProperty('--w', L.w + 'px'); root.setProperty('--h', L.h + 'px');
+for (const [k, v] of Object.entries(L.vars)) root.setProperty(k, v);
+const $ = (id) => document.getElementById(id);
+const place = (el, r) => { el.style.left = r.x + 'px'; el.style.top = r.y + 'px'; if (r.w) el.style.width = r.w + 'px'; if (r.h) el.style.height = r.h + 'px'; };
+place($('chat'), L.chat); place($('note'), L.note);
+place($('game'), { ...L.game, h: Math.round(L.game.w * 968 / 1160) });
+for (const id of ['h0', 'h1', 'h2']) place($(id), L.head);
+const hook = $('hook'); hook.style.alignItems = 'center';
+
+const clamp = (x) => Math.max(0, Math.min(1, x));
+const ease = (x) => 1 - Math.pow(1 - clamp(x), 3);
+const inout = (x) => { x = clamp(x); return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; };
+const prog = (t, a, d) => ease((t - a) / d);
+// visible between a and b, fading in over fin and out over fout
+const span = (t, a, b, fin = 0.35, fout = 0.25) => Math.min(prog(t, a, fin), 1 - prog(t, b - fout, fout));
+const show = (el, o, dy = 0, s = 1) => { el.style.opacity = o; el.style.transform = `translateY(${dy}px) scale(${s})`; el.style.visibility = o <= 0.001 ? 'hidden' : 'visible'; };
+
+const REQUEST = 'Give me a million points in this game, and keep them after a reload.';
+const APPEAR = [4.3, 5.0, 5.9, 7.0, 7.6, 8.4, 9.5, 10.1, 10.8, 13.8, 15.6];
+let rows = [];
+window.setup = (lines) => {
+  const log = $('log');
+  rows = lines.map((line) => {
+    const el = document.createElement('div');
+    el.className = line.who;
+    if (line.who === 'tool') {
+      const b = document.createElement('b'); b.textContent = line.text.replace(/\s+/, '  '); el.append(b);
+      if (line.result) { const s = document.createElement('span'); s.textContent = '→ ' + line.result; el.append(s); }
+    } else el.textContent = line.text;
+    log.append(el);
+    return el;
+  });
+  $('ghost').textContent = REQUEST;
+};
+
+window.render = (t) => {
+  // Hook: the request types in, then holds.
+  const typed = Math.floor(clamp((t - 0.3) / 2.1) * REQUEST.length);
+  $('typed').textContent = REQUEST.slice(0, typed);
+  $('ghost').textContent = REQUEST.slice(typed);
+  $('caret').style.opacity = typed < REQUEST.length || Math.floor(t * 2) % 2 === 0 ? 1 : 0;
+  const hookOut = prog(t, 4.0, 0.32);
+  show(hook, 1 - hookOut, -hookOut * 24, 1 - hookOut * 0.03);
+
+  // Session: chat and game arrive after the hook has left.
+  const inS = prog(t, 4.3, 0.55), outS = prog(t, 17.0, 0.35);
+  const sessionO = Math.min(inS, 1 - outS);
+  show($('chat'), sessionO, (1 - inS) * 40 - outS * 16);
+  show($('game'), sessionO, (1 - prog(t, 4.42, 0.55)) * 40 - outS * 16);
+  show($('note'), Math.min(prog(t, 4.9, 0.5), 1 - outS));
+  show($('h0'), span(t, 4.6, 10.6), (1 - prog(t, 4.6, 0.4)) * 14);
+  show($('h1'), span(t, 10.85, 13.6), (1 - prog(t, 10.85, 0.4)) * 14);
+  show($('h2'), span(t, 13.85, 17.0), (1 - prog(t, 13.85, 0.4)) * 14);
+
+  // Chat lines appear one by one; the log scrolls so the newest stays in view.
+  const viewH = $('view').clientHeight;
+  let target = 0, prevTarget = 0, lastStart = -1;
+  rows.forEach((el, i) => {
+    const a = APPEAR[i];
+    const p = i === 0 ? 1 : prog(t, a, 0.32);
+    show(el, p, (1 - p) * 14);
+    const bottom = el.offsetTop + el.offsetHeight + 22;
+    if (t >= a) { prevTarget = target; target = Math.max(0, bottom - viewH); lastStart = a; }
+  });
+  const scroll = prevTarget + (target - prevTarget) * inout((t - lastStart) / 0.4);
+  $('log').style.transform = `translateY(${-scroll}px)`;
+
+  // Game: 125, then 150, then the million, then the reload and the million again.
+  const g = [$('g0'), $('g1'), $('g2'), $('g3')];
+  const cut = [0, prog(t, 9.5, 0.18), prog(t, 10.9, 0.18), t >= 15.0 ? 1 : 0];
+  g.forEach((img, i) => { img.style.opacity = i === 0 ? 1 : cut[i]; });
+  const pulse = span(t, 10.95, 12.4, 0.2, 0.6) * (0.75 + 0.25 * Math.cos((t - 10.95) * 7)) + span(t, 15.3, 16.6, 0.2, 0.6) * 0.9;
+  show($('ring'), Math.min(1, pulse), 0, 1 + 0.02 * (1 - prog(t, 10.95, 0.35)));
+  const rel = span(t, 14.5, 15.4, 0.22, 0.3);
+  $('reload').style.opacity = rel;
+  $('reload').querySelector('svg').style.transform = `rotate(${(t - 14.5) * 420}deg)`;
+
+  // Outro.
+  ['o0', 'o1', 'o2', 'o3'].forEach((id, i) => { const p = prog(t, 17.45 + i * 0.22, 0.5); show($(id), p, (1 - p) * 22); });
+};
+</script>

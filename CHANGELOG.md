@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Launch videos in `docs/press/video`, landscape and vertical, drawn from the session the promo test
+  records, with a soundtrack synthesized by `sound.py`. The promo test now keeps that session at 2x.
+
 ## 0.2.0
 
 Your AI agent can now change any web app or browser game, not only its WebAssembly memory, and keep

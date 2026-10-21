@@ -39,6 +39,8 @@ WasmCheat sends nothing off your machine.
 
 | File | What it shows | Size |
 | --- | --- | --- |
+| [`video/wasmcheat-launch.mp4`](video/wasmcheat-launch.mp4) | A 21 second launch video with sound, for X, Bluesky, LinkedIn and YouTube; poster [`.jpg`](video/wasmcheat-launch.jpg) | 1920 × 1080 |
+| [`video/wasmcheat-launch-vertical.mp4`](video/wasmcheat-launch-vertical.mp4) | The same video for Shorts, Reels and TikTok; poster [`.jpg`](video/wasmcheat-launch-vertical.jpg) | 1080 × 1920 |
 | [`docs/img/agent-demo.gif`](../img/agent-demo.gif) | A real agent session: find the score, set it, keep it, reload | 1000 px wide |
 | [`docs/img/social-card.png`](../img/social-card.png) | The social preview card | 1280 × 640 |
 | [`docs/img/how-it-works.svg`](../img/how-it-works.svg) | Agent, server, extension and page, and what talks to what | vector |
@@ -47,7 +49,10 @@ WasmCheat sends nothing off your machine.
 
 The GIF, the social card and the screenshots are made by the test suite from the real product
 (`WASMCHEAT_SHOTS=1 npx playwright test tests/e2e/promo.spec.ts tests/e2e/screenshots.spec.ts`), so they
-stay true as it changes.
+stay true as it changes. The videos are drawn from the session that the promo test records: every chat
+line and game shot in them is what the tools returned. Rebuild them after that test with
+`node docs/press/video/source/render.mjs` (needs ffmpeg, ImageMagick, and python3 with numpy for the
+soundtrack, which [`sound.py`](video/source/sound.py) synthesizes, so there is no music licence to clear).
 
 ## Launch posts
 
@@ -89,9 +94,9 @@ https://github.com/alfman99/wasm-ce
 
 ### X / Bluesky
 
-Ask your AI agent to change any web game. The change comes back on every load.
-
-WasmCheat: a browser extension and an MCP server for Claude Code, Codex, Cursor and other agents. MIT.
+I asked my AI agent for a million points in a browser game, and to keep them after a reload. WasmCheat
+found the score in the game's WebAssembly memory, changed it and kept it as a mod, so it is back on every
+load. A browser extension and an MCP server for Claude Code, Codex and Cursor, MIT:
 https://github.com/alfman99/wasm-ce
 
-(Attach `docs/img/agent-demo.gif`.)
+(Attach `video/wasmcheat-launch.mp4`; on a vertical feed, `video/wasmcheat-launch-vertical.mp4`.)
