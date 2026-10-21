@@ -14,6 +14,7 @@ not the objects. A **realm** is one such JavaScript world: a page, an iframe or 
 | `packages/page-agent` | Runs in the page's **MAIN world** and in every Web Worker. Patches `WebAssembly.instantiate*` / `new WebAssembly.Instance` to capture instances, then does the real work: memory access, scanning, freezing, watches, hooks, watchpoint instrumentation. |
 | `packages/extension` | MV3 extension. Injects the page agent at `document_start`, relays RPC from the service worker, owns the WebSocket to the MCP server, and ships the DevTools panel and popup. |
 | `packages/mcp-server` | Node 22 stdio MCP server. Exposes the `wasmcheat_*` tools, talks to the extension over a local WebSocket, writes the audit log. |
+| `packages/wasm-instrument` | Rewrites a wasm binary before it is compiled: the watchpoint probes on loads and stores, and the function patches. |
 | `packages/demo-app` | A tiny C game compiled to a standalone wasm module, plus a hand-written loader. The test target. |
 
 
@@ -83,7 +84,7 @@ every frame at once.
 
 Unity, Godot 4 and most itch.io builds instantiate their module **inside a Web Worker**, where the
 page realm's `WebAssembly` hook can never see it. The page agent therefore replaces `Worker` itself
-and boots a second copy of itself inside each worker (prepending `importScripts('<extension>/dist/worker-agent.js')`
+and boots a second copy of itself inside each worker (prepending `importScripts('<extension>/worker-agent.js')`
 to a small blob wrapper), so worker instances are captured by the same registry, scan store and
 hook store as page instances. `wasmcheat_list_workers` reports them, and their instance ids are
 namespaced by the worker that owns them (`k1-1`).
@@ -203,8 +204,9 @@ page, in DevTools, on purpose. Everything follows from that:
   as a plain page it takes the tab in front. There is no tab picker, and the toolbar popup is only
   a status card.
 - **Tools default to the tab in front.** `tabId` is optional on every MCP tool: an agent that does
-  not pass one gets the tab you are looking at, and `wasmcheat_list_tabs` exists only for the rare
-  case of a second tab.
+  not pass one gets the tab you are looking at in the focused window. The server's instructions still
+  tell an agent to pass the id from `wasmcheat_list_tabs`, because with several windows open the tab
+  in front can change mid-task.
 - **Nothing to attach in the panel, and the MCP attach heals itself.** The panel starts the agent
   on the tab it is opened on. For an agent, `wasmcheat_attach` injects it if the page has none; if
   the app started before the agent existed, it reloads the tab once, says so in its note, and keeps

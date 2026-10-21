@@ -15,3 +15,4 @@ coverage/
 .claude/settings.local.json
 .claude/worktrees/
 anti-slop/
+brag-output*/

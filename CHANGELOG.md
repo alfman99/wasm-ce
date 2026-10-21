@@ -1,13 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- Launch videos in `docs/press/video`, landscape and vertical, drawn from the session the promo test
+  records, with a soundtrack synthesized by `sound.py`. The promo test now keeps that session at 2x.
+- With no browser connected, the MCP server's error names `packages/extension/dist`, the folder you
+  load, instead of `packages/extension`.
+- The `wasmcheat_speed` description says workers are scaled too, which they always were.
+- The quick start and the tool walkthrough scan for Ore, which only moves when you press Mine: the
+  demo's score climbs on its own, so an exact scan for it could never match.
+- The docs agree on `tabId` (optional, but pass it once you know the tab), list every place a release
+  bumps the version, and describe the recording as what it is: a scripted chat around real tool calls.
+- Test tooling is on vitest 5 and esbuild 0.28, so `npm audit` reports nothing on a fresh install.
+
 ## 0.2.0
 
 Your AI agent can now change any web app or browser game, not only its WebAssembly memory, and keep
 the change as a mod that comes back on every load. Connect it once (README, "Connect your agent") and
 ask in plain words; the server teaches it the method.
 
-- The README opens with a recording of a real agent session against the demo game and a diagram of
-  what talks to what. `docs/press` has a short description, facts, images and launch drafts, and the
+- The README opens with a recording of the tools at work on the demo game (a scripted chat around
+  real tool calls and results) and a diagram of what talks to what. `docs/press` has a short description, facts, images and launch drafts, and the
   test suite rebuilds the recording and the social card (`tests/e2e/promo.spec.ts`).
 - An agent needs nothing but the MCP server to learn the method: the server sends a short version as
   its instructions on connect, and the new `wasmcheat_guide` tool returns the mod-any-webapp skill,

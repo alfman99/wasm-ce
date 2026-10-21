@@ -5,12 +5,14 @@
 **Ask your AI agent to change any web app or browser game, and keep the change as a mod that comes
 back on every load.**
 
-![An agent connected to WasmCheat finds the score in the demo game's WebAssembly memory, sets it to
-1000000, keeps that as a mod, and the score is 1000000 again after a reload](docs/img/agent-demo.gif)
+![A chat with an agent beside the demo game: the WasmCheat tools find the score in its WebAssembly
+memory, set it to 1000000 and keep that as a mod, and the score is 1000000 again after a
+reload](docs/img/agent-demo.gif)
 
 WasmCheat is a browser extension and an MCP server. Your agent (Claude Code, Codex, Cursor or any MCP
 client) looks at what the page is built with, changes it while it runs, and keeps the change. The
-recording above is a real session against the bundled demo game. A DevTools panel does the same by hand.
+recording above runs the method on the bundled demo game: the chat lines are scripted, and every tool
+call and result in it is what WasmCheat returned. A DevTools panel does the same by hand.
 
 What an agent has done with it, each in one conversation:
 
@@ -48,7 +50,8 @@ Then load the extension:
 3. Pin WasmCheat to the toolbar. A welcome tab shows where the panel is.
 
 Each [release](https://github.com/alfman99/wasm-ce/releases) also carries the extension as a zip, for the
-panel alone; the agent needs the MCP server, which is built from source.
+panel alone: unzip it and load the `wasmcheat` folder inside the same way. The agent needs the MCP
+server, which is built from source.
 
 ## Connect your agent
 

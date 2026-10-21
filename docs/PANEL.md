@@ -18,7 +18,7 @@ tab picker, because the tab you are inspecting is the tab you mean.
 | **Now** | `Foundry · w1 · 0x408`. Tab, then instance, then the address in the forms. Updates as you click. It answers "what am I about to write to?" |
 | `agent` pill | What the page runs: `1 wasm module`, `3 wasm modules`, or `no wasm`; ` · scripts blocked` is added when the page's content security policy (CSP) forbids hook bodies (use a declarative fallback). |
 | `bridge` pill | The optional MCP server: `MCP off` (neutral: the panel does not need it), `MCP live`, `MCP needs a token` or `MCP token refused`. The token field appears only for the last two. |
-| Steps strip | `1 Scan for a value`, `2 Narrow it down`, `3 Change it`. The current step is outlined, so the strip tells you where you are rather than listing three links. |
+| Steps strip | `1 Scan for a value`, `2 Narrow it down`, `3 Change it`. The current step is outlined, so the strip tells you where you are. |
 | **Help** / **Theme** | The same help sheet as <kbd>?</kbd>, and a light/dark switch that is remembered. |
 
 The three chips under the header are the workflow: **1 Scan for a value**, **2 Narrow it down**,

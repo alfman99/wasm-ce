@@ -104,13 +104,14 @@ function json<T>(value: unknown): T {
 
 /**
  * Every tool takes the tab id, and every tool can do without it: the tab in front is what a human
- * means by "this game". Listing tabs is only needed to reach a second one.
+ * means by "this game". With several windows open the tab in front can change mid-task, so the
+ * server's instructions still tell an agent to pass the id it got from listing tabs.
  */
 const TAB_ID = z
   .number()
   .int()
   .optional()
-  .describe('Tab id from wasmcheat_list_tabs. Omit for the tab in front.');
+  .describe('Tab id from wasmcheat_list_tabs. Optional: without it the tool uses the front tab of the focused window, which can change mid-task when several windows are open, so pass it.');
 
 export function createServer(bridge: Bridge): McpServer {
   const server = new McpServer({ name: 'wasmcheat', version: '0.2.0' }, { instructions: INSTRUCTIONS });
@@ -740,7 +741,7 @@ export function createServer(bridge: Bridge): McpServer {
       description:
         'Multiplies the time the page perceives, without editing the game: `performance.now()`, `Date.now()` and the timestamp ' +
         'given to `requestAnimationFrame` all run at `scale`x. 1 is real time, 0 stops the simulation (a paused game you can ' +
-        'still scan), 3 is three times faster. Only the page realm is scaled; workers keep real time. Omit `scale` to read the ' +
+        'still scan), 3 is three times faster. Every Web Worker the page started is scaled too. Omit `scale` to read the ' +
         'current setting, use `reset: true` (or scale 1) to go back.',
       inputSchema: {
         tabId: TAB_ID,

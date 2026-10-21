@@ -14,9 +14,11 @@ code to pass to `wasmcheat_run_script`.
 
 - `wasmcheat_list_tabs`. If it says no extension is connected, the user has to load the extension
   (see the project's QUICKSTART) and keep the browser open; it pairs with the server by itself.
-- Pass `tabId` on every call: each browser window has a front tab, so "active" is ambiguous.
-- `agentAttached: false` on the tab means the page loaded before the extension: ask the user to
-  reload that tab. They also reload the tab after the extension itself was reloaded or updated.
+- Pass `tabId` on every call: each browser window has a front tab, so without it the tool acts on
+  whichever window has focus.
+- `agentAttached: false` on the tab means the page loaded before the extension: `wasmcheat_attach`
+  reloads it once on its own. After the extension itself was reloaded or updated, ask the user to
+  reload the tab.
 
 ## 2. Recon
 

@@ -65,7 +65,7 @@ store requires.
 | Host access to `http://*/*` and `https://*/*` | The page agent must run in a page before the game starts, to see the WebAssembly modules it creates. The game can be on any site, and often in a cross-origin iframe. |
 | `scripting` | Injects the page agent into a tab that was already open when the extension was installed, so the user does not have to reload by hand. |
 | `tabs` | Names the tab the panel works on (title and address) and notices when that tab reloads or closes. |
-| `storage` | Keeps the panel's theme and the pairing token for the optional local MCP server. |
+| `storage` | Keeps the panel's theme, the mods the user chose to keep (their code and the game frame's origin), and the pairing token and port for the optional local MCP server. For the current browser session only, which tabs have the agent and the watchpoints and patches waiting for a reload. |
 | `alarms` | Wakes the service worker every 30 seconds to reconnect to the optional local MCP server. |
 
 **Remote code:** No. All JavaScript ships in the package. The Hooks and Script tools run code the

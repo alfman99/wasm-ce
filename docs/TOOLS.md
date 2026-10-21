@@ -128,7 +128,7 @@ The body is compiled as `function(args, ctx)`: `args` is the argument array, `ct
 runs the original, and the return value replaces the result (return nothing to pass it through).
 
 ```jsonc
-// Double every score read, live, no reload.
+// Add a million to every score read, live, no reload.
 { "tabId": …, "action": "add", "instanceId": "w1", "target": "export", "name": "get_score",
   "body": "return ctx.call(args) + 1000000;", "note": "demo: show a live export patch" }
 
@@ -295,15 +295,16 @@ agent: wasmcheat_list_tabs {}
        → one tab, "Foundry", active: true
 agent: wasmcheat_attach {}
        → instances: [w1, 131072 bytes]
-agent: wasmcheat_scan { "instanceId": "w1", "type": "i32", "mode": "exact", "value": 75 }
-       → scanId s1, 2 matches
-       (press Mine a few times in the page between passes)
-agent: wasmcheat_scan { "instanceId": "w1", "type": "i32", "mode": "changed", "scanId": "s1" }
+       (the user pressed Mine three times: Ore reads 3)
+agent: wasmcheat_scan { "instanceId": "w1", "type": "i32", "mode": "exact", "value": 3 }
+       → scanId s1 and its matches
+       (the user presses Mine once more: Ore reads 4)
+agent: wasmcheat_scan { "instanceId": "w1", "type": "i32", "mode": "exact", "value": 4, "scanId": "s1" }
        → 1 match
 agent: wasmcheat_scan_results { "scanId": "s1" }
-       → {"hits": [{"address": "w1:0x408", "value": 100}]}
-agent: wasmcheat_write { "address": "w1:0x408", "type": "i32", "value": 999999 }
-       → the score in the page changes, no reload
+       → {"hits": [{"address": "w1:0x40c", "value": 4}]}
+agent: wasmcheat_write { "address": "w1:0x40c", "type": "i32", "value": 999999 }
+       → Ore in the page changes, no reload
 agent: wasmcheat_freeze { "action": "set", "address": "w1:0x400", "type": "i32", "value": 999 }
        → Hazard no longer takes lives
 agent: wasmcheat_hook { "action": "add", "instanceId": "w1", "target": "export",
@@ -313,8 +314,9 @@ agent: wasmcheat_audit { "limit": 20 }
        → the attach, the write, the freeze and the hook, with addresses and values
 ```
 
-`window.__foundry` exposes `pause()`, `resume()` and `snapshot()` so a scan can target a value
-that is not moving. The automated test does exactly that.
+Ore is the value to scan for by hand: the score also climbs on its own, one point every 200 ms.
+`window.__foundry` exposes `pause()`, `resume()` and `snapshot()` to stop that, which is how the
+automated tests scan the score.
 
 ---
 

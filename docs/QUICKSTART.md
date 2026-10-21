@@ -17,7 +17,8 @@ npm install
 npm run build
 ```
 
-`npm run build` compiles the protocol, the page agent, the extension, the MCP server and the demo.
+`npm run build` compiles the protocol, the wasm instrumenter, the page agent, the extension, the MCP
+server and the demo.
 It also compiles `packages/demo-app/src/game.c` to `packages/demo-app/prebuilt/game.wasm` when it
 finds a clang that can target wasm; otherwise the committed `.wasm` is used unchanged.
 
@@ -70,20 +71,22 @@ There is nothing to pick, attach or approve: the panel works on the tab you open
    prints Diagnose (frames, `WebAssembly.instantiate` calls seen, whether the page blocks
    `new Function`).
 
-## 6. Find the score
+## 6. Find the ore
 
-1. Click **Mine** three times. The page shows `Score 75`.
-2. In **Scan** set Type `i32`, Value `75`, then **First Scan**. The Found list fills with
-   candidates: a fresh module is mostly zeros, so there are more than you expect.
-3. Click **Mine**. Score is now `100`.
-4. Type `100` into Value and press **Next Scan**. The list shrinks to the addresses that held `75`
-   and now hold `100`. Press it again with a new value if you want a single hit.
+The score climbs on its own, one point every 200 ms, so start with **Ore**: it changes only when you
+press **Mine**.
+
+1. Click **Mine** three times. The page shows `Ore 3`.
+2. In **Scan** set Type `i32`, Value `3`, then **First Scan**. The Found list fills with candidates.
+3. Click **Mine**. Ore is now `4`.
+4. Type `4` into Value and press **Next Scan**. The list shrinks to the addresses that held `3` and
+   now hold `4`. Press it again with a new value if more than one is left.
 5. Click the address. An editor opens under the list with the current value in it.
 
 ## 7. Change it
 
-- Type `123456` in **New value** and press **Write** (or Enter). The editor prints `100 -> 123456`.
-  Switch to the game tab: the score reads `123456`, with no reload.
+- Type `123456` in **New value** and press **Write** (or Enter). The editor prints `4 -> 123456`.
+  Switch to the game tab: Ore reads `123456`, with no reload.
 - To hold a value, find **Lives** the same way, type `999` and press **Freeze**, then click
   **Hazard**. Lives stay at `999`: the page rewrites the value every 16 ms. The button now says
   **Unfreeze**.

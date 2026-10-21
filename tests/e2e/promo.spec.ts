@@ -16,11 +16,15 @@ import {
 } from './harness.js';
 
 /**
- * Records docs/img/agent-demo.gif and renders docs/img/social-card.png: a real MCP session against
- * the demo game, every call and result taken from what the tools answered while recording. Run with
- * `WASMCHEAT_SHOTS=1 npx playwright test tests/e2e/promo.spec.ts`; needs ffmpeg on the PATH.
+ * Records docs/img/agent-demo.gif and renders docs/img/social-card.png: real MCP calls against
+ * the demo game, every call and result taken from what the tools answered while recording. The
+ * "you" and "agent" lines are scripted around them, and the footnote says so. Run with
+ * `WASMCHEAT_SHOTS=1 npx playwright test tests/e2e/promo.spec.ts`; needs ffmpeg on the PATH. It also
+ * leaves the session in test-results/promo-session for the launch videos (docs/press).
  */
 const FRAMES = join(ROOT, 'test-results/promo-frames');
+// The launch videos are drawn from this: each step's game at 2x and the chat as it stood.
+const SESSION = join(ROOT, 'test-results/promo-session');
 const GAME_CLIP = { x: 350, y: 118, width: 580, height: 484 };
 
 interface Line {
@@ -49,11 +53,16 @@ const STAGE = `<!doctype html><meta charset="utf-8"><style>
 </style>
 <div class="chat"><div class="head">Your agent<small>wasmcheat connected</small></div><div class="log" id="log"></div></div>
 <div class="game"><img id="game"></div>
-<div class="note">Recorded from a real session: every call and result shown here came from the WasmCheat tools against the demo game.</div>`;
+<div class="note">The chat is scripted; every tool call and result shown came from WasmCheat against the demo game.</div>`;
 
 let frame = 0;
+const steps: { lines: Line[]; game: string }[] = [];
 async function shoot(stage: Page, game: Page, lines: Line[], hold: number): Promise<void> {
-  const image = (await game.screenshot({ clip: GAME_CLIP })).toString('base64');
+  const shot = await game.screenshot({ clip: GAME_CLIP });
+  const image = shot.toString('base64');
+  const name = `${String(steps.length).padStart(2, '0')}.png`;
+  writeFileSync(join(SESSION, name), shot);
+  steps.push({ lines: [...lines], game: name });
   await stage.evaluate(
     ({ lines, image }) => {
       const log = document.getElementById('log')!;
@@ -79,7 +88,7 @@ async function shoot(stage: Page, game: Page, lines: Line[], hold: number): Prom
     { lines, image },
   );
   await sleep(60);
-  const png = await stage.screenshot();
+  const png = await stage.screenshot({ scale: 'css' });
   // gifski plays frames at a fixed rate, so a step is held by repeating its frame.
   for (let i = 0; i < hold; i += 1) {
     writeFileSync(join(FRAMES, `${String(frame).padStart(4, '0')}.png`), png);
@@ -89,11 +98,13 @@ async function shoot(stage: Page, game: Page, lines: Line[], hold: number): Prom
 
 test('promo', async () => {
   test.setTimeout(180_000);
-  rmSync(FRAMES, { recursive: true, force: true });
-  mkdirSync(FRAMES, { recursive: true });
+  for (const dir of [FRAMES, SESSION]) {
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+  }
   await assertPortFree(BRIDGE_PORT);
   const demo = await startDemoServer();
-  const browser = await launchBrowser();
+  const browser = await launchBrowser(2);
   const worker = browser.context.serviceWorkers()[0] ?? (await browser.context.waitForEvent('serviceworker'));
   await worker.evaluate((port) => chrome.storage.local.set({ wasmcheatPort: port }), BRIDGE_PORT);
   const mcp = await connectMcp();
@@ -158,7 +169,7 @@ test('promo', async () => {
     await game.evaluate(() => (window as unknown as { __foundry: { pause(): void } }).__foundry.pause());
     await say({ who: 'agent', text: 'Reloaded: the mod ran again and set 1,000,000. Remove it any time with wasmcheat_mod remove.' }, 40);
 
-    // The social card reuses the last frame, so it shows the same real session.
+    // The social card reuses the last frame, so it shows the same calls and results.
     const last = readFileSync(join(FRAMES, `${String(frame - 1).padStart(4, '0')}.png`)).toString('base64');
     const icon = readFileSync(join(ROOT, 'packages/extension/icons/128.png')).toString('base64');
     await stage.setViewportSize({ width: 1280, height: 640 });
@@ -179,7 +190,8 @@ test('promo', async () => {
       <p>A browser extension and an MCP server for Claude Code, Codex, Cursor and other agents.</p></div>
     <div class="shot"><img src="data:image/png;base64,${last}"></div>`);
     await sleep(100);
-    await stage.screenshot({ path: join(ROOT, 'docs/img/social-card.png') });
+    await stage.screenshot({ path: join(ROOT, 'docs/img/social-card.png'), scale: 'css' });
+    writeFileSync(join(SESSION, 'session.json'), JSON.stringify(steps, null, 2));
 
     await call(mcp, 'wasmcheat_mod', { action: 'remove', modId: (await call<{ id: string }[]>(mcp, 'wasmcheat_mod', { action: 'list' })).data[0]!.id });
     // One palette for the whole clip, and only the changed rectangle per frame: small and sharp.

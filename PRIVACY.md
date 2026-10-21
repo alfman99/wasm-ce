@@ -25,7 +25,7 @@ All of it stays in your browser or on your disk, and none of it, mods included, 
 | What | Where |
 | --- | --- |
 | The MCP pairing token, the bridge port, the panel's light or dark theme, mods you keep (their code and the origin of the game frame) | the extension's own storage (`chrome.storage.local`) |
-| Which tabs and frames have the agent, for the current browser session | `chrome.storage.session`, cleared when the browser closes |
+| Which tabs and frames have the agent, and the watchpoints and function patches waiting for a reload to install, for the current browser session | `chrome.storage.session`, cleared when the browser closes |
 | Bookmarks you add | that site's `localStorage` |
 | Saved scans, armed watchpoints, function patches | that site's `sessionStorage`, gone when the tab closes |
 | The audit log of every change, including the code of each script run (only if you run the MCP server) | `~/.wasmcheat/audit.jsonl`, readable by your user only |

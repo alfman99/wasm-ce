@@ -39,7 +39,9 @@ WasmCheat sends nothing off your machine.
 
 | File | What it shows | Size |
 | --- | --- | --- |
-| [`docs/img/agent-demo.gif`](../img/agent-demo.gif) | A real agent session: find the score, set it, keep it, reload | 1000 px wide |
+| [`video/wasmcheat-launch.mp4`](video/wasmcheat-launch.mp4) | A 21 second launch video with sound, for X, Bluesky, LinkedIn and YouTube; poster [`.jpg`](video/wasmcheat-launch.jpg) | 1920 × 1080 |
+| [`video/wasmcheat-launch-vertical.mp4`](video/wasmcheat-launch-vertical.mp4) | The same video for Shorts, Reels and TikTok; poster [`.jpg`](video/wasmcheat-launch-vertical.jpg) | 1080 × 1920 |
+| [`docs/img/agent-demo.gif`](../img/agent-demo.gif) | The method on the demo game, from a scripted chat with real tool calls and results: find the score, set it, keep it, reload | 1000 px wide |
 | [`docs/img/social-card.png`](../img/social-card.png) | The social preview card | 1280 × 640 |
 | [`docs/img/how-it-works.svg`](../img/how-it-works.svg) | Agent, server, extension and page, and what talks to what | vector |
 | [`docs/img/panel.png`](../img/panel.png), [`panel-dark.png`](../img/panel-dark.png) | The DevTools panel, light and dark | |
@@ -47,7 +49,10 @@ WasmCheat sends nothing off your machine.
 
 The GIF, the social card and the screenshots are made by the test suite from the real product
 (`WASMCHEAT_SHOTS=1 npx playwright test tests/e2e/promo.spec.ts tests/e2e/screenshots.spec.ts`), so they
-stay true as it changes.
+stay true as it changes. The videos are drawn from the session that the promo test records: every tool call,
+result and game shot in them is what WasmCheat returned, and the chat lines around them are scripted. Rebuild them after that test with
+`node docs/press/video/source/render.mjs` (needs ffmpeg, ImageMagick, and python3 with numpy for the
+soundtrack, which [`sound.py`](video/source/sound.py) synthesizes, so there is no music licence to clear).
 
 ## Launch posts
 
@@ -70,7 +75,7 @@ Things that surprised me while building it:
 - For Unity IL2CPP builds you can read class and field names straight out of memory, so a mod can find
   "coins" by name on every load instead of by an address that moves.
 - The server teaches the method to any agent through its MCP instructions and a `wasmcheat_guide` tool,
-  so there is nothing to install on the agent side.
+  so the agent needs nothing but the MCP server.
 
 It is for single-player state in your own browser; the README has the policy. MIT. Install is from
 source for now: https://github.com/alfman99/wasm-ce
@@ -80,18 +85,18 @@ source for now: https://github.com/alfman99/wasm-ce
 **Title:** I made an MCP server that lets Claude Code / Codex / Cursor mod browser games, and the mod
 survives reloads
 
-You connect the agent, open a game and ask in plain words. It found the score in the demo's wasm memory,
-set it to a million and kept it; on a reload it was a million again (the GIF in the README is that exact
-session). It has also added an aim line and a fireball menu to a PlayCanvas bubble shooter, and switched
+You connect the agent, open a game and ask in plain words. It finds the score in a game's wasm memory,
+sets it to a million and keeps that as a mod, so it is a million again after a reload (the GIF in the
+README shows it on the bundled demo, with real tool calls and results). In real sessions it has also added an aim line and a fireball menu to a PlayCanvas bubble shooter, and switched
 on a Unity game's own god mode by reading its class layout from memory. There is a DevTools panel for
 doing it by hand, like a small Cheat Engine for wasm. Single-player only, MIT, install from source:
 https://github.com/alfman99/wasm-ce
 
 ### X / Bluesky
 
-Ask your AI agent to change any web game. The change comes back on every load.
-
-WasmCheat: a browser extension and an MCP server for Claude Code, Codex, Cursor and other agents. MIT.
+Ask your AI agent for a million points in a browser game, and to keep them after a reload. WasmCheat
+finds the score in the game's WebAssembly memory, changes it and keeps it as a mod, so it is back on
+every load. A browser extension and an MCP server for Claude Code, Codex and Cursor, MIT:
 https://github.com/alfman99/wasm-ce
 
-(Attach `docs/img/agent-demo.gif`.)
+(Attach `video/wasmcheat-launch.mp4`; on a vertical feed, `video/wasmcheat-launch-vertical.mp4`.)
