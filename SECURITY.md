@@ -22,8 +22,8 @@ WasmCheat holds three kinds of power, and all three are in scope:
   their own agent over the bridge, and every run is audited with its code. That is the feature; a
   way for anything else (a web page, another extension) to make them run code is a vulnerability.
 - **The bridge** between the extension and the optional MCP server is a WebSocket on
-  `127.0.0.1:7331`, authenticated with a token both ends prove they hold (see "The bridge" in the
-  README). A way for another local program or a web page to issue commands over it, read the token,
+  `127.0.0.1:7331`, authenticated with a token both ends prove they hold (see [the bridge](docs/ARCHITECTURE.md#the-bridge-and-why-there-is-no-token-to-paste)
+  in docs/ARCHITECTURE.md). A way for another local program or a web page to issue commands over it, read the token,
   or impersonate the server to the extension is a vulnerability.
 
 Out of scope: what a person does with the tool on a page they opened themselves. The page agent

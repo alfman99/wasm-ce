@@ -153,7 +153,7 @@ export class Bridge {
           new BridgeError(
             'NO_AGENT',
             `no WasmCheat extension connected to ws://${this.options.host}:${this.options.port} after ${timeoutMs}ms. ` +
-              'Load packages/extension as an unpacked extension and keep this server running.',
+              'Load packages/extension/dist as an unpacked extension, keep the browser open and this server running.',
           ),
         );
       }, timeoutMs);

@@ -4,9 +4,8 @@ Last verified from a clean tree on 2026-10-20 (`rm -rf packages/*/dist`, `npm ci
 
 - `npm ci` clean, `npm run build` 0 errors, `npm run typecheck` 0 errors
 - `npx vitest run` **169 passed**
-- `npx playwright test` **31 passed, 0 skipped** (real Chromium, real extension, no mocks)
-- `npm audit --omit=dev` 0 vulnerabilities. The full audit flags 6 in test tooling only (vitest 2,
-  the esbuild inside vite); fixing them needs a vitest major upgrade.
+- `npx playwright test` **32 passed, 0 skipped** (real Chromium, real extension, no mocks)
+- `npm audit` 0 vulnerabilities, test tooling included.
 
 ## Proven end to end (real browser, real tab)
 

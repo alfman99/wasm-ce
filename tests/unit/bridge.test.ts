@@ -59,6 +59,8 @@ describe('bridge token', () => {
     expect(bridge.connected).toBe(false);
     await expect(bridge.request('ext.ping')).rejects.toThrow(/not presented a valid bridge token|not connected/);
     await expect(bridge.waitForExtension(50)).rejects.toThrow(/no WasmCheat extension connected/);
+    // The folder a person loads is the built one, not the package.
+    await expect(bridge.waitForExtension(50)).rejects.toThrow(/Load packages\/extension\/dist as an unpacked extension/);
     socket.terminate();
   });
 

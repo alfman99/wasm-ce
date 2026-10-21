@@ -16,8 +16,9 @@ import {
 } from './harness.js';
 
 /**
- * Records docs/img/agent-demo.gif and renders docs/img/social-card.png: a real MCP session against
- * the demo game, every call and result taken from what the tools answered while recording. Run with
+ * Records docs/img/agent-demo.gif and renders docs/img/social-card.png: real MCP calls against
+ * the demo game, every call and result taken from what the tools answered while recording. The
+ * "you" and "agent" lines are scripted around them, and the footnote says so. Run with
  * `WASMCHEAT_SHOTS=1 npx playwright test tests/e2e/promo.spec.ts`; needs ffmpeg on the PATH. It also
  * leaves the session in test-results/promo-session for the launch videos (docs/press).
  */
@@ -52,7 +53,7 @@ const STAGE = `<!doctype html><meta charset="utf-8"><style>
 </style>
 <div class="chat"><div class="head">Your agent<small>wasmcheat connected</small></div><div class="log" id="log"></div></div>
 <div class="game"><img id="game"></div>
-<div class="note">Recorded from a real session: every call and result shown here came from the WasmCheat tools against the demo game.</div>`;
+<div class="note">The chat is scripted; every tool call and result shown came from WasmCheat against the demo game.</div>`;
 
 let frame = 0;
 const steps: { lines: Line[]; game: string }[] = [];
@@ -168,7 +169,7 @@ test('promo', async () => {
     await game.evaluate(() => (window as unknown as { __foundry: { pause(): void } }).__foundry.pause());
     await say({ who: 'agent', text: 'Reloaded: the mod ran again and set 1,000,000. Remove it any time with wasmcheat_mod remove.' }, 40);
 
-    // The social card reuses the last frame, so it shows the same real session.
+    // The social card reuses the last frame, so it shows the same calls and results.
     const last = readFileSync(join(FRAMES, `${String(frame - 1).padStart(4, '0')}.png`)).toString('base64');
     const icon = readFileSync(join(ROOT, 'packages/extension/icons/128.png')).toString('base64');
     await stage.setViewportSize({ width: 1280, height: 640 });

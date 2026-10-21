@@ -77,8 +77,19 @@ something worth working on.
 
 ## Releasing (maintainers)
 
-Bump `version` in `package.json` and `packages/extension/src/manifest.json`, add a section to
-`CHANGELOG.md`, then push a tag:
+Bump the version everywhere it is written, add a section to `CHANGELOG.md`, then push a tag. The
+version lives in:
+
+- `package.json`, every `packages/*/package.json` and the `@wasmcheat/*` versions they pin to each
+  other (then `npm install` to refresh `package-lock.json`);
+- `packages/extension/src/manifest.json`;
+- `packages/mcp-server/src/server.ts` (the version the server reports to a client);
+- `AGENT_VERSION` in `packages/page-agent/src/index.ts` and `packages/page-agent/src/runtime.ts`,
+  and the version `tests/unit/worker.test.ts` expects;
+- the placeholder in `.github/ISSUE_TEMPLATE/bug.yml`.
+
+`grep -rn "0\.2\.0" --exclude-dir=node_modules --exclude=CHANGELOG.md .` with the old version finds
+them. CI checks only `package.json` against the tag and the manifest.
 
 ```bash
 git tag v0.2.0 && git push origin v0.2.0

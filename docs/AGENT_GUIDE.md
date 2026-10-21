@@ -30,7 +30,9 @@ sees.
 ## 2. What the agent may and may not do
 
 There is no approval prompt to ask for. `tabId` is optional on every tool: omit it and the extension
-acts on the tab in front, the page the user has open. Ask only when the user names a second tab.
+acts on the front tab of the focused window, the page the user has open. Once `wasmcheat_list_tabs` has
+shown you which tab is the game, pass its `tabId` on every call anyway: with more than one window open,
+the tab in front can change while you work.
 
 You still do not guess. `wasmcheat_list_tabs` tells you what is open; `attach` tells you what the
 agent can see. If the page is a game, work there; if it is a bank, ask before touching anything, and
@@ -88,7 +90,7 @@ cross-origin flag, canvases, `.wasm` URLs found in the HTML, and a hint. The thr
 
 | `diagnose` says | meaning | fix |
 |---|---|---|
-| `calls.* == 0`, no iframes | the extension was not in the page before the game booted | `attach` reloads the tab once on its own; if it still says `no relay`, pass `"reload": true` |
+| `calls.* == 0`, no iframes | the extension was not in the page before the game booted | `attach` reloads the tab once on its own; if it still returns `NO_AGENT`, pass `"reload": true` |
 | cross-origin iframe listed | the game lives in a subframe | the extension already routes into frames; if not, pass `frameId` from `list_tabs` |
 | `instances: 0`, `wasmReferences` has URLs | the game is a worker or WebGL build | check `wasmcheat_list_workers` (nested workers appear as `k1n1`) |
 
@@ -113,7 +115,8 @@ First pass, exact value:
 
 Unknown value: omit `value` with `mode` defaulting to `changed`, do something in the game, then narrow.
 A narrowing pass repeats the same tool with the `scanId` the previous pass returned (plus `tabId`, the
-`instanceId` and the `type`; the server validates all four):
+`instanceId` and the `type`, which the schema requires; only the `scanId` picks the scan, so pass the
+same values as the first pass):
 
 ```json
 { "tabId": 123, "instanceId": "w1", "type": "i32", "scanId": "s1", "mode": "changed" }
