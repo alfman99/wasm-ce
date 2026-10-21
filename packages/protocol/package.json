@@ -1,6 +1,6 @@
 {
   "name": "@wasmcheat/protocol",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Message types and error codes shared by the extension, the page agent and the MCP server.",
   "type": "module",

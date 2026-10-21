@@ -1,6 +1,6 @@
 {
   "name": "@wasmcheat/page-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Runs inside the page and its workers: captures WebAssembly instances, scans and writes memory, runs scripts and hooks.",
   "type": "module",
@@ -8,8 +8,8 @@
     "build": "node build.mjs"
   },
   "dependencies": {
-    "@wasmcheat/protocol": "0.1.0",
-    "@wasmcheat/wasm-instrument": "0.1.0"
+    "@wasmcheat/protocol": "0.2.0",
+    "@wasmcheat/wasm-instrument": "0.2.0"
   },
   "license": "MIT",
   "repository": {

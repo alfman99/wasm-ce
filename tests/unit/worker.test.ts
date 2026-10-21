@@ -90,7 +90,7 @@ describe('worker agent', () => {
     expect(reply?.__wasmcheat).toBe('hello');
     if (!reply || reply.__wasmcheat !== 'hello' || !('info' in reply)) throw new Error('not a hello reply');
     expect(reply.info.instances).toBe(0);
-    expect(reply.info.version).toBe('0.1.0');
+    expect(reply.info.version).toBe('0.2.0');
   });
 
   it('ignores messages that are not its own', async () => {

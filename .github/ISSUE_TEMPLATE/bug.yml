@@ -26,7 +26,7 @@ body:
     attributes:
       label: WasmCheat version
       description: Shown at the bottom left of the panel.
-      placeholder: extension 0.1.0 · protocol 1
+      placeholder: extension 0.2.0 · protocol 1
   - type: textarea
     id: diagnose
     attributes:

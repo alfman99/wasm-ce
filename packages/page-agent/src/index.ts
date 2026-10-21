@@ -18,7 +18,7 @@ import { restoreTrace } from './trace.js';
  */
 
 const GLOBAL_KEY = '__wasmcheat__';
-const AGENT_VERSION = '0.1.0';
+const AGENT_VERSION = '0.2.0';
 
 interface AgentGlobal {
   version: string;

@@ -122,6 +122,11 @@ pair needs 4.5:1 for normal text.
 WASMCHEAT_SHOTS=1 npx playwright test tests/e2e/screenshots.spec.ts
 ```
 
+`docs/img/agent-demo.gif` and `docs/img/social-card.png` come from `tests/e2e/promo.spec.ts`, with the
+same flag. It records a real agent session against the demo game, so every call and result in the GIF
+is real; it needs `ffmpeg` on the path. `docs/img/how-it-works.svg` is drawn by hand with the tokens
+above (the page box adds a light accent tint), and switches with the reader's colour scheme.
+
 It drives the real extension: attaches the demo tab, scans, freezes, books a mark, then captures the
 panel in light and dark, the help sheet, the popup and the demo window. If a screenshot and the UI ever
 disagree, the screenshot is stale, not the other way round.

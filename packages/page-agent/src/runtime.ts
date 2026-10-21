@@ -53,7 +53,7 @@ import { PatchStore } from './patch.js';
 import { pointerResolve, pointerScan } from './pointer.js';
 import { instrumentModule } from '@wasmcheat/wasm-instrument';
 
-const AGENT_VERSION = '0.1.0';
+const AGENT_VERSION = '0.2.0';
 const FREEZE_INTERVAL_MS = 16;
 const WATCH_INTERVAL_MS = 50;
 const MAX_EVENTS_PER_WATCH = 200;

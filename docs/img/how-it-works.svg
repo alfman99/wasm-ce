@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="210" viewBox="0 0 960 210" role="img" aria-labelledby="t d">
+  <title id="t">How WasmCheat connects your agent to the page</title>
+  <desc id="d">Your AI agent talks MCP over stdio to the WasmCheat server on your machine. The server and the browser extension talk over a local WebSocket on 127.0.0.1. The extension reaches the page's JavaScript and WebAssembly memory, in any frame.</desc>
+  <style>
+    .card { fill: #ffffff; stroke: #e3ded5; }
+    .lead { fill: #e7f1ee; stroke: #0d7461; }
+    .title { font: 600 16px ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1a1917; }
+    .sub { font: 13px ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #5b564d; }
+    .wire { stroke: #0d7461; stroke-width: 2; fill: none; }
+    .head { fill: #0d7461; }
+    .label { font: 12px ui-monospace, "SF Mono", Menlo, monospace; fill: #0d7461; }
+    @media (prefers-color-scheme: dark) {
+      .card { fill: #1a1a19; stroke: #2d2d2a; }
+      .lead { fill: #14312b; stroke: #38c3a4; }
+      .title { fill: #f2f0ea; }
+      .sub { fill: #b5afa2; }
+      .wire { stroke: #38c3a4; }
+      .head { fill: #38c3a4; }
+      .label { fill: #38c3a4; }
+    }
+  </style>
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0 0 10 5 0 10z"/></marker></defs>
+
+  <rect class="card" x="1" y="40" width="200" height="120" rx="10"/>
+  <text class="title" x="20" y="78">Your AI agent</text>
+  <text class="sub" x="20" y="102">Claude Code, Codex,</text>
+  <text class="sub" x="20" y="120">Cursor, any MCP client</text>
+
+  <rect class="card" x="253" y="40" width="200" height="120" rx="10"/>
+  <text class="title" x="272" y="78">WasmCheat server</text>
+  <text class="sub" x="272" y="102">on your machine, with</text>
+  <text class="sub" x="272" y="120">the audit log of every change</text>
+
+  <rect class="card" x="505" y="40" width="200" height="120" rx="10"/>
+  <text class="title" x="524" y="78">Browser extension</text>
+  <text class="sub" x="524" y="102">finds the game's frame</text>
+  <text class="sub" x="524" y="120">and keeps your mods</text>
+
+  <rect class="lead" x="757" y="40" width="202" height="120" rx="10"/>
+  <text class="title" x="776" y="78">The page</text>
+  <text class="sub" x="776" y="102">its JavaScript and its</text>
+  <text class="sub" x="776" y="120">WebAssembly memory</text>
+
+  <path class="wire" d="M203 100H251" marker-start="url(#a)" marker-end="url(#a)"/>
+  <path class="wire" d="M455 100H503" marker-start="url(#a)" marker-end="url(#a)"/>
+  <path class="wire" d="M707 100H755" marker-end="url(#a)"/>
+  <text class="label" x="227" y="30" text-anchor="middle">MCP, stdio</text>
+  <text class="label" x="479" y="30" text-anchor="middle">127.0.0.1 only</text>
+  <text class="label" x="731" y="30" text-anchor="middle">any frame</text>
+  <path class="wire" d="M227 36V92M479 36V92M731 36V92" stroke-dasharray="2 4" opacity=".5"/>
+  <text class="sub" x="480" y="196" text-anchor="middle">WasmCheat sends nothing off your machine: the extension only talks to the server on 127.0.0.1.</text>
+</svg>
