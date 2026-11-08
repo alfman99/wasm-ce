@@ -23,6 +23,7 @@ import {
   bridgeNonce,
   bridgeProof,
 } from '@wasmcheat/protocol';
+import { NEVER_INJECT, sitePattern } from './sites.js';
 
 /**
  * Service worker: the only part of the extension that talks to the MCP server.
@@ -634,6 +635,8 @@ async function handleBridgeRequest(method: string, params: unknown, origin: Call
       };
     case 'ext.listTabs':
       return listTabs();
+    case 'ext.site':
+      return setSite(params as { tabId: number; on: boolean });
     case 'ext.ensureAgent':
       return ensureAgent(params as { tabId: number; reload?: boolean; frameId?: number });
     case 'ext.call':
@@ -669,10 +672,98 @@ async function handleBridgeRequest(method: string, params: unknown, origin: Call
   }
 }
 
+// ---------------------------------------------------------------- sites
+
+/**
+ * The sites WasmCheat is turned on for, as match patterns. Nothing is in the manifest: the agent
+ * patches `WebAssembly` in the MAIN world, and doing that on every page broke every captcha. A site
+ * goes on when the panel or an agent attaches to it, or from the popup, and stays on until turned off.
+ */
+const SITES_KEY = 'wasmcheatSites';
+const SCRIPT_IDS = ['wasmcheat-relay', 'wasmcheat-page-agent'];
+
+async function loadSites(): Promise<string[]> {
+  const stored = (await chrome.storage.local.get(SITES_KEY))[SITES_KEY] as string[] | undefined;
+  if (stored) return stored;
+  // First run after the update that made sites opt-in: the sites of kept mods start on, so a mod
+  // someone kept before keeps coming back without a step they were never told about.
+  const sites = [...new Set((await loadMods()).map((mod) => sitePattern(mod.origin)).filter((site) => site !== undefined))];
+  await chrome.storage.local.set({ [SITES_KEY]: sites });
+  return sites;
+}
+
+let sitesApplied: Promise<void> = Promise.resolve();
+
+/**
+ * Registers the relay and the page agent for exactly the sites that are on, at document_start in
+ * every frame of them (game frames are cross-origin, so their hosts are sites too), never in a
+ * captcha or sign-in host. Serialized, and a no-op when nothing changed: the worker wakes every 30s,
+ * and a re-registration would leave a gap a page load could fall into.
+ */
+function applySites(): Promise<void> {
+  sitesApplied = sitesApplied
+    .then(async () => {
+      const matches = [...(await loadSites())].sort();
+      const registered = await chrome.scripting.getRegisteredContentScripts({ ids: SCRIPT_IDS });
+      const wanted = JSON.stringify([matches, [...NEVER_INJECT].sort()]);
+      const current = registered.map((script) =>
+        JSON.stringify([[...(script.matches ?? [])].sort(), [...(script.excludeMatches ?? [])].sort()]),
+      );
+      if (registered.length === SCRIPT_IDS.length && current.every((entry) => entry === wanted)) return;
+      if (registered.length > 0) await chrome.scripting.unregisterContentScripts({ ids: registered.map((script) => script.id) });
+      if (matches.length === 0) return;
+      const common = { matches, excludeMatches: NEVER_INJECT, runAt: 'document_start' as const, allFrames: true };
+      await chrome.scripting.registerContentScripts([
+        { ...common, id: 'wasmcheat-relay', js: ['relay.js'], world: 'ISOLATED' },
+        { ...common, id: 'wasmcheat-page-agent', js: ['page-agent.js'], world: 'MAIN' },
+      ]);
+    })
+    .catch((error: unknown) => console.warn('WasmCheat could not register its sites', error));
+  return sitesApplied;
+}
+
+/**
+ * Turns on the tab's site and the site of every frame in it, and returns the frames the agent may
+ * enter now. The frame URLs are read by a one-line isolated-world script, which the page cannot see.
+ */
+async function turnOnTab(tabId: number): Promise<number[]> {
+  const tab = await getTab(tabId);
+  const top = sitePattern(tab.url);
+  if (!top) {
+    throw new BridgeError('NO_AGENT', `WasmCheat does not run on ${tab.url ?? 'this page'}: only http and https pages, never captcha or sign-in pages`);
+  }
+  const frames = await chrome.scripting
+    .executeScript({ target: { tabId, allFrames: true }, func: () => location.href })
+    .catch(() => [] as chrome.scripting.InjectionResult<string>[]);
+  const allowed = frames.filter((frame) => sitePattern(frame.result as string | undefined));
+  const sites = new Set([...(await loadSites()), top, ...allowed.map((frame) => sitePattern(frame.result as string)!)]);
+  await chrome.storage.local.set({ [SITES_KEY]: [...sites] });
+  await applySites();
+  return allowed.map((frame) => frame.frameId);
+}
+
+/** The popup's switch. Off forgets the tab's site and its frames' sites; the reload takes the agent out. */
+async function setSite(params: { tabId: number; on: boolean }): Promise<{ on: boolean }> {
+  if (params.on) {
+    await turnOnTab(params.tabId);
+  } else {
+    const tab = await getTab(params.tabId);
+    const urls = [tab.url, ...(tabFrames.get(params.tabId)?.values() ?? [])];
+    const off = new Set(urls.map((url) => sitePattern(url)));
+    await chrome.storage.local.set({ [SITES_KEY]: (await loadSites()).filter((site) => !off.has(site)) });
+    await applySites();
+  }
+  forgetDocument(params.tabId);
+  await chrome.tabs.reload(params.tabId);
+  if (params.on) await waitFor(() => attachedTabs.has(params.tabId), 15_000);
+  return { on: params.on };
+}
+
 // ---------------------------------------------------------------- tabs
 
 async function listTabs(): Promise<TabInfo[]> {
   const tabs = await chrome.tabs.query({});
+  const sites = await loadSites();
   const visible: TabInfo[] = [];
   for (const tab of tabs) {
     if (tab.id === undefined) continue;
@@ -685,6 +776,7 @@ async function listTabs(): Promise<TabInfo[]> {
       url,
       active: tab.active ?? false,
       agentAttached: attachedTabs.has(tab.id),
+      siteOn: sites.includes(sitePattern(url) ?? ''),
       frames: [...(tabFrames.get(tab.id) ?? new Map<number, string>()).entries()].map(([frameId, url]) => ({
         frameId,
         url,
@@ -778,7 +870,8 @@ async function traceArm(params: {
 }
 
 async function ensureAgent(params: { tabId: number; reload?: boolean; frameId?: number }): Promise<PageAgentInfo> {
-  await getTab(params.tabId);
+  // Attaching is the human (or their agent) choosing this site, so it stays on for every later load.
+  const frameIds = await turnOnTab(params.tabId);
   let reloaded = false;
   let injected = false;
 
@@ -792,7 +885,7 @@ async function ensureAgent(params: { tabId: number; reload?: boolean; frameId?: 
         throw new BridgeError('NO_AGENT', `tab ${params.tabId} did not re-attach after reload`);
       }
     } else if (!attachedTabs.has(params.tabId)) {
-      await injectAgent(params.tabId);
+      await injectAgent(params.tabId, frameIds);
       injected = true;
     }
 
@@ -917,21 +1010,12 @@ async function missedGame(tabId: number): Promise<boolean> {
   return looksLikeGame;
 }
 
-async function injectAgent(tabId: number): Promise<void> {
-  await getTab(tabId);
+async function injectAgent(tabId: number, frameIds: number[]): Promise<void> {
   try {
-    // allFrames matters: the app often lives in a cross-origin iframe (YouTube Playables,
-    // itch.io embeds, Unity WebGL wrappers), which the top frame cannot reach into.
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      world: 'ISOLATED',
-      files: ['relay.js'],
-    });
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      world: 'MAIN',
-      files: ['page-agent.js'],
-    });
+    // Every frame of the tab but captcha and sign-in ones: the app often lives in a cross-origin
+    // iframe (YouTube Playables, itch.io embeds, Unity WebGL wrappers) the top frame cannot reach into.
+    await chrome.scripting.executeScript({ target: { tabId, frameIds }, world: 'ISOLATED', files: ['relay.js'] });
+    await chrome.scripting.executeScript({ target: { tabId, frameIds }, world: 'MAIN', files: ['page-agent.js'] });
   } catch (error) {
     throw new BridgeError(
       'NO_AGENT',
@@ -1271,8 +1355,10 @@ async function callTab(
       const again = await resolveFrame(params.tabId);
       if (again !== frameId && tabFrames.get(params.tabId)?.has(again)) return attempt(again);
     }
-    await injectAgent(params.tabId);
-    attachedTabs.add(params.tabId);
+    // Through ensureAgent: on a site that was off the game has already instantiated, and only the
+    // one reload it does when it sees that lets the agent capture it.
+    attachedTabs.delete(params.tabId);
+    await ensureAgent({ tabId: params.tabId });
     return attempt(await resolveFrame(params.tabId));
   }
   await keepPatches(params.tabId, params.method, frameId);
@@ -1518,6 +1604,12 @@ chrome.runtime.onInstalled.addListener((details) => {
   // Someone who just pressed Load unpacked has no idea where the panel is; say it once, in the
   // background so the tab they were on keeps focus. Updates and reloads stay quiet.
   if (details.reason === 'install') void chrome.tabs.create({ url: 'welcome.html', active: false });
+});
+
+// Registered scripts can be dropped when the extension is updated or reloaded; storage is the record.
+void applySites();
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && SITES_KEY in changes) void applySites();
 });
 
 // Keep trying to reach the local bridge for as long as the worker is alive. The alarm (30s is

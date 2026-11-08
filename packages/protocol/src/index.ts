@@ -160,6 +160,8 @@ export interface TabInfo {
   active: boolean;
   /** True once the page agent has been injected and answered. */
   agentAttached: boolean;
+  /** True when WasmCheat is turned on for this tab's site, so the agent is in every load from the start. */
+  siteOn?: boolean;
   /** Known frames with a live relay, once the page has announced itself. */
   frames?: FrameRef[];
 }

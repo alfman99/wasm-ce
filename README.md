@@ -49,6 +49,11 @@ Then load the extension:
 2. Press **Load unpacked** and pick the `packages/extension/dist` folder.
 3. Pin WasmCheat to the toolbar. A welcome tab shows where the panel is.
 
+WasmCheat stays out of every site until you turn it on for that site: from its toolbar popup, by opening
+its DevTools panel on the page, or when your agent attaches to the tab. The popup turns it off again.
+Captcha and sign-in pages (Cloudflare Turnstile, hCaptcha, reCAPTCHA, Google and Cloudflare sign-in) are
+never touched, even inside a site that is on, so they keep working in the browser you play in.
+
 Each [release](https://github.com/alfman99/wasm-ce/releases) also carries the extension as a zip, for the
 panel alone: unzip it and load the `wasmcheat` folder inside the same way. The agent needs the MCP
 server, which is built from source.

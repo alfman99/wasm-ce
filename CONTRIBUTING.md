@@ -26,6 +26,10 @@ npm run test:unit
 npm run test:e2e
 ```
 
+Without Playwright's Chromium, point the suite at another Chromium browser that still loads unpacked
+extensions from the command line (branded Chrome does not), for example
+`WASMCHEAT_BROWSER="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" npm run test:e2e`.
+
 CI runs the same four steps on every pull request. The end-to-end suite drives a real Chromium with
 the real extension, so a change to the panel, the service worker or the page agent needs it green.
 

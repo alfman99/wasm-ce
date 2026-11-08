@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- WasmCheat no longer runs on every site. It patched `WebAssembly` in every page and frame, which made
+  captchas (Cloudflare Turnstile, hCaptcha, reCAPTCHA) fail in the browser it was loaded in. Now a site
+  is on only once you turn it on from the popup, open the DevTools panel on it, or an agent attaches to
+  it, and the popup turns it off. Captcha and sign-in hosts are never entered, even inside a site that
+  is on. `wasmcheat_list_tabs` reports `siteOn`. The sites of mods kept before this update start on. After updating, the first attach to a running game
+  reloads it once, as for a page opened before the extension.
+- The end-to-end suite runs on another Chromium browser with `WASMCHEAT_BROWSER=/path/to/browser`,
+  sandbox on, for machines without Playwright's Chromium.
 - Launch videos in `docs/press/video`, landscape and vertical, drawn from the session the promo test
   records, with a soundtrack synthesized by `sound.py`. The promo test now keeps that session at 2x.
 - With no browser connected, the MCP server's error names `packages/extension/dist`, the folder you

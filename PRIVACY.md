@@ -11,8 +11,10 @@ check and no server run by the project.
 
 ## What the extension can see
 
-WasmCheat runs a small script in every http and https page you open, and in their frames and
-workers. On its own it only keeps a handle on each WebAssembly instance the page creates. It reads
+WasmCheat runs a small script only on the sites you turn on (from its popup, its DevTools panel, or an
+agent attaching to the tab), in their frames and workers. Every other site never sees it, and captcha and
+sign-in pages are never entered even inside a site that is on. On its own it only keeps a handle on each
+WebAssembly instance the page creates. It reads
 or changes memory, and runs JavaScript in the page, only when you or an MCP agent you started ask
 it to. The one exception is a mod: a script you or your agent chose to keep, which runs on every
 load of the site of the game frame it was kept for, until you remove it. Results go to the DevTools
@@ -24,7 +26,7 @@ All of it stays in your browser or on your disk, and none of it, mods included, 
 
 | What | Where |
 | --- | --- |
-| The MCP pairing token, the bridge port, the panel's light or dark theme, mods you keep (their code and the origin of the game frame) | the extension's own storage (`chrome.storage.local`) |
+| The MCP pairing token, the bridge port, the panel's light or dark theme, the sites you turned on, mods you keep (their code and the origin of the game frame) | the extension's own storage (`chrome.storage.local`) |
 | Which tabs and frames have the agent, and the watchpoints and function patches waiting for a reload to install, for the current browser session | `chrome.storage.session`, cleared when the browser closes |
 | Bookmarks you add | that site's `localStorage` |
 | Saved scans, armed watchpoints, function patches | that site's `sessionStorage`, gone when the tab closes |

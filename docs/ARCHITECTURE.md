@@ -12,7 +12,7 @@ not the objects. A **realm** is one such JavaScript world: a page, an iframe or 
 | --- | --- |
 | `packages/protocol` | The single shared contract: message envelopes, address format, value types, error codes, scan/hook/watch shapes. |
 | `packages/page-agent` | Runs in the page's **MAIN world** and in every Web Worker. Patches `WebAssembly.instantiate*` / `new WebAssembly.Instance` to capture instances, then does the real work: memory access, scanning, freezing, watches, hooks, watchpoint instrumentation. |
-| `packages/extension` | MV3 extension. Injects the page agent at `document_start`, relays RPC from the service worker, owns the WebSocket to the MCP server, and ships the DevTools panel and popup. |
+| `packages/extension` | MV3 extension. Injects the page agent at `document_start` on the sites the human turned on, relays RPC from the service worker, owns the WebSocket to the MCP server, and ships the DevTools panel and popup. |
 | `packages/mcp-server` | Node 22 stdio MCP server. Exposes the `wasmcheat_*` tools, talks to the extension over a local WebSocket, writes the audit log. |
 | `packages/wasm-instrument` | Rewrites a wasm binary before it is compiled: the watchpoint probes on loads and stores, and the function patches. |
 | `packages/demo-app` | A tiny C game compiled to a standalone wasm module, plus a hand-written loader. The test target. |
@@ -58,6 +58,13 @@ Why it looks like this:
   enumerate pre-existing `WebAssembly.Instance` objects, so capture only works if the patch is in
   place first. If you attach to an already-loaded page, pass `reload: true` and the tab reloads
   with the agent already installed (the reload is audited).
+- **Only on sites the human turned on, never in a captcha.** The agent replaces `WebAssembly`'s
+  functions in the MAIN world, and captcha frames (Turnstile, hCaptcha, reCAPTCHA) check that natives
+  like those are untouched. So the manifest declares no content scripts: the service worker registers
+  the relay and the agent with `chrome.scripting.registerContentScripts` for the sites in
+  `chrome.storage.local` (`wasmcheatSites`), and `excludeMatches` keeps out captcha and sign-in hosts
+  (`packages/extension/src/sites.ts`). Attaching (panel or MCP) turns on the tab's site and the sites of
+  its frames, read by a one-line isolated-world script; the popup turns a site on or off.
 - **The extension dials the server, not the other way round.** Only the extension can reach tab
   contents, so the MCP server is the listener and the extension is the client. A new
   connection takes over only after it proves the token; the old socket is then closed and its
@@ -72,7 +79,7 @@ Why it looks like this:
 
 Games rarely live in the document you are looking at: a YouTube Playable, an itch.io embed or a
 Unity wrapper runs in a **cross-origin iframe**, where a content script injected into the top
-document cannot see it. Both content scripts are therefore registered with `all_frames: true`,
+document cannot see it. Both content scripts are therefore registered with `allFrames: true`,
 each frame's relay announces itself with its `frameId` and URL, and the service worker picks the
 frame that actually captured a wasm instance (probing each one with `page.diagnose` when it has
 to). A pick that held no wasm is only a guess and is asked again every two seconds, because the
