@@ -1,7 +1,8 @@
 import type { TabInfo } from '@wasmcheat/protocol';
 
 /**
- * The toolbar popup answers one question ("is this tab set up?") and gets out of the way.
+ * The toolbar popup answers one question ("is this tab set up?") and gets out of the way. Its one
+ * switch turns WasmCheat on or off for the tab's site: off, the site never sees the agent.
  *
  * There is nothing to approve: the panel targets the tab you open it on, and a game is a game
  * because you opened it. The only thing worth surfacing here is the bridge, because a missing or
@@ -21,6 +22,7 @@ interface PopupState {
 const bridge = document.getElementById('bridge') as HTMLSpanElement;
 const target = document.getElementById('target') as HTMLParagraphElement;
 const stateLine = document.getElementById('state') as HTMLParagraphElement;
+const site = document.getElementById('site') as HTMLButtonElement;
 const hint = document.getElementById('hint') as HTMLParagraphElement;
 const note = document.getElementById('note') as HTMLSpanElement;
 const tokenBox = document.getElementById('token-box') as HTMLDetailsElement;
@@ -70,6 +72,7 @@ async function refresh(): Promise<void> {
   renderBridge(response);
 
   const tab = response.tabs.find((entry) => entry.tabId === response.activeTabId);
+  site.hidden = !tab;
   if (!tab) {
     target.textContent = 'No web page in front.';
     stateLine.textContent = '';
@@ -80,12 +83,28 @@ async function refresh(): Promise<void> {
   }
 
   target.textContent = tab.title || tab.url;
-  stateLine.textContent = tab.agentAttached
-    ? describeWasm(await wasmCount(tab.tabId))
-    : 'WasmCheat is not in this page yet. Open DevTools → WasmCheat on this tab: it reloads the page once to get in.';
+  const host = new URL(tab.url).hostname;
+  site.textContent = tab.siteOn ? `Turn off for ${host}` : `Turn on for ${host}`;
+  site.onclick = () => void setSite(tab.tabId, !tab.siteOn);
+  stateLine.textContent = !tab.siteOn
+    ? 'Off on this site, so its captchas and sign-ins work as usual. Turn it on, or open DevTools → WasmCheat here: the page reloads once.'
+    : tab.agentAttached
+      ? describeWasm(await wasmCount(tab.tabId))
+      : 'On for this site. Reload the page to let WasmCheat in.';
   hint.textContent =
     'Scan for a number you can see, narrow the list, then write or freeze it. The panel works on the tab you open it on.';
   note.textContent = `tab ${tab.tabId}`;
+}
+
+/** Turns the site on or off; the service worker reloads the tab so the change takes effect. */
+async function setSite(tabId: number, on: boolean): Promise<void> {
+  site.disabled = true;
+  try {
+    await chrome.runtime.sendMessage({ type: 'wasmcheat.panel.call', method: 'ext.site', params: { tabId, on } });
+  } finally {
+    site.disabled = false;
+  }
+  await refresh();
 }
 
 /** How many wasm modules the page runs, or undefined when the page did not answer. */

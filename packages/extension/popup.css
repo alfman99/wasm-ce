@@ -192,6 +192,15 @@ h1 {
   font-size: 12px;
 }
 
+.card > .ghost {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.ghost[hidden] {
+  display: none;
+}
+
 .token {
   border: 1px solid var(--line);
   border-radius: 10px;

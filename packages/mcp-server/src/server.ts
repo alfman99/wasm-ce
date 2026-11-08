@@ -209,6 +209,8 @@ export function createServer(bridge: Bridge): McpServer {
       description:
         'Start the page agent in a tab and list the WebAssembly instances it found. No approval step: the extension is ' +
         'installed by the person using the browser, and this call only starts doing work in a tab they already opened. ' +
+        'It also turns WasmCheat on for the tab\'s site and its game frames, so the agent is in every later load of them ' +
+        '(the human turns a site off from the popup; captcha and sign-in frames are never entered). ' +
         'If the page was loaded before the extension, the tab is reloaded once automatically (the answer says so, and ' +
         'every address from before that reload is stale).',
       inputSchema: {

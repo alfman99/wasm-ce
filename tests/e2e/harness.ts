@@ -73,11 +73,19 @@ export interface LaunchedBrowser {
   close: () => Promise<void>;
 }
 
-export async function launchBrowser(deviceScaleFactor?: number): Promise<LaunchedBrowser> {
+/**
+ * The demo's sites start on, as for someone who already uses WasmCheat on them: a site that is off
+ * gets no agent until it is turned on (`sitesOn: false`, which tests/e2e/sites.spec.ts covers).
+ */
+export async function launchBrowser(deviceScaleFactor?: number, sitesOn = true): Promise<LaunchedBrowser> {
   const userDataDir = mkdtempSync(join(tmpdir(), 'wasmcheat-profile-'));
   const context = await chromium.launchPersistentContext(userDataDir, {
     headless: true,
-    channel: 'chromium',
+    // Branded Chrome ignores --load-extension, so a machine without Playwright's Chromium points this
+    // at another Chromium browser (Brave), with its sandbox on.
+    ...(process.env.WASMCHEAT_BROWSER
+      ? { executablePath: process.env.WASMCHEAT_BROWSER, chromiumSandbox: true }
+      : { channel: 'chromium' }),
     deviceScaleFactor,
     args: [
       `--disable-extensions-except=${PATHS.extension}`,
@@ -95,6 +103,13 @@ export async function launchBrowser(deviceScaleFactor?: number): Promise<Launche
     // source would be reported as pasted anyway and the UI copy would be a guess.
     await chrome.storage.local.set({ bridgeToken: token, bridgeTokenSource: 'pasted' });
   }, BRIDGE_TOKEN);
+  await worker.evaluate(async (sites: string[]) => {
+    await chrome.storage.local.set({ wasmcheatSites: sites });
+    // The worker registers the agent for them on that change; pages opened before it would miss it.
+    while ((await chrome.scripting.getRegisteredContentScripts()).length < (sites.length > 0 ? 2 : 0)) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }, sitesOn ? ['http://127.0.0.1/*', 'http://localhost/*'] : []);
   return {
     context,
     extensionId,

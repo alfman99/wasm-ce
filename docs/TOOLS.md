@@ -13,7 +13,7 @@ Addresses are `"<instanceId>:<offset>"`, e.g. `w1:0x408` or `w1:1032`. `instance
 | --- | --- |
 | `wasmcheat_guide` | The method for changing an app, step by step, and the scripts it uses (`topic`: workflow, routes, probe, il2cpp, mod-template, example-playcanvas, example-unity). |
 | `wasmcheat_list_tabs` | Tabs the extension can see, with agent state. Every other tool defaults to the tab in front. |
-| `wasmcheat_attach` | Start (or heal) the page agent and return the instances. |
+| `wasmcheat_attach` | Start (or heal) the page agent and return the instances. Turns WasmCheat on for the tab's site. |
 | `wasmcheat_detach` | Forget the tab and drop the agent it injected. |
 | `wasmcheat_list_instances` | Instances, memory sizes, exports, import patchability. |
 | `wasmcheat_scan` | Snapshot filtered memory, or narrow an existing scan. |
@@ -55,7 +55,9 @@ Addresses are `"<instanceId>:<offset>"`, e.g. `w1:0x408` or `w1:1032`. `instance
 //       "importPatchability": "next-instantiation"}]}
 ```
 
-`reload: true` reloads first, for pages that loaded before the extension did.
+`reload: true` reloads first, for pages that loaded before the extension did. Attaching turns WasmCheat on
+for the tab's site and the sites of its frames, so the agent is in every later load from the start; until
+then a site never sees it. `wasmcheat_list_tabs` says which tabs are on (`siteOn`).
 
 ### Scanning
 

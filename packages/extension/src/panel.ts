@@ -713,9 +713,10 @@ const startedIn = new Set<number>();
 let startNotice = '';
 
 /**
- * Opening the panel on a tab is the whole setup. The agent is normally in the page already (it is
- * injected at document_start); when it is not, because the page was open before WasmCheat loaded,
- * start it here, which reloads the page once so the game instantiates with the agent present.
+ * Opening the panel on a tab is the whole setup, and turns WasmCheat on for its site. The agent is
+ * then in every load of the site from document_start. When it is not (the first time, or a page open
+ * before WasmCheat loaded), start it here, which reloads the page once so the game instantiates with
+ * the agent present.
  */
 async function startAgent(tabId: number, statusOut: HTMLElement): Promise<PageAgentInfo | undefined> {
   startedIn.add(tabId);
